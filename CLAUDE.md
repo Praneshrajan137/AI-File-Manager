@@ -164,8 +164,14 @@ function validatePath(requestedPath: string, allowedRoot: string): ValidationRes
     return { valid: false, error: 'Path traversal detected' };
   }
   
+  // Normalize allowedRoot to ensure it ends with separator
+  const normalizedRoot = allowedRoot.endsWith(path.sep) 
+    ? allowedRoot 
+    : allowedRoot + path.sep;
+  
   // Ensure within allowed directories
-  if (!normalized.startsWith(allowedRoot)) {
+  // Check with separator to prevent prefix attacks (e.g., /home/user vs /home/user2)
+  if (!normalized.startsWith(normalizedRoot)) {
     return { valid: false, error: 'Unauthorized directory access' };
   }
   

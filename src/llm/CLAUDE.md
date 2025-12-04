@@ -252,10 +252,14 @@ export class VectorStore {
   
   /**
    * Delete all chunks for a file (e.g., when file is deleted).
+   * Security: Escapes single quotes to prevent SQL injection.
    */
   async deleteFile(filePath: string): Promise<void> {
+    // Escape single quotes by doubling them (SQL standard)
+    const escapedPath = filePath.replace(/'/g, "''");
+    
     await this.table
-      .delete(`file_path = '${filePath}'`)
+      .delete(`file_path = '${escapedPath}'`)
       .execute();
   }
 }

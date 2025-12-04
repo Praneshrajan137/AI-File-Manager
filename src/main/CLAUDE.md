@@ -63,12 +63,12 @@ src/main/
 import path from 'path';
 
 function validatePath(requestedPath: string, allowedRoot: string): ValidationResult {
-  // Normalize to prevent traversal
+  // Normalize to collapse relative segments
   const normalized = path.normalize(requestedPath);
-  const resolved = path.resolve(normalized);
   
-  // Check for traversal attempts
-  if (resolved.includes('..')) {
+  // Check for traversal attempts BEFORE resolving
+  // After normalize, '..' still exists if user tried traversal
+  if (normalized.includes('..')) {
     return {
       valid: false,
       error: 'PATH_TRAVERSAL_ATTEMPT',
@@ -76,8 +76,17 @@ function validatePath(requestedPath: string, allowedRoot: string): ValidationRes
     };
   }
   
-  // Ensure within sandbox
-  if (!resolved.startsWith(allowedRoot)) {
+  // Resolve to absolute path for boundary check
+  const resolved = path.resolve(normalized);
+  
+  // Normalize allowedRoot to ensure it ends with separator
+  const normalizedRoot = allowedRoot.endsWith(path.sep) 
+    ? allowedRoot 
+    : allowedRoot + path.sep;
+  
+  // Ensure within sandbox (primary defense)
+  // Check with separator to prevent prefix attacks (e.g., /home/user vs /home/user2)
+  if (!resolved.startsWith(normalizedRoot)) {
     return {
       valid: false,
       error: 'UNAUTHORIZED_ACCESS',
@@ -424,6 +433,11 @@ class HistoryStack {
    * Navigate to new path. Clears forward history.
    */
   push(path: string): void {
+    // Clear forward history by severing next pointers
+    if (this.current) {
+      this.current.next = null;
+    }
+    
     const newNode: HistoryNode = {
       path,
       timestamp: Date.now(),
@@ -431,6 +445,7 @@ class HistoryStack {
       next: null
     };
     
+    // Link current to new node (creates new forward history from old position)
     if (this.current) {
       this.current.next = newNode;
     }
