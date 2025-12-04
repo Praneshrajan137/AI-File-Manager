@@ -157,21 +157,25 @@ Every path from Renderer MUST be validated in Main Process:
 ```typescript
 // MANDATORY security check
 function validatePath(requestedPath: string, allowedRoot: string): ValidationResult {
+  // Step 1: Normalize to collapse relative segments
   const normalized = path.normalize(requestedPath);
   
-  // Prevent traversal attacks
+  // Step 2: Check for traversal attempts BEFORE resolving
   if (normalized.includes('..')) {
     return { valid: false, error: 'Path traversal detected' };
   }
   
-  // Normalize allowedRoot to ensure it ends with separator
+  // Step 3: Resolve to absolute path for boundary check
+  const resolved = path.resolve(normalized);
+  
+  // Step 4: Normalize allowedRoot to ensure it ends with separator
   const normalizedRoot = allowedRoot.endsWith(path.sep) 
     ? allowedRoot 
     : allowedRoot + path.sep;
   
-  // Ensure within allowed directories
+  // Step 5: Ensure within allowed directories using resolved absolute path
   // Check with separator to prevent prefix attacks (e.g., /home/user vs /home/user2)
-  if (!normalized.startsWith(normalizedRoot)) {
+  if (!resolved.startsWith(normalizedRoot)) {
     return { valid: false, error: 'Unauthorized directory access' };
   }
   

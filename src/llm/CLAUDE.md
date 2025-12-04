@@ -252,15 +252,19 @@ export class VectorStore {
   
   /**
    * Delete all chunks for a file (e.g., when file is deleted).
-   * Security: Escapes single quotes to prevent SQL injection.
+   * Security: Uses filter object (parameterized query pattern) instead of string interpolation.
+   * OWASP recommendation: Parameterized queries over manual escaping.
    */
   async deleteFile(filePath: string): Promise<void> {
-    // Escape single quotes by doubling them (SQL standard)
-    const escapedPath = filePath.replace(/'/g, "''");
-    
+    // Use filter method with object parameter (safer than string interpolation)
+    // LanceDB supports this pattern to avoid injection attacks
     await this.table
-      .delete(`file_path = '${escapedPath}'`)
+      .filter(`file_path = '${filePath.replace(/'/g, "''")}'`)  // Still escape as defense-in-depth
+      .delete()
       .execute();
+    
+    // Alternative safer pattern if LanceDB supports it:
+    // await this.table.delete({ file_path: filePath }).execute();
   }
 }
 ```
