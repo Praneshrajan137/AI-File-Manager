@@ -252,18 +252,21 @@ export class VectorStore {
   
   /**
    * Delete all chunks for a file (e.g., when file is deleted).
-   * Security: Uses filter object (parameterized query pattern) instead of string interpolation.
-   * OWASP recommendation: Parameterized queries over manual escaping.
+   * Security: Manual escaping is used as LanceDB's filter() method requires string syntax.
+   * Note: This is not true parameterized queries - it's defense-in-depth escaping.
+   * Future: Migrate to object-based delete when LanceDB supports it.
    */
   async deleteFile(filePath: string): Promise<void> {
-    // Use filter method with object parameter (safer than string interpolation)
-    // LanceDB supports this pattern to avoid injection attacks
+    // Escape single quotes to prevent injection (manual escaping pattern)
+    // WARNING: This is NOT parameterized queries - it's string-based escaping
+    const escapedPath = filePath.replace(/'/g, "''");
+    
     await this.table
-      .filter(`file_path = '${filePath.replace(/'/g, "''")}'`)  // Still escape as defense-in-depth
+      .filter(`file_path = '${escapedPath}'`)
       .delete()
       .execute();
     
-    // Alternative safer pattern if LanceDB supports it:
+    // TODO: Replace with true parameterized pattern when LanceDB supports:
     // await this.table.delete({ file_path: filePath }).execute();
   }
 }

@@ -512,10 +512,13 @@ export function validatePath(
     };
   }
   
-  // Step 5: Check against forbidden paths
+  // Step 5: Check against forbidden paths with exact matching or path separator validation
   const forbiddenPaths = getForbiddenPaths();
   for (const forbidden of forbiddenPaths) {
-    if (resolved.startsWith(forbidden)) {
+    // Exact match OR prefix match with path separator
+    // Prevents blocking /etc/password_backup when blocking /etc/passwd
+    if (resolved === forbidden || 
+        resolved.startsWith(forbidden + path.sep)) {
       return {
         valid: false,
         error: 'UNAUTHORIZED_ACCESS',

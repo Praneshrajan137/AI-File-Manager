@@ -86,7 +86,8 @@ function validatePath(requestedPath: string, allowedRoot: string): ValidationRes
   
   // Ensure within sandbox (primary defense)
   // Check with separator to prevent prefix attacks (e.g., /home/user vs /home/user2)
-  if (!resolved.startsWith(normalizedRoot)) {
+  // Allow accessing the allowedRoot directory itself (resolved === allowedRoot)
+  if (!resolved.startsWith(normalizedRoot) && resolved !== allowedRoot) {
     return {
       valid: false,
       error: 'UNAUTHORIZED_ACCESS',
