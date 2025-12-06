@@ -510,6 +510,59 @@ describe('Example', () => {
 
 
 
+## SECURITY PATTERNS TO AVOID (CRITICAL)
+
+These patterns have caused bugs in this project. Review before writing ANY security-related code:
+
+### Path Validation - Root Directory Access
+❌ NEVER: Check only `!resolved.startsWith(normalizedRoot)` when normalizedRoot has path.sep appended
+```typescript
+// BAD - Rejects allowedRoot itself
+const normalizedRoot = allowedRoot + path.sep;
+if (!resolved.startsWith(normalizedRoot)) { /* reject */ }
+```
+
+✅ ALWAYS: Include exception for exact root match
+```typescript
+// GOOD - Allows allowedRoot itself
+const normalizedRoot = allowedRoot + path.sep;
+if (!resolved.startsWith(normalizedRoot) && resolved !== allowedRoot) { /* reject */ }
+```
+
+### SQL/Query String Construction - Injection Risk
+❌ NEVER: Use manual string escaping as primary defense, even with comments acknowledging it's not secure
+```typescript
+// BAD - Manual escaping is insufficient
+const escaped = input.replace(/'/g, "''");
+await table.filter(`field = '${escaped}'`).delete();
+```
+
+✅ ALWAYS: Use parameterized queries, or if impossible, add multiple validation layers + prominent warnings
+```typescript
+// ACCEPTABLE TEMPORARILY - With all these conditions:
+// 1. Validate input type and format FIRST
+if (!input || typeof input !== 'string' || input.includes('\0')) {
+  throw new Error('Invalid input');
+}
+// 2. Escape as defense-in-depth
+const escaped = input.replace(/'/g, "''");
+// 3. Add SECURITY WARNING in JSDoc explaining risks
+// 4. Add TODO URGENT for parameterized queries
+// 5. Document that input MUST come from trusted source only
+
+// BEST - Use when available:
+await table.delete({ field: input }).execute();
+```
+
+### General Security Rules
+- Validate BEFORE transforming (normalize before resolve, type-check before escape)
+- Think about boundary conditions (exact matches, prefix attacks, separator validation)
+- Never rely on escaping alone - use defense in depth
+- Document security limitations prominently in code
+- Mark temporary insecure patterns as TODO URGENT
+
+
+
 ## FORBIDDEN PRACTICES
 
 ❌ Generating code without tests

@@ -252,21 +252,38 @@ export class VectorStore {
   
   /**
    * Delete all chunks for a file (e.g., when file is deleted).
-   * Security: Manual escaping is used as LanceDB's filter() method requires string syntax.
-   * Note: This is not true parameterized queries - it's defense-in-depth escaping.
-   * Future: Migrate to object-based delete when LanceDB supports it.
+   * 
+   * SECURITY WARNING: This implementation uses manual string escaping, which is
+   * inherently risky and NOT compliant with OWASP best practices. The current
+   * approach only escapes single quotes and may be vulnerable to sophisticated
+   * injection attacks depending on LanceDB's filter syntax parser.
+   * 
+   * CRITICAL: This method should ONLY be called with trusted, validated file paths
+   * from the Main Process PathValidator. DO NOT call with user-supplied input.
+   * 
+   * MITIGATION: Input validation must happen at IPC boundary before this method.
+   * 
+   * TODO URGENT: Replace with parameterized queries when LanceDB supports it:
+   * await this.table.delete({ file_path: filePath }).execute();
    */
   async deleteFile(filePath: string): Promise<void> {
-    // Escape single quotes to prevent injection (manual escaping pattern)
-    // WARNING: This is NOT parameterized queries - it's string-based escaping
+    // Step 1: Validate input is a safe file path (basic sanity check)
+    if (!filePath || typeof filePath !== 'string' || filePath.includes('\0')) {
+      throw new Error('Invalid filePath: contains null bytes or invalid type');
+    }
+    
+    // Step 2: Escape single quotes (SQL standard escaping)
+    // WARNING: This is defense-in-depth, NOT a complete security solution
     const escapedPath = filePath.replace(/'/g, "''");
     
+    // Step 3: Execute deletion with escaped path
+    // Risk: Depends on LanceDB's filter parser implementation
     await this.table
       .filter(`file_path = '${escapedPath}'`)
       .delete()
       .execute();
     
-    // TODO: Replace with true parameterized pattern when LanceDB supports:
+    // Future secure implementation:
     // await this.table.delete({ file_path: filePath }).execute();
   }
 }
