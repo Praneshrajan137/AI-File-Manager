@@ -188,10 +188,20 @@ export class FileSystemError extends BaseError {
         message = `File system error (${fsError.code || 'unknown'}): ${message}`;
     }
 
-    return new FileSystemError(code, message, {
+    const error = new FileSystemError(code, message, {
       path,
       operation,
       originalCode: fsError.code,
     });
+    
+    // Store original error for debugging (as non-enumerable property)
+    Object.defineProperty(error, 'originalError', {
+      value: fsError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+    
+    return error;
   }
 }

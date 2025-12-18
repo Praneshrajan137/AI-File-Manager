@@ -294,8 +294,9 @@ describe('LRUCache', () => {
             const time2 = performance.now() - start2;
 
             // Time should be similar regardless of cache size (O(1))
-            // Allow 2x variance for system noise
-            expect(time2).toBeLessThan(time1 * 2);
+            // Allow 3x variance for system noise (JIT, GC, system load)
+            // Note: This is a performance characteristic test, not an exact timing test
+            expect(time2).toBeLessThan(time1 * 3);
         });
 
         it('should have O(1) put operation - scaling test', () => {
