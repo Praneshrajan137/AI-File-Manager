@@ -98,6 +98,10 @@ const App: React.FC = () => {
     setChatOpen(prev => !prev);
   }, []);
 
+  const handleCloseContextMenu = useCallback(() => {
+    setContextMenu(null);
+  }, []);
+
   const handleDeleteShortcut = useCallback(() => {
     if (selectedFiles.length > 0) {
       handleDelete();
@@ -224,21 +228,21 @@ const App: React.FC = () => {
         <FileContextMenu
           file={contextMenu.file}
           position={{ x: contextMenu.x, y: contextMenu.y }}
-          onClose={() => setContextMenu(null)}
+          onClose={handleCloseContextMenu}
           onOpen={() => handleFileDoubleClick(contextMenu.file)}
           onRename={async () => {
             showToast({ type: 'info', message: 'Rename feature coming soon!' });
-            setContextMenu(null);
+            handleCloseContextMenu();
           }}
           onDelete={async () => {
             await deleteFile(contextMenu.file.path);
             await readDirectory(currentPath);
-            setContextMenu(null);
+            handleCloseContextMenu();
           }}
           onCopyPath={() => {
             navigator.clipboard.writeText(contextMenu.file.path);
             showToast({ type: 'success', message: 'Path copied to clipboard' });
-            setContextMenu(null);
+            handleCloseContextMenu();
           }}
         />
       )}
