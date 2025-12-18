@@ -235,6 +235,32 @@ export class FileSystemService implements IFileSystemService {
     }
 
     /**
+     * Create new directory.
+     * 
+     * @param dirPath - Absolute path to directory to create
+     * @returns Success status
+     * @throws FileSystemError if validation fails or creation fails
+     * 
+     * @example
+     * await service.createDirectory('/home/user/new-folder');
+     */
+    async createDirectory(dirPath: string): Promise<{ success: boolean }> {
+        // SECURITY: Validate path first
+        this.validatePathOrThrow(dirPath);
+
+        try {
+            // Create directory (recursive: false to only create final directory)
+            await fs.mkdir(dirPath, { recursive: false });
+            
+            FileSystemLogger.info('Directory created', { path: dirPath });
+            
+            return { success: true };
+        } catch (error: any) {
+            throw this.wrapError(error, dirPath);
+        }
+    }
+
+    /**
      * Validate path without throwing.
      * 
      * @param filePath - Path to validate

@@ -20,15 +20,24 @@
 
 import { app, BrowserWindow, ipcMain } from 'electron';
 import * as path from 'path';
+import * as os from 'os';
 import { ConfigManager } from '@shared/config';
 import { Logger, getLogger } from '@shared/logging';
 import { ErrorHandler } from './middleware/ErrorHandler';
+import { FileWatcher } from './services/FileWatcher';
+import { EventQueue } from './dsa/EventQueue';
 
 /**
  * Reference to main application window.
  * Kept at module level to prevent garbage collection.
  */
 let mainWindow: BrowserWindow | null = null;
+
+/**
+ * Global FileWatcher instance.
+ * Monitors file system changes and emits IPC events to renderer.
+ */
+let globalFileWatcher: FileWatcher | null = null;
 
 /**
  * Determine if running in development mode.
@@ -200,6 +209,80 @@ function createWindow(): void {
   });
 
   logger.info('Main window created successfully');
+  
+  // Start file watcher after window is created
+  startFileWatcher();
+}
+
+/**
+ * Start global file watcher and connect it to IPC.
+ * 
+ * Watches the home directory (or configured roots) for file changes
+ * and emits IPC events to all renderer processes.
+ */
+function startFileWatcher(): void {
+  const logger = getLogger();
+  
+  if (globalFileWatcher) {
+    logger.warn('FileWatcher already started');
+    return;
+  }
+  
+  try {
+    // Create event queue and file watcher
+    const eventQueue = new EventQueue();
+    globalFileWatcher = new FileWatcher(eventQueue);
+    
+    // Connect file watcher events to IPC
+    globalFileWatcher.on('fileCreated', (filePath: string) => {
+      logger.debug('File created, broadcasting to renderer', { path: filePath });
+      BrowserWindow.getAllWindows().forEach(window => {
+        window.webContents.send('FILE_CREATED', filePath);
+      });
+    });
+    
+    globalFileWatcher.on('fileChanged', (filePath: string) => {
+      logger.debug('File changed, broadcasting to renderer', { path: filePath });
+      BrowserWindow.getAllWindows().forEach(window => {
+        window.webContents.send('FILE_CHANGED', filePath);
+      });
+    });
+    
+    globalFileWatcher.on('fileDeleted', (filePath: string) => {
+      logger.debug('File deleted, broadcasting to renderer', { path: filePath });
+      BrowserWindow.getAllWindows().forEach(window => {
+        window.webContents.send('FILE_DELETED', filePath);
+      });
+    });
+    
+    globalFileWatcher.on('error', (error: Error) => {
+      logger.error('FileWatcher error', {
+        error: error.message,
+        stack: error.stack,
+      });
+    });
+    
+    globalFileWatcher.on('ready', () => {
+      logger.info('FileWatcher ready and monitoring file system');
+    });
+    
+    // Start watching home directory
+    const watchPath = os.homedir();
+    globalFileWatcher.start(watchPath, {
+      ignoreInitial: true,
+      awaitWriteFinish: true,
+    }).then(() => {
+      logger.info('FileWatcher started successfully', { path: watchPath });
+    }).catch(error => {
+      logger.error('Failed to start FileWatcher', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  } catch (error) {
+    logger.error('Failed to initialize FileWatcher', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /**
@@ -208,7 +291,22 @@ function createWindow(): void {
  */
 app.whenReady().then(() => {
   const logger = getLogger();
-  logger.info('Electron app ready, creating window');
+  logger.info('Electron app ready, registering IPC handlers and creating window');
+  
+  // CRITICAL: Register all IPC handlers BEFORE creating window
+  // This ensures handlers are ready when renderer process starts
+  try {
+    const { registerAllHandlers } = require('./handlers/ipcHandlers');
+    registerAllHandlers();
+    logger.info('All IPC handlers registered successfully');
+  } catch (error) {
+    logger.error('Failed to register IPC handlers', {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    // Don't create window if handlers failed to register
+    throw error;
+  }
   
   createWindow();
 
@@ -228,6 +326,18 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   const logger = getLogger();
   logger.info('All windows closed');
+  
+  // Stop file watcher
+  if (globalFileWatcher) {
+    globalFileWatcher.stop().then(() => {
+      logger.info('FileWatcher stopped');
+    }).catch(error => {
+      logger.error('Error stopping FileWatcher', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    globalFileWatcher = null;
+  }
   
   if (process.platform !== 'darwin') {
     logger.info('Quitting application');
@@ -266,15 +376,16 @@ if (!gotTheLock) {
  */
 
 /**
- * IPC Handlers will be registered here.
+ * Note: IPC Handlers are registered in app.whenReady() callback above.
+ * All handlers are imported from ./handlers/ipcHandlers.ts and registered
+ * before the main window is created to ensure they're ready when the
+ * renderer process starts making IPC calls.
  * 
- * TODO: Import and register IPC handlers from src/main/handlers/ipcHandlers.ts
- * Example:
- * import { registerFileSystemHandlers } from './handlers/ipcHandlers';
- * registerFileSystemHandlers();
+ * Registered channels:
+ * - FS:* (8 handlers) - File system operations
+ * - NAV:* (4 handlers) - Navigation history
+ * - SEARCH:* (2 handlers) - PathTrie autocomplete
+ * - LLM:* (4 handlers) - Intelligence layer (stub)
+ * 
+ * Total: 18 IPC handlers
  */
-
-// Placeholder IPC handler for testing
-ipcMain.handle('ping', async () => {
-  return 'pong';
-});
