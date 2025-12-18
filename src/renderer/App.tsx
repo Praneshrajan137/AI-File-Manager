@@ -132,7 +132,7 @@ const App: React.FC = () => {
     navigateTo(homeDir).then(() => {
       readDirectory(homeDir);
     });
-  }, []);
+  }, [navigateTo, readDirectory]);
 
   // Additional event handlers (after keyboard shortcut handlers)
   const handleFileClick = (file: FileNode) => {

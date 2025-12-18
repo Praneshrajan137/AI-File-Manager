@@ -17,6 +17,7 @@ interface UseToastReturn {
 export function useToast(): UseToastReturn {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const timeoutRefs = useRef<Map<number, NodeJS.Timeout>>(new Map());
+  const counterRef = useRef<number>(0);
 
   // Cleanup all pending timeouts on unmount
   useEffect(() => {
@@ -27,7 +28,9 @@ export function useToast(): UseToastReturn {
   }, []);
 
   const showToast = useCallback((toast: Omit<ToastMessage, 'id'>) => {
-    const id = Date.now();
+    // Generate unique ID: timestamp + counter ensures no collisions
+    // even if multiple toasts are created in the same millisecond
+    const id = Date.now() * 1000 + (counterRef.current++ % 1000);
     const duration = toast.duration ?? UI_CONSTANTS.TOAST_DURATION;
 
     setToasts(prev => [...prev, { ...toast, id }]);

@@ -1,6 +1,8 @@
 import path from 'path';
 import os from 'os';
 import { ValidationResult } from '@shared/contracts';
+import { SecurityLogger } from '@shared/logging';
+import { ConfigManager } from '@shared/config';
 
 /**
  * PathValidator - Security-hardened path validation.
@@ -63,6 +65,7 @@ export class PathValidator {
     validate(requestedPath: string): ValidationResult {
         // Step 1: Check for empty path
         if (!requestedPath || requestedPath.trim() === '') {
+            SecurityLogger.warn('Empty path validation attempt');
             return {
                 valid: false,
                 error: 'INVALID_PATH',
@@ -72,6 +75,9 @@ export class PathValidator {
 
         // Step 2: Check for null bytes (security vulnerability)
         if (requestedPath.includes('\0')) {
+            SecurityLogger.error('Null byte injection attempt', {
+                path: requestedPath.replace(/\0/g, '[NULL]'),
+            });
             return {
                 valid: false,
                 error: 'INVALID_PATH',
@@ -92,6 +98,10 @@ export class PathValidator {
         // This is CRITICAL - must check BEFORE any normalization
         // because path.normalize() and path.resolve() remove '..'
         if (decoded.includes('..')) {
+            SecurityLogger.error('Path traversal attempt detected', {
+                originalPath: requestedPath,
+                decodedPath: decoded,
+            });
             return {
                 valid: false,
                 error: 'PATH_TRAVERSAL',
@@ -115,6 +125,11 @@ export class PathValidator {
             // But still blocks '/etc/passwd/file' when '/etc/passwd' is forbidden
             if (resolved === forbidden ||
                 resolved.startsWith(forbidden + path.sep)) {
+                SecurityLogger.error('Forbidden path access attempt', {
+                    requestedPath,
+                    resolvedPath: resolved,
+                    forbiddenPath: forbidden,
+                });
                 return {
                     valid: false,
                     error: 'UNAUTHORIZED_ACCESS',
@@ -131,6 +146,11 @@ export class PathValidator {
             : this.allowedRoot + path.sep;
 
         if (!resolved.startsWith(rootWithSep) && resolved !== this.allowedRoot) {
+            SecurityLogger.error('Unauthorized directory access attempt', {
+                requestedPath,
+                resolvedPath: resolved,
+                allowedRoot: this.allowedRoot,
+            });
             return {
                 valid: false,
                 error: 'UNAUTHORIZED_ACCESS',
@@ -139,6 +159,10 @@ export class PathValidator {
         }
 
         // Step 9: All checks passed
+        SecurityLogger.debug('Path validation successful', {
+            requestedPath,
+            resolvedPath: resolved,
+        });
         return { valid: true };
     }
 
@@ -148,6 +172,24 @@ export class PathValidator {
      * @returns Array of absolute paths that should never be accessible
      */
     private getForbiddenPaths(): string[] {
+        // Try to load forbidden paths from config
+        try {
+            const config = ConfigManager.getInstance();
+            const securityConfig = config.get('security');
+            const configPaths = securityConfig.forbiddenPaths;
+            
+            if (configPaths && Array.isArray(configPaths) && configPaths.length > 0) {
+                SecurityLogger.info('Loaded forbidden paths from config', {
+                    count: configPaths.length,
+                });
+                return configPaths;
+            }
+        } catch (error) {
+            // Config not initialized yet, use defaults
+            SecurityLogger.debug('Using default forbidden paths (config not available)');
+        }
+
+        // Fallback to default forbidden paths
         const common = [
             path.join(os.homedir(), '.ssh'),
             path.join(os.homedir(), '.aws'),

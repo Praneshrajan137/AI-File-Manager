@@ -9,10 +9,20 @@
  * - Loads Renderer process (React app)
  * - Sets up IPC handlers for secure communication
  * - Manages application lifecycle
+ * 
+ * Initialization order:
+ * 1. Configuration (ConfigManager)
+ * 2. Logging (Logger)
+ * 3. Error handling (ErrorHandler)
+ * 4. Window creation
+ * 5. IPC handlers
  */
 
 import { app, BrowserWindow, ipcMain } from 'electron';
 import * as path from 'path';
+import { ConfigManager } from '@shared/config';
+import { Logger, getLogger } from '@shared/logging';
+import { ErrorHandler } from './middleware/ErrorHandler';
 
 /**
  * Reference to main application window.
@@ -26,6 +36,74 @@ let mainWindow: BrowserWindow | null = null;
 const isDevelopment = process.env.NODE_ENV === 'development';
 
 /**
+ * Initialize core systems.
+ * 
+ * Must be called before app.whenReady().
+ */
+function initializeSystems(): void {
+  // 1. Initialize Configuration
+  ConfigManager.initialize({
+    watchConfig: isDevelopment, // Hot-reload in development
+    onConfigChange: (newConfig) => {
+      const logger = getLogger();
+      logger.info('Configuration changed', {
+        environment: newConfig.app.environment,
+      });
+    },
+  });
+
+  const config = ConfigManager.getInstance();
+
+  // 2. Initialize Logger
+  Logger.initialize({
+    level: config.get('logging').level,
+    console: config.get('logging').console,
+    file: config.get('logging').file,
+    service: config.get('app').name,
+  });
+
+  const logger = getLogger();
+  logger.info('Application starting', {
+    name: config.get('app').name,
+    version: config.get('app').version,
+    environment: config.get('app').environment,
+    nodeVersion: process.version,
+    platform: process.platform,
+  });
+
+  // 3. Initialize Error Handler
+  ErrorHandler.initialize({
+    exitOnProgrammerError: !isDevelopment,
+    logger: (message, context) => {
+      logger.error(message, context);
+    },
+    onOperationalError: (error) => {
+      logger.error('Operational error occurred', {
+        code: error.code,
+        message: error.message,
+        metadata: error.metadata,
+      });
+    },
+    onProgrammerError: (error) => {
+      logger.error('Programmer error (bug) occurred', {
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+      });
+    },
+  });
+
+  logger.info('Core systems initialized', {
+    config: 'ready',
+    logging: 'ready',
+    errorHandling: 'ready',
+  });
+}
+
+// Initialize systems before app is ready
+initializeSystems();
+
+/**
  * Create the main application window with security-hardened settings.
  * 
  * SECURITY CRITICAL:
@@ -35,16 +113,25 @@ const isDevelopment = process.env.NODE_ENV === 'development';
  * - preload script - Only way to expose controlled APIs to renderer
  */
 function createWindow(): void {
+  const logger = getLogger();
+  const config = ConfigManager.getInstance();
+  const windowConfig = config.get('window');
+
+  logger.info('Creating main window', {
+    width: windowConfig.width,
+    height: windowConfig.height,
+  });
+
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 800,
-    minHeight: 600,
+    width: windowConfig.width,
+    height: windowConfig.height,
+    minWidth: windowConfig.minWidth,
+    minHeight: windowConfig.minHeight,
     webPreferences: {
       // CRITICAL SECURITY SETTINGS - DO NOT MODIFY
       contextIsolation: true,    // Isolate renderer from Node.js context
       nodeIntegration: false,     // Disable Node.js in renderer
-      sandbox: true,              // Enable OS-level sandboxing
+      sandbox: config.get('security').enableSandbox, // Enable OS-level sandboxing (from config)
       
       // Preload script - bridge between Main and Renderer
       preload: path.join(__dirname, 'preload.js'),
@@ -59,28 +146,34 @@ function createWindow(): void {
     // Window appearance
     backgroundColor: '#ffffff',
     show: false, // Don't show until ready-to-show event
-    title: 'Project-2 File Manager',
+    title: config.get('app').name,
   });
 
   // Load application content
   if (isDevelopment) {
     // Development: Load from webpack dev server
-    mainWindow.loadURL('http://localhost:8080');
+    const devUrl = 'http://localhost:8080';
+    logger.info('Loading development URL', { url: devUrl });
+    mainWindow.loadURL(devUrl);
     
     // Open DevTools in development
     mainWindow.webContents.openDevTools();
   } else {
     // Production: Load from built files
-    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+    const indexPath = path.join(__dirname, '../renderer/index.html');
+    logger.info('Loading production file', { path: indexPath });
+    mainWindow.loadFile(indexPath);
   }
 
   // Show window when ready (prevents flash of white)
   mainWindow.once('ready-to-show', () => {
+    logger.info('Window ready to show');
     mainWindow?.show();
   });
 
   // Handle window close
   mainWindow.on('closed', () => {
+    logger.info('Main window closed');
     mainWindow = null;
   });
 
@@ -95,15 +188,18 @@ function createWindow(): void {
     const isAllowed = allowedOrigins.some(origin => url.startsWith(origin));
     
     if (!isAllowed) {
-      console.warn(`Blocked navigation to: ${url}`);
+      logger.warn('Blocked navigation attempt', { url, allowed: allowedOrigins });
       event.preventDefault();
     }
   });
 
   // Security: Prevent opening new windows
   mainWindow.webContents.setWindowOpenHandler(() => {
+    logger.warn('Blocked attempt to open new window');
     return { action: 'deny' };
   });
+
+  logger.info('Main window created successfully');
 }
 
 /**
@@ -111,10 +207,14 @@ function createWindow(): void {
  * Called when Electron has finished initialization.
  */
 app.whenReady().then(() => {
+  const logger = getLogger();
+  logger.info('Electron app ready, creating window');
+  
   createWindow();
 
   // macOS: Re-create window when dock icon clicked
   app.on('activate', () => {
+    logger.info('App activated (macOS)');
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
@@ -126,7 +226,11 @@ app.whenReady().then(() => {
  * Quit app except on macOS (where apps stay active until Cmd+Q).
  */
 app.on('window-all-closed', () => {
+  const logger = getLogger();
+  logger.info('All windows closed');
+  
   if (process.platform !== 'darwin') {
+    logger.info('Quitting application');
     app.quit();
   }
 });
@@ -138,9 +242,14 @@ app.on('window-all-closed', () => {
 const gotTheLock = app.requestSingleInstanceLock();
 
 if (!gotTheLock) {
+  const logger = getLogger();
+  logger.warn('Another instance is already running, quitting');
   app.quit();
 } else {
   app.on('second-instance', () => {
+    const logger = getLogger();
+    logger.info('Second instance launch attempt, focusing existing window');
+    
     // Someone tried to run a second instance, focus our window
     if (mainWindow) {
       if (mainWindow.isMinimized()) {
@@ -152,22 +261,9 @@ if (!gotTheLock) {
 }
 
 /**
- * Error Handling: Unhandled Promise Rejections
- * Log errors and prevent silent failures.
+ * Note: Error handling is now managed by ErrorHandler.
+ * Unhandled rejections and uncaught exceptions are caught by ErrorHandler.initialize()
  */
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Promise Rejection:', reason);
-  // In production, you might want to log to file or error reporting service
-});
-
-/**
- * Error Handling: Uncaught Exceptions
- * Last resort error handler.
- */
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-  // In production, log to file and potentially restart app
-});
 
 /**
  * IPC Handlers will be registered here.

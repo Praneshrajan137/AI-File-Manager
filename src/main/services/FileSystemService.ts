@@ -5,9 +5,10 @@ import {
     FileNode,
     FileStats,
     ValidationResult,
-    FileSystemError,
 } from '@shared/contracts';
 import { PathValidator } from './PathValidator';
+import { ErrorFactory, FileSystemError } from '@shared/errors';
+import { FileSystemLogger } from '@shared/logging';
 
 /**
  * FileSystemService - Core file system operations with security validation.
@@ -80,7 +81,10 @@ export class FileSystemService implements IFileSystemService {
                     fileNodes.push(fileNode);
                 } catch (statError) {
                     // If stat fails for individual file, skip it but continue
-                    console.warn(`Failed to stat ${fullPath}:`, statError);
+                    FileSystemLogger.warn('Failed to stat file', {
+                        path: fullPath,
+                        error: statError instanceof Error ? statError.message : String(statError),
+                    });
                 }
             }
 
@@ -259,11 +263,14 @@ export class FileSystemService implements IFileSystemService {
         const result = this.validator.validate(filePath);
 
         if (!result.valid) {
-            const error: FileSystemError = {
-                code: result.error as FileSystemError['code'],
-                message: result.details || `Path validation failed: ${result.error}`,
-                path: filePath,
-            };
+            // Use ErrorFactory to create proper FileSystemError
+            const errorCode = result.error as 'PATH_TRAVERSAL' | 'UNAUTHORIZED_ACCESS' | 'INVALID_PATH';
+            const error = ErrorFactory.createFileSystemError(
+                errorCode,
+                filePath,
+                undefined,
+                { details: result.details }
+            );
 
             throw error;
         }
@@ -277,37 +284,19 @@ export class FileSystemService implements IFileSystemService {
      * @returns Structured FileSystemError
      */
     private wrapError(error: any, filePath: string): FileSystemError {
-        let code: FileSystemError['code'] = 'UNKNOWN';
-        let message = error.message || 'Unknown file system error';
-
-        // Map fs error codes to our error codes
-        switch (error.code) {
-            case 'ENOENT':
-                code = 'FILE_NOT_FOUND';
-                message = `File or directory not found: ${filePath}`;
-                break;
-
-            case 'EACCES':
-            case 'EPERM':
-                code = 'PERMISSION_DENIED';
-                message = `Permission denied: ${filePath}`;
-                break;
-
-            case 'ENOSPC':
-                code = 'DISK_FULL';
-                message = `Disk full, cannot write to: ${filePath}`;
-                break;
-
-            default:
-                message = `File system error (${error.code || 'unknown'}): ${message}`;
-        }
-
-        return {
-            code,
-            message,
+        // Use ErrorFactory to create FileSystemError from fs error
+        const fsError = ErrorFactory.fromFsError(error, filePath);
+        
+        // Log the error
+        FileSystemLogger.error('File system operation failed', {
+            code: fsError.code,
             path: filePath,
-            originalError: error,
-        };
+            originalCode: error.code,
+            message: fsError.message,
+        });
+
+        // FileSystemError is now returned directly (not as object literal)
+        return fsError;
     }
 
     /**
