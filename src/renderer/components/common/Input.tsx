@@ -11,6 +11,7 @@ interface InputProps {
   iconPosition?: 'left' | 'right';
   autoFocus?: boolean;
   onKeyPress?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onFocus?: () => void;
   onBlur?: () => void;
   className?: string;
@@ -29,6 +30,7 @@ export const Input: React.FC<InputProps> = ({
   iconPosition = 'left',
   autoFocus = false,
   onKeyPress,
+  onKeyDown,
   onFocus,
   onBlur,
   className = '',
@@ -69,6 +71,7 @@ export const Input: React.FC<InputProps> = ({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyPress={onKeyPress}
+        onKeyDown={onKeyDown}
         onFocus={onFocus}
         onBlur={onBlur}
         placeholder={placeholder}

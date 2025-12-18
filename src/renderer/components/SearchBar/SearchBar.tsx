@@ -40,12 +40,25 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSearch, onSelect }) => {
     setQuery('');
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && query.trim()) {
+      // User pressed Enter - execute search
+      e.preventDefault();
+      onSearch(query);
+      setShowSuggestions(false);
+    } else if (e.key === 'Escape') {
+      // User pressed Escape - close suggestions
+      setShowSuggestions(false);
+    }
+  };
+
   return (
     <div className="relative">
       <SearchInput
         value={query}
         onChange={handleInputChange}
         onFocus={() => query.length >= 2 && setShowSuggestions(true)}
+        onKeyDown={handleKeyDown}
       />
       {showSuggestions && suggestions.length > 0 && (
         <SearchSuggestions

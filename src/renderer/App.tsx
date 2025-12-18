@@ -9,7 +9,7 @@
  * - Context menus and Toast notifications
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import * as os from 'os';
 import { Sidebar } from './components/Sidebar/Sidebar';
 import { Toolbar } from './components/Toolbar/Toolbar';
@@ -118,13 +118,15 @@ const App: React.FC = () => {
 
   useFileWatcher(handleFileWatcherEvent);
 
-  // Keyboard shortcuts with stable handlers
-  useKeyboardShortcuts({
+  // Keyboard shortcuts - memoize shortcuts object to prevent effect churn
+  const shortcuts = useMemo(() => ({
     'Ctrl+Shift+L': handleToggleChat,
     'Alt+Left': handleBack,
     'Alt+Right': handleForward,
     'Delete': handleDeleteShortcut,
-  });
+  }), [handleToggleChat, handleBack, handleForward, handleDeleteShortcut]);
+  
+  useKeyboardShortcuts(shortcuts);
 
   // Load home directory on mount
   useEffect(() => {
