@@ -142,7 +142,7 @@ const App: React.FC = () => {
   const handleFileDoubleClick = async (file: FileNode) => {
     if (file.isDirectory) {
       await navigateTo(file.path);
-      readDirectory(file.path);
+      await readDirectory(file.path); // Await for consistency and proper error handling
     } else {
       showToast({
         type: 'info',

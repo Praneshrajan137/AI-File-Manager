@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 
 export interface Message {
   role: 'user' | 'assistant';
@@ -32,10 +32,15 @@ export function useLLM(): UseLLMReturn {
     total: 0,
     inProgress: false,
   });
+  
+  // Use ref to track loading state to prevent stale closures
+  const loadingRef = useRef<boolean>(false);
 
   const sendQuery = useCallback(async (query: string) => {
-    if (!query.trim() || loading) return;
-
+    // Check loading using ref to avoid stale closure
+    if (!query.trim() || loadingRef.current) return;
+    
+    loadingRef.current = true;
     setLoading(true);
 
     // Add user message
@@ -73,6 +78,7 @@ export function useLLM(): UseLLMReturn {
         });
       });
 
+      loadingRef.current = false;
       setLoading(false);
     } catch (error) {
       console.error('LLM query error:', error);
@@ -87,9 +93,10 @@ export function useLLM(): UseLLMReturn {
         },
       ]);
 
+      loadingRef.current = false;
       setLoading(false);
     }
-  }, [loading]);
+  }, []); // Empty deps - ref and functional updates prevent stale closures
 
   const startIndexing = useCallback(async (path: string) => {
     try {
