@@ -1,0 +1,47 @@
+# electron-builder Configuration
+# Packaging configuration for Windows, macOS, and Linux
+
+appId: com.project2.filemanager
+productName: Project-2 File Manager
+copyright: Copyright © 2025
+
+# Directories
+directories:
+  output: dist-packages
+  buildResources: build
+
+# Files to include
+files:
+  - dist/**/*
+  - node_modules/**/*
+  - package.json
+
+# macOS Configuration
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.productivity
+  icon: build/icon.icns
+
+# Windows Configuration
+win:
+  target:
+    - nsis
+    - portable
+  icon: build/icon.ico
+
+# Linux Configuration
+linux:
+  target:
+    - AppImage
+    - deb
+  category: FileManager
+  icon: build/icon.png
+
+# NSIS installer configuration (Windows)
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true

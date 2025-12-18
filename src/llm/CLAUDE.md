@@ -181,7 +181,7 @@ export class IndexingService {
 ### 2. Vector Store (LanceDB Wrapper)
 ```typescript
 // services/VectorStore.ts
-import lancedb from 'vectordb';
+import lancedb from '@lancedb/lancedb';
 
 interface VectorRecord {
   id: string;

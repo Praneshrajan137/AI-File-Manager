@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <!-- Content Security Policy - CRITICAL SECURITY -->
+  <!-- Only allow resources from same origin, no inline scripts -->
+  <meta 
+    http-equiv="Content-Security-Policy" 
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+  >
+  
+  <title>Project-2 File Manager</title>
+</head>
+<body>
+  <!-- React root element -->
+  <div id="root"></div>
+  
+  <!-- 
+    The bundled JavaScript will be injected here by webpack.
+    In development: webpack-dev-server serves bundle.js
+    In production: electron-builder packages bundle.js
+  -->
+</body>
+</html>
