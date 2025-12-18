@@ -69,23 +69,29 @@ export const FileGrid: React.FC<FileGridProps> = ({
     return <EmptyState />;
   }
 
-  // Calculate responsive height
+  // Calculate responsive height with ResizeObserver for accurate measurements
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerHeight, setContainerHeight] = useState(600);
 
   useEffect(() => {
-    const updateHeight = () => {
-      if (containerRef.current) {
-        const height = containerRef.current.clientHeight;
-        setContainerHeight(height || 600);
-      }
-    };
+    const container = containerRef.current;
+    if (!container) return;
 
-    updateHeight();
-    window.addEventListener('resize', updateHeight);
+    // Use ResizeObserver for accurate layout-aware measurements
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        // Use borderBoxSize for most accurate measurement
+        const height = entry.contentRect.height;
+        if (height > 0) {
+          setContainerHeight(height);
+        }
+      }
+    });
+
+    resizeObserver.observe(container);
 
     return () => {
-      window.removeEventListener('resize', updateHeight);
+      resizeObserver.disconnect();
     };
   }, []);
 

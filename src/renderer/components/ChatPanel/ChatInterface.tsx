@@ -45,8 +45,8 @@ export const ChatInterface: React.FC = () => {
             <p className="text-sm mt-2">Try: "What TypeScript files do I have?"</p>
           </div>
         )}
-        {messages.map((msg, idx) => (
-          <MessageBubble key={idx} message={msg} />
+        {messages.map((msg) => (
+          <MessageBubble key={msg.timestamp} message={msg} />
         ))}
         {loading && (
           <div className="flex items-center gap-2 text-sm text-gray-500">
