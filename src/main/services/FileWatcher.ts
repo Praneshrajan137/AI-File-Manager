@@ -6,6 +6,7 @@ import { FileEvent, EventPriority } from '@shared/contracts';
 
 /**
  * Options for file watching.
+ * Extends chokidar's WatchOptions with sensible defaults for security.
  */
 export interface WatchOptions {
     /** Paths/globs to ignore */
@@ -19,6 +20,15 @@ export interface WatchOptions {
 
     /** Debounce delay - wait for file writes to finish */
     awaitWriteFinish?: boolean | { stabilityThreshold?: number; pollInterval?: number };
+
+    /** Maximum depth to watch (0 = immediate directory only) */
+    depth?: number;
+
+    /** Follow symlinks (default: false for security) */
+    followSymlinks?: boolean;
+
+    /** Silently ignore permission errors (default: true) */
+    ignorePermissionErrors?: boolean;
 }
 
 /**
@@ -98,6 +108,13 @@ export class FileWatcher extends EventEmitter {
                 stabilityThreshold: 100,
                 pollInterval: 50,
             },
+            // CRITICAL: Limit depth to prevent watching entire directory trees
+            // depth: 0 = only watch immediate directory, not subdirectories
+            depth: 0,
+            // Don't follow symlinks (prevents infinite loops and EPERM errors)
+            followSymlinks: false,
+            // Ignore permission errors silently
+            ignorePermissionErrors: true,
         };
 
         const mergedOptions = { ...defaultOptions, ...options };
@@ -290,18 +307,53 @@ export class FileWatcher extends EventEmitter {
      * Get default ignore patterns.
      * 
      * Bug Fix #6: Cross-platform path handling with proper normalization.
+     * CRITICAL: Includes Windows-specific system folder exclusions.
      * 
      * @returns Function that returns true for ignored paths
      */
     private defaultIgnorePatterns(): (filePath: string) => boolean {
         return (filePath: string): boolean => {
             // Bug Fix #6: Normalize path for cross-platform compatibility
-            const normalizedPath = path.normalize(filePath);
+            const normalizedPath = path.normalize(filePath).toLowerCase();
 
             // Ignore hidden files/folders (starts with .)
             const basename = path.basename(normalizedPath);
             if (basename.startsWith('.')) {
                 return true;
+            }
+
+            // CRITICAL: Windows-specific system folders that cause EPERM errors
+            const windowsSystemFolders = [
+                'appdata',
+                'application data',
+                'local settings',
+                'cookies',
+                'my documents',
+                'my music',
+                'my pictures',
+                'my videos',
+                'nethood',
+                'printhood',
+                'recent',
+                'sendto',
+                'start menu',
+                'templates',
+                'temporary internet files',
+                'history',
+                'ntuser',
+                '$recycle.bin',
+                'system volume information',
+                'programdata',
+                'msocache',
+                'recovery',
+                'config.msi',
+            ];
+
+            for (const folder of windowsSystemFolders) {
+                if (normalizedPath.includes(`${path.sep}${folder}`) ||
+                    normalizedPath.includes(`${path.sep}${folder}${path.sep}`)) {
+                    return true;
+                }
             }
 
             // Ignore node_modules (cross-platform)
@@ -315,10 +367,15 @@ export class FileWatcher extends EventEmitter {
                 '.git',
                 '.vscode',
                 '.idea',
+                '.cursor',
                 '__pycache__',
                 'dist',
                 'build',
                 'coverage',
+                'cache',
+                'temp',
+                'tmp',
+                'logs',
             ];
 
             for (const dir of ignoredDirs) {
@@ -330,8 +387,13 @@ export class FileWatcher extends EventEmitter {
 
             // Ignore common temp file patterns
             const ext = path.extname(normalizedPath).toLowerCase();
-            const ignoredExtensions = ['.tmp', '.swp', '.log', '.cache'];
+            const ignoredExtensions = ['.tmp', '.swp', '.log', '.cache', '.lock', '.ldb'];
             if (ignoredExtensions.includes(ext)) {
+                return true;
+            }
+
+            // Ignore Windows-specific temp files
+            if (basename.startsWith('~$') || basename.endsWith('.tmp')) {
                 return true;
             }
 

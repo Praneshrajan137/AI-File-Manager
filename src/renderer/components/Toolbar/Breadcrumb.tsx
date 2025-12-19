@@ -33,7 +33,9 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
         // On Windows: root is "C:\", segments are ["Users", "Documents"]
         // On Unix: root is "/", segments are ["home", "user"]
         const pathSegments = segments.slice(0, idx + 1);
-        const fullPath = root + pathSegments.join(separator);
+        // Only add separator if root doesn't already end with it
+        const needsSeparator = !root.endsWith(separator);
+        const fullPath = root + (needsSeparator ? separator : '') + pathSegments.join(separator);
         const isLast = idx === segments.length - 1;
 
         return (

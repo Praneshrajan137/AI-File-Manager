@@ -36,7 +36,7 @@ const electronAPI = {
          * @returns Array of FileNode objects
          */
         readDirectory: (path: string) =>
-            ipcRenderer.invoke('FS:READ_DIR', path),
+            ipcRenderer.invoke('FS:READ_DIR', { path }),
 
         /**
          * Read file content.
@@ -44,7 +44,7 @@ const electronAPI = {
          * @returns File content as string
          */
         readFile: (path: string) =>
-            ipcRenderer.invoke('FS:READ_FILE', path),
+            ipcRenderer.invoke('FS:READ_FILE', { path }),
 
         /**
          * Write content to file.
@@ -79,7 +79,7 @@ const electronAPI = {
          * @returns FileStats object
          */
         getStats: (path: string) =>
-            ipcRenderer.invoke('FS:GET_STATS', path),
+            ipcRenderer.invoke('FS:GET_STATS', { path }),
     },
 
     /**
@@ -105,7 +105,7 @@ const electronAPI = {
          * @param path - Path to add
          */
         push: (path: string) =>
-            ipcRenderer.invoke('NAV:PUSH', path),
+            ipcRenderer.invoke('NAV:PUSH', { path }),
 
         /**
          * Get navigation state.

@@ -26,6 +26,7 @@ export const FileGrid: React.FC<FileGridProps> = ({
   onFileContextMenu,
   sortBy,
   sortDirection,
+  viewMode,
   loading,
   error
 }) => {

@@ -6,11 +6,16 @@
  */
 
 const path = require('path');
+const webpack = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 
 module.exports = {
     // Target: Electron renderer process (Browser environment)
     target: 'electron-renderer',
+
+    // CRITICAL FIX: Prevent webpack from externalizing Node.js modules
+    // This forces webpack to bundle the polyfills instead of using require()
+    externalsPresets: { node: false },
 
     // Entry point
     entry: './src/renderer/index.tsx',
@@ -19,6 +24,8 @@ module.exports = {
     output: {
         path: path.resolve(__dirname, 'dist/renderer'),
         filename: 'bundle.js',
+        // FIX: Set global object for webpack runtime
+        globalObject: 'globalThis',
     },
 
     // Module resolution
@@ -27,6 +34,13 @@ module.exports = {
         alias: {
             '@shared': path.resolve(__dirname, 'src/shared'),
             '@renderer': path.resolve(__dirname, 'src/renderer'),
+        },
+        fallback: {
+            // Polyfills for Node.js core modules in browser
+            "path": require.resolve("path-browserify"),
+            "os": require.resolve("os-browserify/browser"),
+            "events": require.resolve("events/"),
+            "buffer": require.resolve("buffer/"),
         },
     },
 
@@ -74,6 +88,16 @@ module.exports = {
         new HtmlWebpackPlugin({
             template: './src/renderer/index.html',
             filename: 'index.html',
+        }),
+        // Fix: Provide Node.js globals for browser environment
+        new webpack.ProvidePlugin({
+            process: 'process/browser',
+            Buffer: ['buffer', 'Buffer'],
+        }),
+        // Fix: Define global and process.env variables
+        new webpack.DefinePlugin({
+            'global': 'globalThis',
+            'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'development'),
         }),
     ],
 

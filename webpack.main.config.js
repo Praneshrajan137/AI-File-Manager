@@ -11,13 +11,16 @@ module.exports = {
     // Target: Electron main process (Node.js environment)
     target: 'electron-main',
 
-    // Entry point
-    entry: './src/main/main.ts',
+    // Entry points: main process and preload script
+    entry: {
+        main: './src/main/main.ts',
+        preload: './src/main/preload.ts',
+    },
 
     // Output configuration
     output: {
         path: path.resolve(__dirname, 'dist/main'),
-        filename: 'main.js',
+        filename: '[name].js',  // Creates main.js and preload.js
     },
 
     // Module resolution

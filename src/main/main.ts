@@ -215,16 +215,25 @@ function createWindow(): void {
 }
 
 /**
+ * Current watch path for dynamic file watching.
+ * Updated when user navigates to a new directory.
+ */
+let currentWatchPath: string | null = null;
+
+/**
  * Start global file watcher and connect it to IPC.
  * 
- * Watches the home directory (or configured roots) for file changes
- * and emits IPC events to all renderer processes.
+ * IMPORTANT: Does NOT auto-start watching. The watcher is started
+ * dynamically when user navigates to a directory via IPC handler.
+ * 
+ * This prevents the critical bug of watching the entire home directory
+ * which causes thousands of events and permission errors.
  */
 function startFileWatcher(): void {
   const logger = getLogger();
   
   if (globalFileWatcher) {
-    logger.warn('FileWatcher already started');
+    logger.warn('FileWatcher already initialized');
     return;
   }
   
@@ -256,31 +265,66 @@ function startFileWatcher(): void {
     });
     
     globalFileWatcher.on('error', (error: Error) => {
-      logger.error('FileWatcher error', {
+      // Log errors but don't crash - file watcher errors are non-fatal
+      logger.warn('FileWatcher error (non-fatal)', {
         error: error.message,
-        stack: error.stack,
       });
     });
     
     globalFileWatcher.on('ready', () => {
-      logger.info('FileWatcher ready and monitoring file system');
+      logger.info('FileWatcher ready and monitoring', { path: currentWatchPath });
     });
     
-    // Start watching home directory
-    const watchPath = os.homedir();
-    globalFileWatcher.start(watchPath, {
-      ignoreInitial: true,
-      awaitWriteFinish: true,
-    }).then(() => {
-      logger.info('FileWatcher started successfully', { path: watchPath });
-    }).catch(error => {
-      logger.error('Failed to start FileWatcher', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    // NOTE: Do NOT auto-start watching home directory!
+    // The watcher will be started dynamically when user navigates.
+    logger.info('FileWatcher initialized (not started - waiting for navigation)');
+    
   } catch (error) {
     logger.error('Failed to initialize FileWatcher', {
       error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * Update the watched directory when user navigates.
+ * Called by IPC handlers when FS:READ_DIR is invoked.
+ * 
+ * @param newPath - The new directory to watch (single directory, not recursive)
+ */
+export async function updateWatchPath(newPath: string): Promise<void> {
+  const logger = getLogger();
+  
+  if (!globalFileWatcher) {
+    logger.warn('FileWatcher not initialized, cannot update watch path');
+    return;
+  }
+  
+  // Skip if already watching this path
+  if (currentWatchPath === newPath) {
+    return;
+  }
+  
+  try {
+    // Stop current watcher if running
+    if (globalFileWatcher.isWatching()) {
+      await globalFileWatcher.stop();
+    }
+    
+    // Start watching the new path (non-recursive, single directory)
+    currentWatchPath = newPath;
+    await globalFileWatcher.start(newPath, {
+      ignoreInitial: true,
+      awaitWriteFinish: true,
+      // CRITICAL: Only watch immediate directory, not subdirectories
+      // depth: 0 is not directly supported, but we use ignored patterns
+    });
+    
+    logger.info('FileWatcher updated to watch', { path: newPath });
+  } catch (error) {
+    logger.error('Failed to update FileWatcher path', {
+      error: error instanceof Error ? error.message : String(error),
+      path: newPath,
     });
   }
 }

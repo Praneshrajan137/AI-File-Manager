@@ -25,7 +25,31 @@ import { useFileWatcher } from './hooks/useFileWatcher';
 import { UI_CONSTANTS } from './utils/constants';
 import { FileNode } from '@shared/contracts';
 
-const App: React.FC = () => {
+// Browser compatibility warning component
+const BrowserWarning: React.FC = () => (
+  <div className="flex items-center justify-center h-screen bg-gray-100">
+    <div className="text-center p-8 bg-white rounded-lg shadow-lg max-w-md">
+      <h1 className="text-2xl font-bold text-gray-800 mb-4">
+        ⚡ Electron Required
+      </h1>
+      <p className="text-gray-600 mb-4">
+        This application requires Electron to run. It cannot run in a standard web browser.
+      </p>
+      <div className="bg-gray-50 p-4 rounded border border-gray-200">
+        <p className="text-sm text-gray-700 mb-2 font-semibold">To run the app:</p>
+        <code className="block bg-gray-800 text-green-400 px-3 py-2 rounded text-sm">
+          npx electron .
+        </code>
+      </div>
+      <p className="text-xs text-gray-400 mt-4">
+        window.electronAPI is not available in browser context
+      </p>
+    </div>
+  </div>
+);
+
+// Main application component (assumes electronAPI exists)
+const FileManagerApp: React.FC = () => {
   // Toast notifications (must be before useFileSystem)
   const { toasts, showToast, removeToast } = useToast();
 
@@ -135,13 +159,21 @@ const App: React.FC = () => {
   
   useKeyboardShortcuts(shortcuts);
 
-  // Load home directory on mount
+  // Load home directory on mount (ONCE only)
+  // Using empty dependency array because we only want this to run on initial mount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const homeDir = os.homedir();
-    navigateTo(homeDir).then(() => {
-      readDirectory(homeDir);
-    });
-  }, [navigateTo, readDirectory]);
+    // Async IIFE to handle the initial navigation
+    (async () => {
+      try {
+        await navigateTo(homeDir);
+        await readDirectory(homeDir);
+      } catch (error) {
+        console.error('Failed to load home directory:', error);
+      }
+    })();
+  }, []); // Empty deps - run only on mount
 
   // Additional event handlers (after keyboard shortcut handlers)
   const handleFileClick = (file: FileNode) => {
@@ -262,6 +294,16 @@ const App: React.FC = () => {
       </div>
     </div>
   );
+};
+
+// Wrapper component that checks for Electron context
+const App: React.FC = () => {
+  // Check if running in Electron (electronAPI injected by preload)
+  if (!window.electronAPI) {
+    return <BrowserWarning />;
+  }
+  
+  return <FileManagerApp />;
 };
 
 export default App;
