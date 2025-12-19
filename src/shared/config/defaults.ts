@@ -46,20 +46,10 @@ function getDefaultForbiddenPaths(): string[] {
  */
 function getDefaultAllowedRoots(): string[] {
   const homeDir = os.homedir();
-  
-  if (process.platform === 'win32') {
-    return [
-      path.join(homeDir, 'Documents'),
-      path.join(homeDir, 'Downloads'),
-      path.join(homeDir, 'Desktop'),
-    ];
-  } else {
-    return [
-      path.join(homeDir, 'Documents'),
-      path.join(homeDir, 'Downloads'),
-      path.join(homeDir, 'Desktop'),
-    ];
-  }
+
+  // Include home directory itself to allow navigation to all user folders
+  // (Home, Documents, Downloads, Pictures, Desktop, etc.)
+  return [homeDir];
 }
 
 /**

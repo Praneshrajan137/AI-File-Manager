@@ -30,6 +30,11 @@ export const FileGrid: React.FC<FileGridProps> = ({
   loading,
   error
 }) => {
+  // All hooks must be called before any conditional returns (React Rules of Hooks)
+  // Calculate responsive height with ResizeObserver for accurate measurements
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerHeight, setContainerHeight] = useState(600);
+
   // Memoize sorted files (prevent re-sort on every render)
   const sortedFiles = useMemo(() => {
     return [...files].sort((a, b) => {
@@ -48,31 +53,6 @@ export const FileGrid: React.FC<FileGridProps> = ({
       }
     });
   }, [files, sortBy, sortDirection]);
-
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center h-full">
-        <Spinner size="lg" />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full text-error-500">
-        <p className="text-lg font-medium">Error loading files</p>
-        <p className="text-sm mt-2">{error.message}</p>
-      </div>
-    );
-  }
-
-  if (sortedFiles.length === 0) {
-    return <EmptyState />;
-  }
-
-  // Calculate responsive height with ResizeObserver for accurate measurements
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [containerHeight, setContainerHeight] = useState(600);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -96,12 +76,34 @@ export const FileGrid: React.FC<FileGridProps> = ({
     };
   }, []);
 
+  // Conditional returns AFTER all hooks
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center h-full">
+        <Spinner size="lg" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-error-500">
+        <p className="text-lg font-medium">Error loading files</p>
+        <p className="text-sm mt-2">{error.message}</p>
+      </div>
+    );
+  }
+
+  if (sortedFiles.length === 0) {
+    return <EmptyState />;
+  }
+
   return (
-    <div 
+    <div
       ref={containerRef}
       className="h-full"
-      role="listbox" 
-      aria-label="File list" 
+      role="listbox"
+      aria-label="File list"
       aria-multiselectable="true"
     >
       <FixedSizeList

@@ -35,9 +35,15 @@ export function useFileSystem(options: UseFileSystemOptions = {}): UseFileSystem
       setFiles(result);
       setCurrentPath(path);
     } catch (err: any) {
-      const fsError: FileSystemError = err;
+      // Handle both Error objects and serialized error objects from IPC
+      const message = err?.message || err?.details || (typeof err === 'object' ? JSON.stringify(err) : String(err));
+      const fsError: FileSystemError = {
+        code: err?.code || 'UNKNOWN_ERROR',
+        message: message,
+        path: path,
+      };
       setError(fsError);
-      onError?.(`Failed to read directory: ${fsError.message}`);
+      onError?.(`Failed to read directory: ${message}`);
     } finally {
       setLoading(false);
     }

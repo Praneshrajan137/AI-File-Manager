@@ -34,11 +34,11 @@ import { INavigationService } from '@shared/contracts';
  */
 class NavigationService implements INavigationService {
   private historyStack: HistoryStack;
-  
+
   constructor(historyStack: HistoryStack) {
     this.historyStack = historyStack;
   }
-  
+
   /**
    * Navigate backward in history.
    * 
@@ -46,16 +46,16 @@ class NavigationService implements INavigationService {
    */
   back(): string | null {
     const prevPath = this.historyStack.back();
-    
+
     if (prevPath) {
       IPCLogger.debug('Navigated back', { path: prevPath });
     } else {
       IPCLogger.debug('Cannot navigate back - at start of history');
     }
-    
+
     return prevPath;
   }
-  
+
   /**
    * Navigate forward in history.
    * 
@@ -63,16 +63,16 @@ class NavigationService implements INavigationService {
    */
   forward(): string | null {
     const nextPath = this.historyStack.forward();
-    
+
     if (nextPath) {
       IPCLogger.debug('Navigated forward', { path: nextPath });
     } else {
       IPCLogger.debug('Cannot navigate forward - at end of history');
     }
-    
+
     return nextPath;
   }
-  
+
   /**
    * Add new path to history.
    * 
@@ -84,7 +84,7 @@ class NavigationService implements INavigationService {
     this.historyStack.push(path);
     IPCLogger.debug('Path added to history', { path });
   }
-  
+
   /**
    * Get current navigation state.
    * 
@@ -96,7 +96,7 @@ class NavigationService implements INavigationService {
       canGoForward: this.historyStack.canGoForward(),
     };
   }
-  
+
   /**
    * Get current path without navigating.
    * 
@@ -124,7 +124,7 @@ function getNavigationService(): NavigationService {
     navigationService = new NavigationService(historyStack);
     IPCLogger.info('NavigationService initialized');
   }
-  
+
   return navigationService;
 }
 
@@ -140,15 +140,15 @@ async function handleBack(
   request: unknown
 ): Promise<string | null> {
   checkRateLimit('NAV:BACK');
-  
+
   const service = getNavigationService();
   const prevPath = service.back();
-  
+
   IPCLogger.info('Navigation back requested', {
     prevPath,
     success: prevPath !== null,
   });
-  
+
   return prevPath;
 }
 
@@ -164,15 +164,15 @@ async function handleForward(
   request: unknown
 ): Promise<string | null> {
   checkRateLimit('NAV:FORWARD');
-  
+
   const service = getNavigationService();
   const nextPath = service.forward();
-  
+
   IPCLogger.info('Navigation forward requested', {
     nextPath,
     success: nextPath !== null,
   });
-  
+
   return nextPath;
 }
 
@@ -188,20 +188,27 @@ async function handlePush(
   request: unknown
 ): Promise<{ success: boolean }> {
   checkRateLimit('NAV:PUSH');
-  
-  // Handle both string and object formats
+
+  // Extract path from request - no security validation needed for navigation history
+  // Security is enforced when actually accessing files via FS:* handlers
   let path: string;
   if (typeof request === 'string') {
     path = request;
+  } else if (request && typeof request === 'object' && 'path' in request) {
+    const requestPath = (request as { path: unknown }).path;
+    if (typeof requestPath !== 'string' || requestPath.trim() === '') {
+      throw new TypeError('Field "path" must be a non-empty string');
+    }
+    path = requestPath;
   } else {
-    path = validatePathRequest(request, 'path');
+    throw new TypeError('Request must be a string or object with path property');
   }
-  
+
   const service = getNavigationService();
   service.push(path);
-  
+
   IPCLogger.info('Path pushed to navigation history', { path });
-  
+
   return { success: true };
 }
 
@@ -217,12 +224,12 @@ async function handleGetState(
   request: unknown
 ): Promise<{ canGoBack: boolean; canGoForward: boolean }> {
   // No rate limit for state queries (cheap operation)
-  
+
   const service = getNavigationService();
   const state = service.getState();
-  
+
   IPCLogger.debug('Navigation state requested', state);
-  
+
   return state;
 }
 
@@ -237,28 +244,28 @@ async function handleGetState(
  */
 export function registerNavigationHandlers(): void {
   IPCLogger.info('Registering navigation IPC handlers');
-  
+
   // Register all handlers with error handling middleware
   ipcMain.handle(
     'NAV:BACK',
     withErrorHandling(handleBack, 'NAV:BACK')
   );
-  
+
   ipcMain.handle(
     'NAV:FORWARD',
     withErrorHandling(handleForward, 'NAV:FORWARD')
   );
-  
+
   ipcMain.handle(
     'NAV:PUSH',
     withErrorHandling(handlePush, 'NAV:PUSH')
   );
-  
+
   ipcMain.handle(
     'NAV:GET_STATE',
     withErrorHandling(handleGetState, 'NAV:GET_STATE')
   );
-  
+
   IPCLogger.info('Navigation IPC handlers registered successfully');
 }
 

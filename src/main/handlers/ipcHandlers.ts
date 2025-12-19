@@ -23,6 +23,7 @@ import { registerFileSystemHandlers } from './fileSystemHandlers';
 import { registerNavigationHandlers } from './navigationHandlers';
 import { registerSearchHandlers } from './searchHandlers';
 import { registerLLMHandlers } from './llmHandlers';
+import { registerShellHandlers } from './shellHandlers';
 import { IPCLogger } from '@shared/logging';
 
 /**
@@ -49,32 +50,37 @@ import { IPCLogger } from '@shared/logging';
  */
 export function registerAllHandlers(): void {
   IPCLogger.info('Registering all IPC handlers...');
-  
+
   const startTime = Date.now();
-  
+
   try {
     // Register File System handlers (FS:*)
     // Handles: READ_DIR, READ_FILE, WRITE_FILE, DELETE, MOVE, CREATE_FILE, CREATE_DIR, GET_STATS
     registerFileSystemHandlers();
     IPCLogger.info('✓ File System handlers registered');
-    
+
     // Register Navigation handlers (NAV:*)
     // Handles: BACK, FORWARD, PUSH, GET_STATE
     registerNavigationHandlers();
     IPCLogger.info('✓ Navigation handlers registered');
-    
+
     // Register Search handlers (SEARCH:*)
     // Handles: AUTOCOMPLETE, QUERY
     registerSearchHandlers();
     IPCLogger.info('✓ Search handlers registered');
-    
+
     // Register LLM handlers (LLM:*) - stub implementation
     // Handles: QUERY, INDEX_STATUS, START_INDEXING, STOP_INDEXING
     registerLLMHandlers();
     IPCLogger.info('✓ LLM handlers registered (stub)');
-    
+
+    // Register Shell handlers (CLIPBOARD:*, SHELL:*)
+    // Handles: WRITE_TEXT, OPEN_PATH
+    registerShellHandlers();
+    IPCLogger.info('✓ Shell handlers registered');
+
     const duration = Date.now() - startTime;
-    
+
     IPCLogger.info('All IPC handlers registered successfully', {
       duration_ms: duration,
       handlers: {
@@ -82,7 +88,8 @@ export function registerAllHandlers(): void {
         navigation: 4,
         search: 2,
         llm: 4,
-        total: 18,
+        shell: 2,
+        total: 20,
       },
     });
   } catch (error) {
@@ -105,9 +112,9 @@ export function registerAllHandlers(): void {
  */
 export function unregisterAllHandlers(): void {
   const { ipcMain } = require('electron');
-  
+
   IPCLogger.info('Unregistering all IPC handlers...');
-  
+
   // File System channels
   const fsChannels = [
     'FS:READ_DIR',
@@ -119,7 +126,7 @@ export function unregisterAllHandlers(): void {
     'FS:CREATE_DIR',
     'FS:GET_STATS',
   ];
-  
+
   // Navigation channels
   const navChannels = [
     'NAV:BACK',
@@ -127,13 +134,13 @@ export function unregisterAllHandlers(): void {
     'NAV:PUSH',
     'NAV:GET_STATE',
   ];
-  
+
   // Search channels
   const searchChannels = [
     'SEARCH:AUTOCOMPLETE',
     'SEARCH:QUERY',
   ];
-  
+
   // LLM channels
   const llmChannels = [
     'LLM:QUERY',
@@ -141,18 +148,18 @@ export function unregisterAllHandlers(): void {
     'LLM:START_INDEXING',
     'LLM:STOP_INDEXING',
   ];
-  
+
   const allChannels = [
     ...fsChannels,
     ...navChannels,
     ...searchChannels,
     ...llmChannels,
   ];
-  
+
   for (const channel of allChannels) {
     ipcMain.removeHandler(channel);
   }
-  
+
   IPCLogger.info('All IPC handlers unregistered', {
     channelCount: allChannels.length,
   });

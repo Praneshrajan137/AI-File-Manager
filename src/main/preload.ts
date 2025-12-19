@@ -80,6 +80,22 @@ const electronAPI = {
          */
         getStats: (path: string) =>
             ipcRenderer.invoke('FS:GET_STATS', { path }),
+
+        /**
+         * Get system paths (home, documents, downloads, pictures).
+         * @returns Object with system paths
+         */
+        getSystemPaths: () =>
+            ipcRenderer.invoke('FS:GET_SYSTEM_PATHS'),
+
+        /**
+         * Rename a file or directory.
+         * @param oldPath - Current absolute path
+         * @param newName - New name (not path, just the filename)
+         * @returns Result with success flag and new path
+         */
+        rename: (oldPath: string, newName: string) =>
+            ipcRenderer.invoke('FS:RENAME', { oldPath, newName }),
     },
 
     /**
@@ -217,6 +233,33 @@ const electronAPI = {
                 ipcRenderer.removeListener('FILE_DELETED', handleFileDeleted);
             };
         },
+    },
+
+    /**
+     * Clipboard Operations
+     * Uses Electron's clipboard module for reliable cross-platform support
+     */
+    clipboard: {
+        /**
+         * Write text to clipboard.
+         * @param text - Text to copy
+         */
+        writeText: (text: string) =>
+            ipcRenderer.invoke('CLIPBOARD:WRITE_TEXT', text),
+    },
+
+    /**
+     * Shell Operations
+     * Uses Electron's shell module for OS integration
+     */
+    shell: {
+        /**
+         * Open file with default application.
+         * @param path - Absolute path to file
+         * @returns Error message if failed, empty string if success
+         */
+        openPath: (path: string) =>
+            ipcRenderer.invoke('SHELL:OPEN_PATH', path),
     },
 
     /**

@@ -1,18 +1,43 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Home, Download, FileText, Image } from 'lucide-react';
-import * as os from 'os';
-import * as path from 'path';
 
 interface QuickAccessProps {
   onNavigate: (path: string) => void;
 }
 
+interface SystemPaths {
+  home: string;
+  documents: string;
+  downloads: string;
+  pictures: string;
+}
+
 export const QuickAccess: React.FC<QuickAccessProps> = ({ onNavigate }) => {
+  const [paths, setPaths] = useState<SystemPaths | null>(null);
+
+  useEffect(() => {
+    // Fetch system paths from main process via IPC
+    window.electronAPI.fs.getSystemPaths()
+      .then(setPaths)
+      .catch(err => console.error('Failed to get system paths:', err));
+  }, []);
+
+  if (!paths) {
+    return (
+      <div className="mb-4">
+        <h3 className="text-xs font-semibold text-gray-500 uppercase px-2 mb-2">
+          Quick Access
+        </h3>
+        <div className="px-2 text-sm text-gray-400">Loading...</div>
+      </div>
+    );
+  }
+
   const quickLinks = [
-    { name: 'Home', icon: Home, path: os.homedir() },
-    { name: 'Documents', icon: FileText, path: path.join(os.homedir(), 'Documents') },
-    { name: 'Downloads', icon: Download, path: path.join(os.homedir(), 'Downloads') },
-    { name: 'Pictures', icon: Image, path: path.join(os.homedir(), 'Pictures') },
+    { name: 'Home', icon: Home, path: paths.home },
+    { name: 'Documents', icon: FileText, path: paths.documents },
+    { name: 'Downloads', icon: Download, path: paths.downloads },
+    { name: 'Pictures', icon: Image, path: paths.pictures },
   ];
 
   return (

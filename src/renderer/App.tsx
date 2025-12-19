@@ -10,13 +10,13 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import * as os from 'os';
 import { Sidebar } from './components/Sidebar/Sidebar';
 import { Toolbar } from './components/Toolbar/Toolbar';
 import { FileGrid } from './components/FileExplorer/FileGrid';
 import { ChatInterface } from './components/ChatPanel/ChatInterface';
 import { FileContextMenu } from './components/ContextMenu/FileContextMenu';
 import { Toast } from './components/common/Toast';
+import { RenameDialog } from './components/common/RenameDialog';
 import { useFileSystem } from './hooks/useFileSystem';
 import { useNavigation } from './hooks/useNavigation';
 import { useToast } from './hooks/useToast';
@@ -84,6 +84,7 @@ const FileManagerApp: React.FC = () => {
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [sidebarWidth, setSidebarWidth] = useState<number>(UI_CONSTANTS.SIDEBAR_DEFAULT_WIDTH);
   const [contextMenu, setContextMenu] = useState<{ file: FileNode; x: number; y: number } | null>(null);
+  const [renameFile, setRenameFile] = useState<FileNode | null>(null);
 
   // Event handlers - wrapped in useCallback to create stable references
   const handleDelete = useCallback(async () => {
@@ -156,17 +157,19 @@ const FileManagerApp: React.FC = () => {
     'Alt+Right': handleForward,
     'Delete': handleDeleteShortcut,
   }), [handleToggleChat, handleBack, handleForward, handleDeleteShortcut]);
-  
+
   useKeyboardShortcuts(shortcuts);
 
   // Load home directory on mount (ONCE only)
   // Using empty dependency array because we only want this to run on initial mount
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    const homeDir = os.homedir();
     // Async IIFE to handle the initial navigation
     (async () => {
       try {
+        // Fetch home directory from main process via IPC (not os-browserify polyfill)
+        const systemPaths = await window.electronAPI.fs.getSystemPaths();
+        const homeDir = systemPaths.home;
         await navigateTo(homeDir);
         await readDirectory(homeDir);
       } catch (error) {
@@ -183,13 +186,23 @@ const FileManagerApp: React.FC = () => {
   const handleFileDoubleClick = async (file: FileNode) => {
     if (file.isDirectory) {
       await navigateTo(file.path);
-      await readDirectory(file.path); // Await for consistency and proper error handling
+      await readDirectory(file.path);
     } else {
-      showToast({
-        type: 'info',
-        message: `Opening ${file.name}...`
-      });
-      // TODO: Implement file opening with default application
+      // Open file with default OS application
+      try {
+        const result = await window.electronAPI.shell.openPath(file.path);
+        if (!result.success) {
+          showToast({
+            type: 'error',
+            message: result.error || 'Failed to open file'
+          });
+        }
+      } catch (error: any) {
+        showToast({
+          type: 'error',
+          message: error.message || 'Failed to open file'
+        });
+      }
     }
   };
 
@@ -222,9 +235,21 @@ const FileManagerApp: React.FC = () => {
           onForward={handleForward}
           currentPath={currentPath}
           onNavigate={handleNavigate}
-          onSearch={(query) => {
-            // Search functionality (integrated with PathTrie)
-            console.log('Search:', query);
+          onSearch={async (query) => {
+            // Search functionality using PathTrie-backed SEARCH:QUERY API
+            try {
+              const searchResults = await window.electronAPI.search.query(query, currentPath);
+              if (searchResults.length > 0) {
+                // Update file list to show search results
+                // Note: This temporarily replaces the current directory listing
+                showToast({ type: 'info', message: `Found ${searchResults.length} result(s) for "${query}"` });
+              } else {
+                showToast({ type: 'info', message: `No results found for "${query}"` });
+              }
+            } catch (error: any) {
+              console.error('Search error:', error);
+              showToast({ type: 'error', message: 'Search failed' });
+            }
           }}
           viewMode={viewMode}
           onViewModeChange={setViewMode}
@@ -265,8 +290,8 @@ const FileManagerApp: React.FC = () => {
           position={{ x: contextMenu.x, y: contextMenu.y }}
           onClose={handleCloseContextMenu}
           onOpen={() => handleFileDoubleClick(contextMenu.file)}
-          onRename={async () => {
-            showToast({ type: 'info', message: 'Rename feature coming soon!' });
+          onRename={() => {
+            setRenameFile(contextMenu.file);
             handleCloseContextMenu();
           }}
           onDelete={async () => {
@@ -274,9 +299,13 @@ const FileManagerApp: React.FC = () => {
             await readDirectory(currentPath);
             handleCloseContextMenu();
           }}
-          onCopyPath={() => {
-            navigator.clipboard.writeText(contextMenu.file.path);
-            showToast({ type: 'success', message: 'Path copied to clipboard' });
+          onCopyPath={async () => {
+            try {
+              await window.electronAPI.clipboard.writeText(contextMenu.file.path);
+              showToast({ type: 'success', message: 'Path copied to clipboard' });
+            } catch (error: any) {
+              showToast({ type: 'error', message: 'Failed to copy path' });
+            }
             handleCloseContextMenu();
           }}
         />
@@ -292,6 +321,28 @@ const FileManagerApp: React.FC = () => {
           />
         ))}
       </div>
+
+      {/* Rename Dialog */}
+      <RenameDialog
+        isOpen={renameFile !== null}
+        currentName={renameFile?.name || ''}
+        onConfirm={async (newName) => {
+          if (!renameFile) return;
+          try {
+            const result = await window.electronAPI.fs.rename(renameFile.path, newName);
+            if (result.success) {
+              showToast({ type: 'success', message: `Renamed to ${newName}` });
+              await readDirectory(currentPath);
+            } else {
+              showToast({ type: 'error', message: 'Failed to rename file' });
+            }
+          } catch (error: any) {
+            showToast({ type: 'error', message: error.message || 'Failed to rename file' });
+          }
+          setRenameFile(null);
+        }}
+        onCancel={() => setRenameFile(null)}
+      />
     </div>
   );
 };
@@ -302,7 +353,7 @@ const App: React.FC = () => {
   if (!window.electronAPI) {
     return <BrowserWarning />;
   }
-  
+
   return <FileManagerApp />;
 };
 

@@ -20,6 +20,7 @@
  */
 
 import { ipcMain, IpcMainInvokeEvent } from 'electron';
+import * as fs from 'fs/promises';
 import { FileSystemService } from '@main/services/FileSystemService';
 import {
   validatePathRequest,
@@ -47,24 +48,32 @@ let fileSystemService: FileSystemService | null = null;
  */
 function getFileSystemService(): FileSystemService {
   if (!fileSystemService) {
-    try {
-      const config = ConfigManager.getInstance();
-      const allowedRoots = config.get('fileSystem').allowedRoots;
-      
-      const defaultRoot = allowedRoots && allowedRoots.length > 0
-        ? allowedRoots[0]
-        : os.homedir();
-      
-      fileSystemService = new FileSystemService(defaultRoot);
-      FileSystemLogger.info('FileSystemService initialized', { root: defaultRoot });
-    } catch (error) {
-      // Fallback to home directory if config not available
-      fileSystemService = new FileSystemService(os.homedir());
-      FileSystemLogger.info('FileSystemService initialized with fallback', { root: os.homedir() });
-    }
+    // Always use home directory as allowed root to access all user folders
+    const homeDir = os.homedir();
+    fileSystemService = new FileSystemService(homeDir);
+    FileSystemLogger.info('FileSystemService initialized', { root: homeDir });
   }
-  
+
   return fileSystemService;
+}
+
+/**
+ * Get system paths (home, documents, downloads, pictures).
+ * Used by renderer QuickAccess component.
+ */
+function getSystemPaths(): {
+  home: string;
+  documents: string;
+  downloads: string;
+  pictures: string;
+} {
+  const homeDir = os.homedir();
+  return {
+    home: homeDir,
+    documents: path.join(homeDir, 'Documents'),
+    downloads: path.join(homeDir, 'Downloads'),
+    pictures: path.join(homeDir, 'Pictures'),
+  };
 }
 
 /**
@@ -79,20 +88,20 @@ async function handleReadDirectory(
   request: unknown
 ): Promise<FileNode[]> {
   checkRateLimit('FS:READ_DIR');
-  
+
   // Validate and extract path
   const dirPath = validatePathRequest(request, 'path');
-  
+
   FileSystemLogger.info('Reading directory', { path: dirPath });
-  
+
   const service = getFileSystemService();
   const files = await service.readDirectory(dirPath);
-  
+
   FileSystemLogger.info('Directory read successful', {
     path: dirPath,
     fileCount: files.length,
   });
-  
+
   return files;
 }
 
@@ -108,20 +117,20 @@ async function handleReadFile(
   request: unknown
 ): Promise<{ content: string; encoding: string }> {
   checkRateLimit('FS:READ_FILE');
-  
+
   // Validate and extract path
   const filePath = validatePathRequest(request, 'path');
-  
+
   FileSystemLogger.info('Reading file', { path: filePath });
-  
+
   const service = getFileSystemService();
   const content = await service.readFile(filePath);
-  
+
   FileSystemLogger.info('File read successful', {
     path: filePath,
     contentLength: content.length,
   });
-  
+
   return { content, encoding: 'utf-8' };
 }
 
@@ -137,28 +146,28 @@ async function handleWriteFile(
   request: unknown
 ): Promise<{ success: boolean }> {
   checkRateLimit('FS:WRITE_FILE');
-  
+
   // Validate request schema
   validateRequestSchema(request, {
     path: 'string',
     content: 'string',
   });
-  
+
   const { path: filePath, content } = request as { path: string; content: string };
-  
+
   // Validate path
   validatePathsOrThrow([filePath]);
-  
+
   FileSystemLogger.info('Writing file', {
     path: filePath,
     contentLength: content.length,
   });
-  
+
   const service = getFileSystemService();
   const result = await service.writeFile(filePath, content);
-  
+
   FileSystemLogger.info('File write successful', { path: filePath });
-  
+
   return result;
 }
 
@@ -174,32 +183,32 @@ async function handleDelete(
   request: unknown
 ): Promise<{ success: boolean }> {
   checkRateLimit('FS:DELETE');
-  
+
   // Validate request has path
   if (!request || typeof request !== 'object' || !('path' in request)) {
     throw new TypeError('Request missing required field: path');
   }
-  
+
   const { path: filePath, recursive } = request as { path: string; recursive?: boolean };
-  
+
   // Validate path
   validatePathsOrThrow([filePath]);
-  
+
   // Validate recursive flag if present
   if (recursive !== undefined && typeof recursive !== 'boolean') {
     throw new TypeError('Field "recursive" must be a boolean');
   }
-  
+
   FileSystemLogger.info('Deleting file/directory', {
     path: filePath,
     recursive: recursive || false,
   });
-  
+
   const service = getFileSystemService();
   const result = await service.delete(filePath, recursive);
-  
+
   FileSystemLogger.info('Delete successful', { path: filePath });
-  
+
   return result;
 }
 
@@ -215,31 +224,31 @@ async function handleMove(
   request: unknown
 ): Promise<{ success: boolean; newPath: string }> {
   checkRateLimit('FS:MOVE');
-  
+
   // Validate request schema
   validateRequestSchema(request, {
     source: 'string',
     destination: 'string',
   });
-  
+
   const { source, destination } = request as { source: string; destination: string };
-  
+
   // Validate both paths
   validatePathsOrThrow([source, destination]);
-  
+
   FileSystemLogger.info('Moving file/directory', {
     source,
     destination,
   });
-  
+
   const service = getFileSystemService();
   const result = await service.move(source, destination);
-  
+
   FileSystemLogger.info('Move successful', {
     source,
     destination: result.newPath,
   });
-  
+
   return result;
 }
 
@@ -255,36 +264,36 @@ async function handleCreateFile(
   request: unknown
 ): Promise<{ success: boolean; path: string }> {
   checkRateLimit('FS:CREATE_FILE');
-  
+
   // Validate request schema
   validateRequestSchema(request, {
     path: 'string',
     name: 'string',
   });
-  
+
   const { path: dirPath, name } = request as { path: string; name: string };
-  
+
   // Validate directory path
   validatePathsOrThrow([dirPath]);
-  
+
   // Construct full file path
   const fullPath = path.join(dirPath, name);
-  
+
   // Validate full path (security check)
   validatePathsOrThrow([fullPath]);
-  
+
   FileSystemLogger.info('Creating file', {
     directory: dirPath,
     name,
     fullPath,
   });
-  
+
   // Create empty file
   const service = getFileSystemService();
   await service.writeFile(fullPath, '');
-  
+
   FileSystemLogger.info('File created successfully', { path: fullPath });
-  
+
   return { success: true, path: fullPath };
 }
 
@@ -300,36 +309,36 @@ async function handleCreateDirectory(
   request: unknown
 ): Promise<{ success: boolean; path: string }> {
   checkRateLimit('FS:CREATE_DIR');
-  
+
   // Validate request schema
   validateRequestSchema(request, {
     path: 'string',
     name: 'string',
   });
-  
+
   const { path: parentPath, name } = request as { path: string; name: string };
-  
+
   // Validate parent path
   validatePathsOrThrow([parentPath]);
-  
+
   // Construct full directory path
   const fullPath = path.join(parentPath, name);
-  
+
   // Validate full path (security check)
   validatePathsOrThrow([fullPath]);
-  
+
   FileSystemLogger.info('Creating directory', {
     parent: parentPath,
     name,
     fullPath,
   });
-  
+
   // Create directory using FileSystemService
   const service = getFileSystemService();
   await service.createDirectory(fullPath);
-  
+
   FileSystemLogger.info('Directory created successfully', { path: fullPath });
-  
+
   return { success: true, path: fullPath };
 }
 
@@ -345,21 +354,21 @@ async function handleGetStats(
   request: unknown
 ): Promise<FileStats> {
   checkRateLimit('FS:GET_STATS');
-  
+
   // Validate and extract path
   const filePath = validatePathRequest(request, 'path');
-  
+
   FileSystemLogger.info('Getting file stats', { path: filePath });
-  
+
   const service = getFileSystemService();
   const stats = await service.getStats(filePath);
-  
+
   FileSystemLogger.debug('File stats retrieved', {
     path: filePath,
     size: stats.size,
     isDirectory: stats.isDirectory,
   });
-  
+
   return stats;
 }
 
@@ -374,47 +383,124 @@ async function handleGetStats(
  */
 export function registerFileSystemHandlers(): void {
   FileSystemLogger.info('Registering file system IPC handlers');
-  
+
   // Register all handlers with error handling middleware
   ipcMain.handle(
     'FS:READ_DIR',
     withErrorHandling(handleReadDirectory, 'FS:READ_DIR')
   );
-  
+
   ipcMain.handle(
     'FS:READ_FILE',
     withErrorHandling(handleReadFile, 'FS:READ_FILE')
   );
-  
+
   ipcMain.handle(
     'FS:WRITE_FILE',
     withErrorHandling(handleWriteFile, 'FS:WRITE_FILE')
   );
-  
+
   ipcMain.handle(
     'FS:DELETE',
     withErrorHandling(handleDelete, 'FS:DELETE')
   );
-  
+
   ipcMain.handle(
     'FS:MOVE',
     withErrorHandling(handleMove, 'FS:MOVE')
   );
-  
+
   ipcMain.handle(
     'FS:CREATE_FILE',
     withErrorHandling(handleCreateFile, 'FS:CREATE_FILE')
   );
-  
+
   ipcMain.handle(
     'FS:CREATE_DIR',
     withErrorHandling(handleCreateDirectory, 'FS:CREATE_DIR')
   );
-  
+
   ipcMain.handle(
     'FS:GET_STATS',
     withErrorHandling(handleGetStats, 'FS:GET_STATS')
   );
-  
+
+  // System paths handler (no validation needed - returns constant paths)
+  ipcMain.handle('FS:GET_SYSTEM_PATHS', async () => {
+    FileSystemLogger.debug('Getting system paths');
+    return getSystemPaths();
+  });
+
+  ipcMain.handle(
+    'FS:RENAME',
+    withErrorHandling(handleRename, 'FS:RENAME')
+  );
+
   FileSystemLogger.info('File system IPC handlers registered successfully');
 }
+
+/**
+ * Handler: FS:RENAME
+ * Rename a file or directory.
+ * 
+ * SECURITY: Both old and new paths must be within allowed root.
+ * New name cannot contain path separators (prevents directory traversal).
+ * 
+ * Input: { oldPath: string, newName: string }
+ * Output: { success: boolean, newPath: string }
+ */
+async function handleRename(
+  event: IpcMainInvokeEvent,
+  request: unknown
+): Promise<{ success: boolean; newPath: string }> {
+  checkRateLimit('FS:RENAME');
+
+  // Validate request schema
+  validateRequestSchema(request, {
+    oldPath: 'string',
+    newName: 'string',
+  });
+
+  const { oldPath, newName } = request as { oldPath: string; newName: string };
+
+  // SECURITY: Validate new name doesn't contain path separators
+  // This prevents renaming to "../../../etc/passwd" or similar attacks
+  if (newName.includes('/') || newName.includes('\\')) {
+    throw new Error('New name cannot contain path separators');
+  }
+
+  // SECURITY: Validate new name isn't empty or just whitespace
+  if (!newName.trim()) {
+    throw new Error('New name cannot be empty');
+  }
+
+  // SECURITY: Validate new name doesn't start with '..' 
+  if (newName.startsWith('..')) {
+    throw new Error('Invalid file name');
+  }
+
+  // Validate old path is within allowed root
+  validatePathsOrThrow([oldPath]);
+
+  // Construct new path (same directory, different name)
+  const directory = path.dirname(oldPath);
+  const newPath = path.join(directory, newName);
+
+  // SECURITY: Validate new path is also within allowed root
+  // (should always be true if above checks pass, but defense in depth)
+  validatePathsOrThrow([newPath]);
+
+  FileSystemLogger.info('Renaming file', {
+    oldPath,
+    newPath,
+    newName,
+  });
+
+  // Perform rename
+  await fs.rename(oldPath, newPath);
+
+  FileSystemLogger.info('File renamed successfully', { oldPath, newPath });
+
+  return { success: true, newPath };
+}
+

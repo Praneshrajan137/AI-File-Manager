@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { DirectoryTreeNode } from './DirectoryTreeNode';
 import { FileNode } from '@shared/contracts';
-import * as os from 'os';
 
 interface DirectoryTreeProps {
   rootPath?: string;
@@ -9,17 +8,32 @@ interface DirectoryTreeProps {
 }
 
 export const DirectoryTree: React.FC<DirectoryTreeProps> = ({
-  rootPath = os.homedir(),
+  rootPath,
   onNavigate
 }) => {
   const [root, setRoot] = useState<FileNode | null>(null);
+  const [effectiveRootPath, setEffectiveRootPath] = useState<string | null>(rootPath || null);
 
+  // Fetch home directory from main process if no rootPath provided
   useEffect(() => {
+    if (!rootPath) {
+      window.electronAPI.fs.getSystemPaths()
+        .then((paths) => setEffectiveRootPath(paths.home))
+        .catch((err) => console.error('Failed to get system paths:', err));
+    } else {
+      setEffectiveRootPath(rootPath);
+    }
+  }, [rootPath]);
+
+  // Load root directory stats once we have the path
+  useEffect(() => {
+    if (!effectiveRootPath) return;
+
     const loadRoot = async () => {
       try {
-        const stats = await window.electronAPI.fs.getStats(rootPath);
+        const stats = await window.electronAPI.fs.getStats(effectiveRootPath);
         setRoot({
-          path: rootPath,
+          path: effectiveRootPath,
           name: 'Home',
           isDirectory: true,
           size: 0,
@@ -33,7 +47,7 @@ export const DirectoryTree: React.FC<DirectoryTreeProps> = ({
     };
 
     loadRoot();
-  }, [rootPath]);
+  }, [effectiveRootPath]);
 
   if (!root) return null;
 

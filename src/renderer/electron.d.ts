@@ -16,6 +16,8 @@ interface ElectronAPI {
         delete: (path: string, recursive?: boolean) => Promise<{ success: boolean }>;
         move: (source: string, destination: string) => Promise<{ success: boolean; newPath: string }>;
         getStats: (path: string) => Promise<any>;
+        getSystemPaths: () => Promise<{ home: string; documents: string; downloads: string; pictures: string }>;
+        rename: (oldPath: string, newName: string) => Promise<{ success: boolean; newPath: string }>;
     };
 
     navigation: {
@@ -39,6 +41,14 @@ interface ElectronAPI {
 
     fileWatcher: {
         subscribe: (callback: (event: { type: string; path: string }) => void) => () => void;
+    };
+
+    clipboard: {
+        writeText: (text: string) => Promise<{ success: boolean }>;
+    };
+
+    shell: {
+        openPath: (path: string) => Promise<{ success: boolean; error?: string }>;
     };
 
     ping: () => Promise<string>;
