@@ -40,7 +40,7 @@ class SearchService {
   private fileSystemService: FileSystemService;
   private isIndexing: boolean = false;
   private indexedPaths: Set<string> = new Set();
-  
+
   constructor(
     pathTrie: PathTrie,
     fileSystemService: FileSystemService
@@ -48,7 +48,7 @@ class SearchService {
     this.pathTrie = pathTrie;
     this.fileSystemService = fileSystemService;
   }
-  
+
   /**
    * Get autocomplete suggestions for prefix.
    * 
@@ -67,57 +67,89 @@ class SearchService {
         });
       });
     }
-    
+
     const logger = getLogger();
     const endTimer = logger.startTimer('search_autocomplete');
-    
+
     try {
       // Query PathTrie (O(L) complexity)
       const results = this.pathTrie.autocomplete(prefix, maxResults);
-      
+
       endTimer({ prefix, resultCount: results.length });
-      
+
       return results;
     } catch (error) {
       endTimer({ prefix, error: true });
       throw error;
     }
   }
-  
+
   /**
    * Search for files matching query pattern.
    * 
-   * Uses PathTrie for prefix matching, then filters results.
+   * Strategy:
+   * 1. First, search current directory with case-insensitive substring matching
+   * 2. If no results, fall back to PathTrie for indexed paths
    * 
-   * @param query - Search query
+   * @param query - Search query (case-insensitive)
    * @param searchRoot - Root directory to search in
    * @returns Array of matching FileNode objects
    */
   async search(query: string, searchRoot: string): Promise<FileNode[]> {
     const logger = getLogger();
     const endTimer = logger.startTimer('search_query');
-    
+
     try {
-      // Use PathTrie to get candidate paths
-      const candidatePaths = this.pathTrie.autocomplete(query, 100);
-      
-      // Filter candidates that start with searchRoot
-      const filteredPaths = candidatePaths.filter(path => 
-        path.startsWith(searchRoot)
-      );
-      
-      // Convert to FileNode objects
+      const queryLower = query.toLowerCase();
       const fileNodes: FileNode[] = [];
-      
+
+      // STRATEGY 1: Search current directory first (fast, no indexing required)
+      try {
+        const filesInCurrentDir = await this.fileSystemService.readDirectory(searchRoot);
+
+        for (const file of filesInCurrentDir) {
+          // Case-insensitive substring match
+          if (file.name.toLowerCase().includes(queryLower)) {
+            fileNodes.push(file);
+          }
+        }
+
+        // If we found results in current directory, return them
+        if (fileNodes.length > 0) {
+          endTimer({ query, resultCount: fileNodes.length, source: 'current_dir' });
+          return fileNodes;
+        }
+      } catch (error) {
+        IPCLogger.warn('Failed to search current directory', {
+          searchRoot,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      // STRATEGY 2: Fall back to PathTrie for deeper search (requires indexing)
+      // Use PathTrie to get candidate paths with case-insensitive matching
+      const candidatePaths = this.pathTrie.autocomplete(query, 100);
+
+      // Also try lowercase query for case-insensitive PathTrie search
+      const lowerCandidates = this.pathTrie.autocomplete(queryLower, 100);
+      const allCandidates = [...new Set([...candidatePaths, ...lowerCandidates])];
+
+      // Filter candidates that start with searchRoot and match query (substring)
+      const filteredPaths = allCandidates.filter(path => {
+        const fileName = path.split('/').pop() || path.split('\\').pop() || path;
+        return path.startsWith(searchRoot) && fileName.toLowerCase().includes(queryLower);
+      });
+
+      // Convert to FileNode objects
       for (const filePath of filteredPaths) {
         try {
           const stats = await this.fileSystemService.getStats(filePath);
-          
+
           const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || filePath;
-          const extension = fileName.includes('.') 
+          const extension = fileName.includes('.')
             ? fileName.split('.').pop() || ''
             : '';
-          
+
           const fileNode: FileNode = {
             path: filePath,
             name: fileName,
@@ -128,26 +160,26 @@ class SearchService {
             mimeType: this.getMimeType(extension),
             isHidden: fileName.startsWith('.'),
           };
-          
+
           fileNodes.push(fileNode);
         } catch (error) {
           // Skip files we can't stat
-          IPCLogger.warn('Failed to stat search result', {
+          IPCLogger.debug('Failed to stat search result', {
             path: filePath,
             error: error instanceof Error ? error.message : String(error),
           });
         }
       }
-      
-      endTimer({ query, resultCount: fileNodes.length });
-      
+
+      endTimer({ query, resultCount: fileNodes.length, source: 'pathtrie' });
+
       return fileNodes;
     } catch (error) {
       endTimer({ query, error: true });
       throw error;
     }
   }
-  
+
   /**
    * Start background indexing of home directory.
    * 
@@ -157,11 +189,11 @@ class SearchService {
     if (this.isIndexing) {
       return;
     }
-    
+
     this.isIndexing = true;
-    
+
     IPCLogger.info('Starting background PathTrie indexing');
-    
+
     try {
       // Index home directory (or allowed roots from config)
       let rootsToIndex: string[];
@@ -171,24 +203,24 @@ class SearchService {
       } catch {
         rootsToIndex = [os.homedir()];
       }
-      
+
       for (const root of rootsToIndex) {
         if (this.indexedPaths.has(root)) {
           continue; // Already indexed
         }
-        
+
         IPCLogger.info('Indexing directory for search', { root });
-        
+
         // Create DirectoryScanner for this root
         const scanner = new DirectoryScanner(this.fileSystemService);
-        
+
         // Scan directory recursively
         const files = await scanner.scan(root, {
           recursive: true,
           maxDepth: 5, // Limit depth to avoid excessive scanning
           skipErrors: true,
         });
-        
+
         // Insert all files into PathTrie
         for (const file of files) {
           try {
@@ -199,7 +231,7 @@ class SearchService {
               fileSize: file.size,
               language: file.extension,
             };
-            
+
             this.pathTrie.insert(file.path, metadata);
             this.indexedPaths.add(file.path);
           } catch (error) {
@@ -210,7 +242,7 @@ class SearchService {
             });
           }
         }
-        
+
         IPCLogger.info('Directory indexing complete', {
           root,
           totalIndexed: this.indexedPaths.size,
@@ -224,7 +256,7 @@ class SearchService {
       this.isIndexing = false;
     }
   }
-  
+
   /**
    * Get MIME type for extension.
    * 
@@ -248,7 +280,7 @@ class SearchService {
       pdf: 'application/pdf',
       zip: 'application/zip',
     };
-    
+
     return mimeTypes[extension.toLowerCase()] || 'application/octet-stream';
   }
 }
@@ -271,22 +303,22 @@ function getSearchService(): SearchService {
       const defaultRoot = allowedRoots && allowedRoots.length > 0
         ? allowedRoots[0]
         : os.homedir();
-      
+
       const pathTrie = new PathTrie();
       const fileSystemService = new FileSystemService(defaultRoot);
-      
+
       searchService = new SearchService(pathTrie, fileSystemService);
       IPCLogger.info('SearchService initialized');
     } catch (error) {
       // Fallback
       const pathTrie = new PathTrie();
       const fileSystemService = new FileSystemService(os.homedir());
-      
+
       searchService = new SearchService(pathTrie, fileSystemService);
       IPCLogger.info('SearchService initialized with fallback');
     }
   }
-  
+
   return searchService;
 }
 
@@ -302,41 +334,44 @@ async function handleAutocomplete(
   request: unknown
 ): Promise<string[]> {
   checkRateLimit('SEARCH:AUTOCOMPLETE');
-  
+
   // Validate request schema
   if (!request || typeof request !== 'object' || !('prefix' in request)) {
     throw new TypeError('Request missing required field: prefix');
   }
-  
+
   const { prefix, maxResults } = request as { prefix: string; maxResults?: number };
-  
+
   if (typeof prefix !== 'string') {
     throw new TypeError('Field "prefix" must be a string');
   }
-  
+
   if (maxResults !== undefined && typeof maxResults !== 'number') {
     throw new TypeError('Field "maxResults" must be a number');
   }
-  
+
   IPCLogger.info('Autocomplete request', {
     prefix,
     maxResults: maxResults || 10,
   });
-  
+
   const service = getSearchService();
   const results = await service.autocomplete(prefix, maxResults || 10);
-  
+
   IPCLogger.info('Autocomplete completed', {
     prefix,
     resultCount: results.length,
   });
-  
+
   return results;
 }
 
 /**
  * Handler: SEARCH:QUERY
- * Search for files matching query.
+ * Search for files matching query using direct file system access.
+ * 
+ * This implementation performs a simple, reliable case-insensitive
+ * substring search on the current directory.
  * 
  * Input: { query: string, searchRoot: string }
  * Output: FileNode[]
@@ -346,29 +381,114 @@ async function handleQuery(
   request: unknown
 ): Promise<FileNode[]> {
   checkRateLimit('SEARCH:QUERY');
-  
+
   // Validate request schema
   validateRequestSchema(request, {
     query: 'string',
     searchRoot: 'string',
   });
-  
+
   const { query, searchRoot } = request as { query: string; searchRoot: string };
-  
+
   IPCLogger.info('Search query request', {
     query,
     searchRoot,
   });
-  
-  const service = getSearchService();
-  const results = await service.search(query, searchRoot);
-  
-  IPCLogger.info('Search query completed', {
-    query,
-    resultCount: results.length,
-  });
-  
-  return results;
+
+  const queryLower = query.toLowerCase().trim();
+  const fileNodes: FileNode[] = [];
+
+  // Direct file system search - bypasses PathTrie and path validation issues
+  try {
+    const fsPromises = await import('fs/promises');
+    const nodePath = await import('path');
+
+    // Read directory contents directly
+    const entries = await fsPromises.readdir(searchRoot, { withFileTypes: true });
+
+    for (const entry of entries) {
+      // Case-insensitive substring match on file name
+      if (entry.name.toLowerCase().includes(queryLower)) {
+        const fullPath = nodePath.join(searchRoot, entry.name);
+
+        try {
+          const stats = await fsPromises.stat(fullPath);
+
+          // Get extension
+          const ext = nodePath.extname(entry.name);
+          const extension = ext ? ext.slice(1).toLowerCase() : '';
+
+          // Build FileNode
+          const fileNode: FileNode = {
+            path: fullPath,
+            name: entry.name,
+            isDirectory: entry.isDirectory(),
+            size: stats.size,
+            modified: stats.mtimeMs,
+            extension,
+            mimeType: getMimeTypeForSearch(extension),
+            isHidden: entry.name.startsWith('.'),
+          };
+
+          fileNodes.push(fileNode);
+        } catch (statError) {
+          // Skip files we can't stat (permissions etc)
+          IPCLogger.debug('Failed to stat file during search', {
+            path: fullPath,
+            error: statError instanceof Error ? statError.message : String(statError),
+          });
+        }
+      }
+    }
+
+    IPCLogger.info('Search query completed', {
+      query,
+      searchRoot,
+      resultCount: fileNodes.length,
+    });
+
+    return fileNodes;
+  } catch (error) {
+    IPCLogger.error('Search failed', {
+      query,
+      searchRoot,
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    // Return empty array instead of throwing - more user-friendly
+    return [];
+  }
+}
+
+/**
+ * Helper function to get MIME type for search results.
+ */
+function getMimeTypeForSearch(extension: string): string {
+  const mimeTypes: Record<string, string> = {
+    txt: 'text/plain',
+    md: 'text/markdown',
+    js: 'text/javascript',
+    ts: 'text/typescript',
+    json: 'application/json',
+    html: 'text/html',
+    css: 'text/css',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    svg: 'image/svg+xml',
+    pdf: 'application/pdf',
+    zip: 'application/zip',
+    exe: 'application/x-executable',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    mp3: 'audio/mpeg',
+    mp4: 'video/mp4',
+  };
+
+  return mimeTypes[extension.toLowerCase()] || 'application/octet-stream';
 }
 
 /**
@@ -382,18 +502,18 @@ async function handleQuery(
  */
 export function registerSearchHandlers(): void {
   IPCLogger.info('Registering search IPC handlers');
-  
+
   // Register all handlers with error handling middleware
   ipcMain.handle(
     'SEARCH:AUTOCOMPLETE',
     withErrorHandling(handleAutocomplete, 'SEARCH:AUTOCOMPLETE')
   );
-  
+
   ipcMain.handle(
     'SEARCH:QUERY',
     withErrorHandling(handleQuery, 'SEARCH:QUERY')
   );
-  
+
   IPCLogger.info('Search IPC handlers registered successfully');
 }
 

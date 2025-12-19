@@ -62,6 +62,7 @@ const FileManagerApp: React.FC = () => {
     currentPath,
     deleteFile,
     moveFile,
+    setSearchResults,
   } = useFileSystem({
     onError: (message) => showToast({ type: 'error', message }),
     onSuccess: (message) => showToast({ type: 'success', message }),
@@ -236,14 +237,22 @@ const FileManagerApp: React.FC = () => {
           currentPath={currentPath}
           onNavigate={handleNavigate}
           onSearch={async (query) => {
+            // Empty query = clear search and show current directory
+            if (!query || query.trim() === '') {
+              await readDirectory(currentPath);
+              return;
+            }
+
             // Search functionality using PathTrie-backed SEARCH:QUERY API
             try {
               const searchResults = await window.electronAPI.search.query(query, currentPath);
               if (searchResults.length > 0) {
                 // Update file list to show search results
-                // Note: This temporarily replaces the current directory listing
+                setSearchResults(searchResults);
                 showToast({ type: 'info', message: `Found ${searchResults.length} result(s) for "${query}"` });
               } else {
+                // Clear results and show "no results" message
+                setSearchResults([]);
                 showToast({ type: 'info', message: `No results found for "${query}"` });
               }
             } catch (error: any) {

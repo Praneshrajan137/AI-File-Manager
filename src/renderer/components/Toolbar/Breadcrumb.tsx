@@ -12,16 +12,26 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
   const separator = pathLib.sep;
   const parsedPath = pathLib.parse(path);
   const root = parsedPath.root;
-  
+
   // Split and filter out empty segments and the root itself
   const segments = path.split(separator).filter(segment => {
     return segment && segment !== root && segment !== root.replace(separator, '');
   });
 
+  // Handle home button click - navigate to user's home directory
+  const handleHomeClick = async () => {
+    try {
+      const systemPaths = await window.electronAPI.fs.getSystemPaths();
+      onNavigate(systemPaths.home);
+    } catch (error) {
+      console.error('Failed to navigate to home:', error);
+    }
+  };
+
   return (
     <div className="flex items-center gap-2 text-sm overflow-x-auto" role="navigation" aria-label="Breadcrumb">
       <button
-        onClick={() => onNavigate(root || separator)}
+        onClick={handleHomeClick}
         className="hover:text-primary-600 transition-colors"
         aria-label="Home"
       >
@@ -43,9 +53,8 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
             <ChevronRight className="w-4 h-4 text-gray-400" />
             <button
               onClick={() => onNavigate(fullPath)}
-              className={`hover:text-primary-600 transition-colors truncate max-w-[120px] ${
-                isLast ? 'font-semibold text-gray-800' : 'text-gray-600'
-              }`}
+              className={`hover:text-primary-600 transition-colors truncate max-w-[120px] ${isLast ? 'font-semibold text-gray-800' : 'text-gray-600'
+                }`}
             >
               {segment}
             </button>

@@ -11,7 +11,7 @@
 interface ElectronAPI {
     fs: {
         readDirectory: (path: string) => Promise<any[]>;
-        readFile: (path: string) => Promise<string>;
+        readFile: (path: string) => Promise<{ content: string; encoding: string }>;
         writeFile: (path: string, content: string) => Promise<{ success: boolean }>;
         delete: (path: string, recursive?: boolean) => Promise<{ success: boolean }>;
         move: (source: string, destination: string) => Promise<{ success: boolean; newPath: string }>;

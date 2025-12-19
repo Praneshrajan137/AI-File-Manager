@@ -12,6 +12,7 @@ interface UseFileSystemReturn {
   readDirectory: (path: string) => Promise<void>;
   deleteFile: (path: string, recursive?: boolean) => Promise<void>;
   moveFile: (source: string, destination: string) => Promise<void>;
+  setSearchResults: (results: FileNode[]) => void;
 }
 
 interface UseFileSystemOptions {
@@ -77,6 +78,10 @@ export function useFileSystem(options: UseFileSystemOptions = {}): UseFileSystem
     }
   }, [currentPath, readDirectory, onSuccess, onError]);
 
+  const setSearchResults = useCallback((results: FileNode[]) => {
+    setFiles(results);
+  }, []);
+
   return {
     files,
     currentPath,
@@ -85,5 +90,6 @@ export function useFileSystem(options: UseFileSystemOptions = {}): UseFileSystem
     readDirectory,
     deleteFile,
     moveFile,
+    setSearchResults,
   };
 }
