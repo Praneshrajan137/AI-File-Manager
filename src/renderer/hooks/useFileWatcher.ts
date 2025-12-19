@@ -25,7 +25,7 @@ export function useFileWatcher(
     const cleanup = window.electronAPI.fileWatcher.subscribe((event) => {
       // Convert to FileEvent format with priority and timestamp
       const fileEvent: FileEvent = {
-        type: event.type as 'create' | 'change' | 'unlink',
+        type: event.type as 'create' | 'change' | 'unlink' | 'rename',
         path: event.path,
         priority: 5,
         timestamp: Date.now(),
