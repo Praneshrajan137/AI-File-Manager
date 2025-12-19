@@ -46,7 +46,7 @@ export const ChatInterface: React.FC = () => {
           </div>
         )}
         {messages.map((msg) => (
-          <MessageBubble key={msg.timestamp} message={msg} />
+          <MessageBubble key={msg.id} message={msg} />
         ))}
         {loading && (
           <div className="flex items-center gap-2 text-sm text-gray-500">

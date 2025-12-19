@@ -280,10 +280,24 @@ class RateLimiter {
    */
   checkLimit(channel: string): boolean {
     const now = Date.now();
+    
+    // Clean up expired entries periodically to prevent memory leak
+    // Only clean if Map has grown large (every 100 entries)
+    if (this.requestCounts.size > 100 && this.requestCounts.size % 100 === 0) {
+      for (const [ch, rec] of this.requestCounts.entries()) {
+        if (now > rec.resetTime) {
+          this.requestCounts.delete(ch);
+        }
+      }
+    }
+    
     const record = this.requestCounts.get(channel);
     
     if (!record || now > record.resetTime) {
-      // Start new window
+      // Start new window (and remove old entry if expired)
+      if (record && now > record.resetTime) {
+        this.requestCounts.delete(channel);
+      }
       this.requestCounts.set(channel, {
         count: 1,
         resetTime: now + this.windowMs,

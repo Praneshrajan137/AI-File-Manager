@@ -1,6 +1,5 @@
 import { useState, useCallback } from 'react';
 import { FileNode, FileSystemError } from '@shared/contracts';
-import { useToast } from './useToast';
 
 interface UseFileSystemReturn {
   // State
@@ -15,12 +14,17 @@ interface UseFileSystemReturn {
   moveFile: (source: string, destination: string) => Promise<void>;
 }
 
-export function useFileSystem(): UseFileSystemReturn {
+interface UseFileSystemOptions {
+  onError?: (message: string) => void;
+  onSuccess?: (message: string) => void;
+}
+
+export function useFileSystem(options: UseFileSystemOptions = {}): UseFileSystemReturn {
   const [files, setFiles] = useState<FileNode[]>([]);
   const [currentPath, setCurrentPath] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<FileSystemError | null>(null);
-  const { showToast } = useToast();
+  const { onError, onSuccess } = options;
 
   const readDirectory = useCallback(async (path: string) => {
     setLoading(true);
@@ -33,54 +37,39 @@ export function useFileSystem(): UseFileSystemReturn {
     } catch (err: any) {
       const fsError: FileSystemError = err;
       setError(fsError);
-      showToast({
-        type: 'error',
-        message: `Failed to read directory: ${fsError.message}`,
-      });
+      onError?.(`Failed to read directory: ${fsError.message}`);
     } finally {
       setLoading(false);
     }
-  }, [showToast]);
+  }, [onError]);
 
   const deleteFile = useCallback(async (path: string, recursive: boolean = true) => {
     try {
       await window.electronAPI.fs.delete(path, recursive);
-      showToast({
-        type: 'success',
-        message: 'File deleted successfully',
-      });
+      onSuccess?.('File deleted successfully');
       // Refresh current directory
       if (currentPath) {
         await readDirectory(currentPath);
       }
     } catch (err: any) {
-      showToast({
-        type: 'error',
-        message: `Failed to delete: ${err.message}`,
-      });
+      onError?.(`Failed to delete: ${err.message}`);
       throw err;
     }
-  }, [currentPath, readDirectory, showToast]);
+  }, [currentPath, readDirectory, onSuccess, onError]);
 
   const moveFile = useCallback(async (source: string, destination: string) => {
     try {
       await window.electronAPI.fs.move(source, destination);
-      showToast({
-        type: 'success',
-        message: 'File moved successfully',
-      });
+      onSuccess?.('File moved successfully');
       // Refresh current directory
       if (currentPath) {
         await readDirectory(currentPath);
       }
     } catch (err: any) {
-      showToast({
-        type: 'error',
-        message: `Failed to move file: ${err.message}`,
-      });
+      onError?.(`Failed to move file: ${err.message}`);
       throw err;
     }
-  }, [currentPath, readDirectory, showToast]);
+  }, [currentPath, readDirectory, onSuccess, onError]);
 
   return {
     files,

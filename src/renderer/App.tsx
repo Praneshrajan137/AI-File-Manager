@@ -26,7 +26,10 @@ import { UI_CONSTANTS } from './utils/constants';
 import { FileNode } from '@shared/contracts';
 
 const App: React.FC = () => {
-  // File system state
+  // Toast notifications (must be before useFileSystem)
+  const { toasts, showToast, removeToast } = useToast();
+
+  // File system state with shared toast handlers
   const {
     files,
     loading,
@@ -35,7 +38,10 @@ const App: React.FC = () => {
     currentPath,
     deleteFile,
     moveFile,
-  } = useFileSystem();
+  } = useFileSystem({
+    onError: (message) => showToast({ type: 'error', message }),
+    onSuccess: (message) => showToast({ type: 'success', message }),
+  });
 
   // Navigation state
   const {
@@ -54,9 +60,6 @@ const App: React.FC = () => {
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [sidebarWidth, setSidebarWidth] = useState<number>(UI_CONSTANTS.SIDEBAR_DEFAULT_WIDTH);
   const [contextMenu, setContextMenu] = useState<{ file: FileNode; x: number; y: number } | null>(null);
-
-  // Toast notifications
-  const { toasts, showToast, removeToast } = useToast();
 
   // Event handlers - wrapped in useCallback to create stable references
   const handleDelete = useCallback(async () => {

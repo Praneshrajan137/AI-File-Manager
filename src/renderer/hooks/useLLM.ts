@@ -1,6 +1,10 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 
+// Message ID counter to ensure unique keys even with same timestamps
+let messageIdCounter = 0;
+
 export interface Message {
+  id: number;  // Unique ID for React keys
   role: 'user' | 'assistant';
   content: string;
   sources?: string[];
@@ -43,8 +47,9 @@ export function useLLM(): UseLLMReturn {
     loadingRef.current = true;
     setLoading(true);
 
-    // Add user message
+    // Add user message with unique ID
     const userMessage: Message = {
+      id: messageIdCounter++,
       role: 'user',
       content: query,
       timestamp: Date.now(),
@@ -66,8 +71,9 @@ export function useLLM(): UseLLMReturn {
             // Update existing assistant message
             lastMsg.content = responseContent;
           } else {
-            // Add new assistant message
+            // Add new assistant message with unique ID
             newMessages.push({
+              id: messageIdCounter++,
               role: 'assistant',
               content: responseContent,
               timestamp: Date.now(),
@@ -83,10 +89,11 @@ export function useLLM(): UseLLMReturn {
     } catch (error) {
       console.error('LLM query error:', error);
 
-      // Add error message
+      // Add error message with unique ID
       setMessages(prev => [
         ...prev,
         {
+          id: messageIdCounter++,
           role: 'assistant',
           content: 'Sorry, I encountered an error processing your request. Please try again.',
           timestamp: Date.now(),
