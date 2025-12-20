@@ -29,7 +29,7 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
   };
 
   return (
-    <div className="flex items-center gap-2 text-sm overflow-x-auto" role="navigation" aria-label="Breadcrumb">
+    <div className="flex items-center gap-2 text-sm overflow-x-auto" role="navigation" aria-label="Breadcrumb" data-testid="breadcrumb">
       <button
         onClick={handleHomeClick}
         className="hover:text-primary-600 transition-colors"

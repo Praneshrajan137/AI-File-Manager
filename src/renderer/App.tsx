@@ -218,7 +218,7 @@ const FileManagerApp: React.FC = () => {
   };
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex h-screen bg-gray-50" data-testid="app-container">
       {/* Sidebar */}
       <Sidebar
         width={sidebarWidth}
@@ -227,7 +227,7 @@ const FileManagerApp: React.FC = () => {
       />
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden" data-testid="main-content">
         {/* Toolbar */}
         <Toolbar
           canGoBack={canGoBack}
@@ -269,7 +269,7 @@ const FileManagerApp: React.FC = () => {
         />
 
         {/* File Explorer */}
-        <div className="flex-1 overflow-hidden p-4">
+        <div className="flex-1 overflow-hidden p-4" data-testid="file-explorer">
           <FileGrid
             files={files}
             selectedFiles={selectedFiles}
@@ -287,7 +287,7 @@ const FileManagerApp: React.FC = () => {
 
       {/* Chat Panel */}
       {chatOpen && (
-        <div className="w-96 bg-white border-l border-gray-200">
+        <div className="w-96 bg-white border-l border-gray-200" data-testid="chat-panel-container">
           <ChatInterface />
         </div>
       )}

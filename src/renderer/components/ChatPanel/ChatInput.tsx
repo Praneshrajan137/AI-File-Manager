@@ -23,7 +23,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   };
 
   return (
-    <div className="p-4 border-t border-gray-200 flex gap-2">
+    <div className="p-4 border-t border-gray-200 flex gap-2" data-testid="chat-input-container">
       <input
         type="text"
         value={value}
@@ -32,6 +32,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         placeholder="Ask about your files..."
         disabled={disabled}
         className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:opacity-50 disabled:cursor-not-allowed"
+        data-testid="chat-input"
       />
       <Button
         variant="primary"
@@ -39,6 +40,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         disabled={disabled || !value.trim()}
         icon={<Send className="w-4 h-4" />}
         aria-label="Send message"
+        data-testid="send-button"
       />
     </div>
   );

@@ -15,7 +15,7 @@ export const NavigationButtons: React.FC<NavigationButtonsProps> = ({
   onBack,
   onForward
 }) => (
-  <div className="flex gap-2">
+  <div className="flex gap-2" data-testid="navigation-buttons">
     <Button
       variant="ghost"
       size="sm"
@@ -23,6 +23,7 @@ export const NavigationButtons: React.FC<NavigationButtonsProps> = ({
       onClick={onBack}
       icon={<ChevronLeft className="w-4 h-4" />}
       aria-label="Go back"
+      data-testid="back-button"
     />
     <Button
       variant="ghost"
@@ -31,6 +32,7 @@ export const NavigationButtons: React.FC<NavigationButtonsProps> = ({
       onClick={onForward}
       icon={<ChevronRight className="w-4 h-4" />}
       aria-label="Go forward"
+      data-testid="forward-button"
     />
   </div>
 );

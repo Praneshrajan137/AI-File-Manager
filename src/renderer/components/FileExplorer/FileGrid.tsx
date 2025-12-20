@@ -105,6 +105,7 @@ export const FileGrid: React.FC<FileGridProps> = ({
       role="listbox"
       aria-label="File list"
       aria-multiselectable="true"
+      data-testid="file-list"
     >
       <FixedSizeList
         height={containerHeight}
