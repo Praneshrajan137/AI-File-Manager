@@ -22,25 +22,25 @@
 export interface FileNode {
   /** Absolute path to the file/directory */
   path: string;
-  
+
   /** Name of the file/directory (basename only, no path) */
   name: string;
-  
+
   /** Whether this node is a directory */
   isDirectory: boolean;
-  
+
   /** File size in bytes (0 for directories) */
   size: number;
-  
+
   /** Last modified timestamp (Unix milliseconds) */
   modified: number;
-  
+
   /** File extension (e.g., "txt", "pdf") or empty string for directories */
   extension: string;
-  
+
   /** MIME type (e.g., "text/plain", "image/png") */
   mimeType: string;
-  
+
   /** Optional: Is this node hidden? (starts with . on Unix) */
   isHidden?: boolean;
 }
@@ -70,10 +70,10 @@ export interface FileStats {
 export interface ValidationResult {
   /** Whether the path is valid and safe */
   valid: boolean;
-  
+
   /** Error code if validation failed */
   error?: 'PATH_TRAVERSAL' | 'UNAUTHORIZED_ACCESS' | 'INVALID_PATH';
-  
+
   /** Human-readable details about the validation failure */
   details?: string;
 }
@@ -83,19 +83,19 @@ export interface ValidationResult {
  */
 export interface FileSystemError {
   /** Error code for programmatic handling */
-  code: 'PATH_TRAVERSAL' 
-      | 'UNAUTHORIZED_ACCESS' 
-      | 'FILE_NOT_FOUND' 
-      | 'PERMISSION_DENIED' 
-      | 'DISK_FULL'
-      | 'UNKNOWN';
-  
+  code: 'PATH_TRAVERSAL'
+  | 'UNAUTHORIZED_ACCESS'
+  | 'FILE_NOT_FOUND'
+  | 'PERMISSION_DENIED'
+  | 'DISK_FULL'
+  | 'UNKNOWN';
+
   /** Human-readable error message */
   message: string;
-  
+
   /** Path that caused the error (if applicable) */
   path?: string;
-  
+
   /** Original error from fs module (for debugging) */
   originalError?: Error;
 }
@@ -122,7 +122,7 @@ export interface IFileSystemService {
    * // Returns: [{ path: '/home/user/Documents/file.txt', name: 'file.txt', ... }]
    */
   readDirectory(path: string): Promise<FileNode[]>;
-  
+
   /**
    * Read file content as string.
    * 
@@ -132,7 +132,7 @@ export interface IFileSystemService {
    * @throws FileSystemError if file not found or not readable
    */
   readFile(path: string, encoding?: BufferEncoding): Promise<string>;
-  
+
   /**
    * Write content to file.
    * 
@@ -142,7 +142,7 @@ export interface IFileSystemService {
    * @throws FileSystemError if write fails (permissions, disk full, etc.)
    */
   writeFile(path: string, content: string): Promise<{ success: boolean }>;
-  
+
   /**
    * Delete file or directory.
    * 
@@ -152,7 +152,7 @@ export interface IFileSystemService {
    * @throws FileSystemError if delete fails
    */
   delete(path: string, recursive?: boolean): Promise<{ success: boolean }>;
-  
+
   /**
    * Move/rename file or directory.
    * 
@@ -162,7 +162,7 @@ export interface IFileSystemService {
    * @throws FileSystemError if move fails
    */
   move(source: string, destination: string): Promise<{ success: boolean; newPath: string }>;
-  
+
   /**
    * Get detailed file statistics.
    * 
@@ -171,7 +171,7 @@ export interface IFileSystemService {
    * @throws FileSystemError if path doesn't exist
    */
   getStats(path: string): Promise<FileStats>;
-  
+
   /**
    * Validate path for security.
    * This is called internally before all operations.
@@ -193,14 +193,14 @@ export interface INavigationService {
    * @returns Previous path or null if at start
    */
   back(): string | null;
-  
+
   /**
    * Navigate forward in history.
    * 
    * @returns Next path or null if at end
    */
   forward(): string | null;
-  
+
   /**
    * Add new path to history.
    * This clears any forward history.
@@ -208,7 +208,7 @@ export interface INavigationService {
    * @param path - Path to add
    */
   push(path: string): void;
-  
+
   /**
    * Get current navigation state.
    * 
@@ -232,7 +232,7 @@ export interface ISearchService {
    * @complexity O(L) where L = prefix length
    */
   autocomplete(prefix: string, maxResults?: number): Promise<string[]>;
-  
+
   /**
    * Search for files matching query.
    * 
@@ -253,13 +253,13 @@ export interface ISearchService {
 export interface TextChunk {
   /** Chunk content */
   text: string;
-  
+
   /** Starting character index in original file */
   startChar: number;
-  
+
   /** Ending character index in original file */
   endChar: number;
-  
+
   /** Chunk number (0-indexed) */
   chunkIndex: number;
 }
@@ -270,16 +270,16 @@ export interface TextChunk {
 export interface FileMetadata {
   /** Absolute path to file */
   filePath: string;
-  
+
   /** Total number of chunks */
   totalChunks: number;
-  
+
   /** When file was indexed (Unix milliseconds) */
   indexedAt: number;
-  
+
   /** File size in bytes */
   fileSize: number;
-  
+
   /** Programming language (if detected) */
   language?: string;
 }
@@ -290,19 +290,19 @@ export interface FileMetadata {
 export interface VectorRecord {
   /** Unique identifier: "{filePath}:{chunkIndex}" */
   id: string;
-  
+
   /** Original text content */
   chunk_text: string;
-  
+
   /** Embedding vector (384 dimensions for all-MiniLM-L6-v2) */
   embedding: number[];
-  
+
   /** Source file path */
   file_path: string;
-  
+
   /** Chunk index within file */
   chunk_index: number;
-  
+
   /** Indexing timestamp */
   indexed_at: number;
 }
@@ -313,10 +313,10 @@ export interface VectorRecord {
 export interface RetrievalResult {
   /** Compressed context for LLM */
   context: string;
-  
+
   /** Source file paths (for citation) */
   sources: string[];
-  
+
   /** Total token count of context */
   tokenCount: number;
 }
@@ -327,13 +327,13 @@ export interface RetrievalResult {
 export interface LLMQueryOptions {
   /** Model name (default: 'llama3.2') */
   model?: string;
-  
+
   /** Maximum tokens to generate */
   maxTokens?: number;
-  
+
   /** Temperature (0-1, default: 0.7) */
   temperature?: number;
-  
+
   /** Whether to stream response */
   stream?: boolean;
 }
@@ -344,13 +344,13 @@ export interface LLMQueryOptions {
 export interface IndexingStatus {
   /** Number of files indexed so far */
   indexed: number;
-  
+
   /** Total files to index */
   total: number;
-  
+
   /** Whether indexing is currently running */
   inProgress: boolean;
-  
+
   /** Current file being indexed (if inProgress) */
   currentFile?: string;
 }
@@ -374,7 +374,7 @@ export interface ILLMService {
    * }
    */
   query(query: string, options?: LLMQueryOptions): AsyncGenerator<string, void, unknown>;
-  
+
   /**
    * Index a file for semantic search.
    * 
@@ -382,14 +382,14 @@ export interface ILLMService {
    * @returns Success status
    */
   indexFile(filePath: string): Promise<{ success: boolean }>;
-  
+
   /**
    * Get current indexing status.
    * 
    * @returns Indexing progress
    */
   getIndexingStatus(): Promise<IndexingStatus>;
-  
+
   /**
    * Start background indexing of directory.
    * 
@@ -397,13 +397,236 @@ export interface ILLMService {
    * @returns Success status
    */
   startIndexing(directoryPath: string): Promise<{ success: boolean }>;
-  
+
   /**
    * Stop background indexing.
    * 
    * @returns Success status
    */
   stopIndexing(): Promise<{ success: boolean }>;
+}
+
+// ============================================================================
+// EMBEDDING MODEL INTERFACES
+// ============================================================================
+
+/**
+ * Embedding vector (384 dimensions for all-MiniLM-L6-v2)
+ */
+export type Embedding = number[];
+
+/**
+ * Embedding generation options
+ */
+export interface EmbeddingOptions {
+  /** Model name (default: 'all-MiniLM-L6-v2') */
+  model?: string;
+
+  /** Normalize embeddings (default: true) */
+  normalize?: boolean;
+
+  /** Batch size for processing (default: 32) */
+  batchSize?: number;
+}
+
+/**
+ * Embedding model interface for text-to-vector conversion.
+ * Implementations must use local models only (privacy-first).
+ */
+export interface IEmbeddingModel {
+  /**
+   * Initialize the embedding model.
+   * Must be called before first use.
+   * Downloads model on first run (~100MB, cached thereafter).
+   */
+  initialize(): Promise<void>;
+
+  /**
+   * Generate embedding for single text.
+   * 
+   * @param text - Input text
+   * @returns Embedding vector (384 dimensions)
+   * 
+   * @example
+   * const embedding = await model.embed("Hello world");
+   * console.log(embedding.length); // 384
+   */
+  embed(text: string): Promise<Embedding>;
+
+  /**
+   * Generate embeddings for multiple texts (batched).
+   * 
+   * @param texts - Array of input texts
+   * @returns Array of embedding vectors
+   * 
+   * @complexity O(n) where n = number of texts
+   */
+  embedBatch(texts: string[]): Promise<Embedding[]>;
+
+  /**
+   * Get embedding dimensionality.
+   * 
+   * @returns Number of dimensions (e.g., 384)
+   */
+  getDimensions(): number;
+
+  /**
+   * Calculate cosine similarity between embeddings.
+   * 
+   * @param a - First embedding
+   * @param b - Second embedding
+   * @returns Similarity score (-1 to 1, where 1 = identical)
+   */
+  similarity(a: Embedding, b: Embedding): number;
+}
+
+// ============================================================================
+// INDEXING SERVICE INTERFACES
+// ============================================================================
+
+/**
+ * Result of indexing operation
+ */
+export interface IndexingResult {
+  /** File that was indexed */
+  filePath: string;
+
+  /** Number of chunks created */
+  chunksCreated: number;
+
+  /** Estimated total tokens */
+  totalTokens: number;
+
+  /** When indexing occurred (Unix milliseconds) */
+  indexedAt: number;
+
+  /** Whether indexing succeeded */
+  success: boolean;
+
+  /** Error message if failed */
+  error?: string;
+}
+
+/**
+ * Index statistics
+ */
+export interface IndexStats {
+  /** Total files indexed */
+  totalFiles: number;
+
+  /** Total chunks in index */
+  totalChunks: number;
+
+  /** Estimated total tokens */
+  totalTokens: number;
+
+  /** Index size in bytes */
+  indexSize: number;
+
+  /** Last indexing timestamp */
+  lastIndexed: number;
+}
+
+/**
+ * Indexing service interface.
+ * Responsible for chunking file content and generating embeddings.
+ */
+export interface IIndexingService {
+  /**
+   * Index a single file.
+   * 
+   * Process:
+   * 1. Read file content
+   * 2. Chunk into 500-token segments with 50-token overlap
+   * 3. Generate embeddings for each chunk
+   * 4. Store in vector database
+   * 
+   * @param filePath - Absolute path to file
+   * @returns Indexing result with chunk count
+   */
+  indexFile(filePath: string): Promise<IndexingResult>;
+
+  /**
+   * Index multiple files in batch.
+   * 
+   * @param filePaths - Array of absolute paths
+   * @returns Array of indexing results
+   */
+  indexFiles(filePaths: string[]): Promise<IndexingResult[]>;
+
+  /**
+   * Remove file from index.
+   * 
+   * @param filePath - Absolute path to file
+   * @returns Success status
+   */
+  removeFile(filePath: string): Promise<{ success: boolean }>;
+
+  /**
+   * Get indexing statistics.
+   * 
+   * @returns Current index stats
+   */
+  getStats(): Promise<IndexStats>;
+}
+
+// ============================================================================
+// VECTOR STORE INTERFACES
+// ============================================================================
+
+/**
+ * Vector store interface for semantic search.
+ * Wraps LanceDB for embedding storage and retrieval.
+ */
+export interface IVectorStore {
+  /**
+   * Initialize the vector store.
+   * 
+   * @param dbPath - Path to database directory
+   */
+  initialize(dbPath: string): Promise<void>;
+
+  /**
+   * Add chunks with embeddings to the store.
+   * 
+   * @param chunks - Text chunks
+   * @param embeddings - Corresponding embeddings
+   * @param filePath - Source file path
+   */
+  addChunks(chunks: TextChunk[], embeddings: Embedding[], filePath: string): Promise<void>;
+
+  /**
+   * Search for similar chunks.
+   * 
+   * @param queryEmbedding - Query embedding vector
+   * @param topK - Number of results to return
+   * @returns Array of matching records
+   */
+  search(queryEmbedding: Embedding, topK?: number): Promise<VectorRecord[]>;
+
+  /**
+   * Delete all chunks for a file.
+   * 
+   * @param filePath - File path to remove
+   * @returns Number of chunks deleted
+   */
+  deleteFile(filePath: string): Promise<number>;
+
+  /**
+   * Get store statistics.
+   * 
+   * @returns Index statistics
+   */
+  getStats(): Promise<IndexStats>;
+
+  /**
+   * Clear entire database.
+   * 
+   * WARNING: Irreversible operation
+   * 
+   * @returns Success status
+   */
+  clear(): Promise<{ success: boolean }>;
 }
 
 // ============================================================================
@@ -416,10 +639,10 @@ export interface ILLMService {
 export interface TrieNode {
   /** Child nodes (key = path segment) */
   children: Map<string, TrieNode>;
-  
+
   /** Whether this node represents end of a complete path */
   isEndOfPath: boolean;
-  
+
   /** Optional metadata at terminal nodes */
   metadata?: FileMetadata;
 }
@@ -430,13 +653,13 @@ export interface TrieNode {
 export interface CacheNode<T> {
   /** Cache key */
   key: string;
-  
+
   /** Cached value */
   value: T;
-  
+
   /** Previous node in linked list */
   prev: CacheNode<T> | null;
-  
+
   /** Next node in linked list */
   next: CacheNode<T> | null;
 }
@@ -447,16 +670,16 @@ export interface CacheNode<T> {
 export interface FileEvent {
   /** Event type */
   type: 'create' | 'change' | 'unlink' | 'rename';
-  
+
   /** File path */
   path: string;
-  
+
   /** Event priority (lower = higher priority) */
   priority: EventPriority;
-  
+
   /** When event occurred (Unix milliseconds) */
   timestamp: number;
-  
+
   /** Additional event data */
   data?: Record<string, unknown>;
 }
@@ -467,10 +690,10 @@ export interface FileEvent {
 export enum EventPriority {
   /** User-initiated actions (delete, rename) - highest priority */
   USER_ACTION = 1,
-  
+
   /** External file changes detected by watcher */
   FILE_WATCHER = 5,
-  
+
   /** Background indexing operations - lowest priority */
   BACKGROUND_INDEX = 10,
 }
@@ -481,13 +704,13 @@ export enum EventPriority {
 export interface HistoryNode {
   /** Directory path */
   path: string;
-  
+
   /** When navigated (Unix milliseconds) */
   timestamp: number;
-  
+
   /** Previous node in history */
   prev: HistoryNode | null;
-  
+
   /** Next node in history (for forward navigation) */
   next: HistoryNode | null;
 }
