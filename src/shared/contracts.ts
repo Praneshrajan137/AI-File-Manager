@@ -571,6 +571,24 @@ export interface IIndexingService {
 }
 
 // ============================================================================
+// RETRIEVAL SERVICE INTERFACES
+// ============================================================================
+
+/**
+ * Result of retrieval operation for RAG pipeline.
+ */
+export interface RetrievalResult {
+  /** Formatted context string for LLM prompt */
+  context: string;
+
+  /** Source file paths that contributed to context */
+  sources: string[];
+
+  /** Estimated token count of context */
+  tokenCount: number;
+}
+
+// ============================================================================
 // VECTOR STORE INTERFACES
 // ============================================================================
 
