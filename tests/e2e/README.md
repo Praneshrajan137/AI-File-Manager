@@ -141,3 +141,4 @@ These E2E tests align with the project's testing strategy:
 - **Unit Tests** (80%) - Individual functions, DSA implementations ✅
 - **Integration Tests** (15%) - IPC channels, file operations ✅
 - **E2E Tests** (5%) - Critical user journeys ✅ **← This directory**
+

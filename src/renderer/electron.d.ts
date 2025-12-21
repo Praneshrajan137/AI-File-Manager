@@ -34,9 +34,10 @@ interface ElectronAPI {
 
     llm: {
         query: (query: string, callback: (chunk: string) => void) => Promise<void>;
-        getIndexingStatus: () => Promise<{ indexed: number; total: number; inProgress: boolean }>;
-        startIndexing: (path: string) => Promise<{ success: boolean }>;
+        getIndexingStatus: () => Promise<{ indexed: number; total: number; inProgress: boolean; currentFile?: string }>;
+        startIndexing: (path: string) => Promise<{ success: boolean; message?: string; total?: number }>;
         stopIndexing: () => Promise<{ success: boolean }>;
+        clearIndex: () => Promise<{ success: boolean; error?: string }>;
     };
 
     fileWatcher: {

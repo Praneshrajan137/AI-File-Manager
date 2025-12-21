@@ -11,10 +11,11 @@ module.exports = {
     // Target: Electron main process (Node.js environment)
     target: 'electron-main',
 
-    // Entry points: main process and preload script
+    // Entry points: main process, preload script, and workers
     entry: {
         main: './src/main/main.ts',
         preload: './src/main/preload.ts',
+        embeddingWorker: './src/llm/workers/embeddingWorker.ts',
     },
 
     // Output configuration
@@ -54,9 +55,19 @@ module.exports = {
         __filename: false,
     },
 
-    // Externals: Don't bundle Node.js built-ins or Electron
+    // Externals: Don't bundle Node.js built-ins, Electron, or native modules
     externals: {
         electron: 'commonjs electron',
+        // Native modules that can't be bundled by webpack
+        '@lancedb/lancedb': 'commonjs @lancedb/lancedb',
+        // NOTE: @xenova/transformers uses dynamicImport helper to bypass webpack
+        '@xenova/transformers': 'commonjs @xenova/transformers',
+        'sharp': 'commonjs sharp',
+        'chokidar': 'commonjs chokidar',
+        'ollama': 'commonjs ollama',
+        // Winston and its file transport have native deps
+        'winston': 'commonjs winston',
+        'winston-daily-rotate-file': 'commonjs winston-daily-rotate-file',
     },
 
     // Development configuration

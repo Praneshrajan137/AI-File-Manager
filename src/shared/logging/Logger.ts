@@ -36,22 +36,22 @@ export type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace';
 export interface LoggerOptions {
   /** Log level (default: 'info' in prod, 'debug' in dev) */
   level?: LogLevel;
-  
+
   /** Enable console transport (default: true in dev, false in prod) */
   console?: boolean;
-  
+
   /** Enable file transport (default: false in dev, true in prod) */
   file?: boolean;
-  
+
   /** Log file directory (default: ~/.project2-file-manager/logs/) */
   logDir?: string;
-  
+
   /** Maximum file size before rotation (default: '10m') */
   maxSize?: string;
-  
+
   /** Maximum number of days to keep logs (default: 30) */
   maxFiles?: number;
-  
+
   /** Service name for log entries */
   service?: string;
 }
@@ -78,7 +78,7 @@ export class Logger {
    */
   private constructor(options: LoggerOptions = {}) {
     const isDevelopment = process.env.NODE_ENV === 'development';
-    
+
     // Default options
     const opts: Required<LoggerOptions> = {
       level: options.level ?? (isDevelopment ? 'debug' : 'info'),
@@ -110,7 +110,7 @@ export class Logger {
    */
   static initialize(options?: LoggerOptions): void {
     if (Logger.instance) {
-      console.warn('Logger already initialized');
+      // Already initialized - silently return
       return;
     }
 
@@ -219,7 +219,7 @@ export class Logger {
    */
   startTimer(label: string): (metadata?: LogMetadata) => void {
     const start = Date.now();
-    
+
     return (metadata?: LogMetadata) => {
       const duration = Date.now() - start;
       this.info(`[Timer] ${label}`, {

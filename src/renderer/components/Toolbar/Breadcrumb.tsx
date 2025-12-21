@@ -29,10 +29,10 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
   };
 
   return (
-    <div className="flex items-center gap-2 text-sm overflow-x-auto" role="navigation" aria-label="Breadcrumb" data-testid="breadcrumb">
+    <div className="flex items-center gap-1.5 text-sm overflow-x-auto" role="navigation" aria-label="Breadcrumb" data-testid="breadcrumb">
       <button
         onClick={handleHomeClick}
-        className="hover:text-primary-600 transition-colors"
+        className="p-1.5 rounded-md text-primary-500 hover:text-primary-700 hover:bg-primary-50 transition-all"
         aria-label="Home"
       >
         <Home className="w-4 h-4" />
@@ -50,10 +50,12 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
 
         return (
           <React.Fragment key={fullPath}>
-            <ChevronRight className="w-4 h-4 text-gray-400" />
+            <ChevronRight className="w-3.5 h-3.5 text-primary-300 flex-shrink-0" />
             <button
               onClick={() => onNavigate(fullPath)}
-              className={`hover:text-primary-600 transition-colors truncate max-w-[120px] ${isLast ? 'font-semibold text-gray-800' : 'text-gray-600'
+              className={`px-2 py-1 rounded-md truncate max-w-[150px] transition-all ${isLast
+                  ? 'font-medium text-primary-900 bg-primary-50'
+                  : 'text-primary-600 hover:text-primary-800 hover:bg-primary-50'
                 }`}
             >
               {segment}
@@ -64,3 +66,4 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
     </div>
   );
 };
+

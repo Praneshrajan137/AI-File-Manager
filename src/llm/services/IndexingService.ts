@@ -2,7 +2,7 @@
  * IndexingService - File chunking and embedding generation
  * 
  * Process:
- * 1. Read file content via FileSystemService
+ * 1. Extract file content via FileContentExtractor (supports PDF, text, code)
  * 2. Chunk into 500-token segments with 50-token overlap
  * 3. Generate embeddings using EmbeddingModel
  * 4. Store in VectorStore
@@ -13,13 +13,15 @@
  */
 import {
     IIndexingService,
+    IEmbeddingModel,
     IndexingResult,
     IndexStats,
     TextChunk,
 } from '../../shared/contracts';
-import { FileSystemService } from '../../main/services/FileSystemService';
-import { EmbeddingModel } from '../models/EmbeddingModel';
 import { VectorStore } from './VectorStore';
+import { FileContentExtractor } from './FileContentExtractor';
+
+import * as path from 'path';
 
 export class IndexingService implements IIndexingService {
     /** Chunk size in tokens */
@@ -28,48 +30,69 @@ export class IndexingService implements IIndexingService {
     /** Overlap between chunks in tokens */
     private readonly CHUNK_OVERLAP = 50;
 
-    /** Maximum file size to index (10MB) */
-    private readonly MAX_FILE_SIZE = 10 * 1024 * 1024;
-
     /** Approximate characters per token for English */
     private readonly CHARS_PER_TOKEN = 4;
 
+    /** Content extractor for various file types */
+    private readonly contentExtractor: FileContentExtractor;
+
     constructor(
-        private fileSystem: FileSystemService,
-        private embeddingModel: EmbeddingModel,
+        private embeddingModel: IEmbeddingModel,
         private vectorStore: VectorStore
-    ) { }
+    ) {
+        this.contentExtractor = new FileContentExtractor({
+            maxFileSize: 50 * 1024 * 1024, // 50MB
+            maxCharacters: 500000,
+        });
+    }
 
     /**
      * Index a single file.
+     * 
+     * Uses FileContentExtractor to handle PDFs, text files, and code.
+     * Falls back to metadata-only indexing for unsupported formats.
      * 
      * @param filePath - Absolute path to file
      * @returns Indexing result
      */
     async indexFile(filePath: string): Promise<IndexingResult> {
         try {
-            // Read file content
-            const content = await this.fileSystem.readFile(filePath);
+            // Extract content using specialized extractor
+            const extraction = await this.contentExtractor.extract(filePath);
 
-            // Validate file
-            const validation = this.validateFile(filePath, content);
-            if (!validation.valid) {
+            if (!extraction.success && !extraction.content) {
                 return {
                     filePath,
                     chunksCreated: 0,
                     totalTokens: 0,
                     indexedAt: Date.now(),
                     success: false,
-                    error: validation.error,
+                    error: extraction.error || 'Extraction failed',
                 };
             }
+
+            const content = extraction.content || '';
 
             // Chunk content
             const chunks = this.chunkText(content);
 
+            if (chunks.length === 0) {
+                return {
+                    filePath,
+                    chunksCreated: 0,
+                    totalTokens: 0,
+                    indexedAt: Date.now(),
+                    success: false,
+                    error: 'No content to index',
+                };
+            }
+
             // Generate embeddings (batch for efficiency)
             const chunkTexts = chunks.map((c) => c.text);
             const embeddings = await this.embeddingModel.embedBatch(chunkTexts);
+
+            // Yield to event loop after embeddings
+            await new Promise(resolve => setImmediate(resolve));
 
             // Store in vector database
             await this.vectorStore.addChunks(chunks, embeddings, filePath);
@@ -113,6 +136,9 @@ export class IndexingService implements IIndexingService {
         for (const filePath of filePaths) {
             const result = await this.indexFile(filePath);
             results.push(result);
+
+            // Yield between files
+            await new Promise(resolve => setTimeout(resolve, 50));
         }
 
         return results;
@@ -155,6 +181,10 @@ export class IndexingService implements IIndexingService {
      */
     private chunkText(text: string): TextChunk[] {
         const chunks: TextChunk[] = [];
+
+        if (!text || text.trim().length === 0) {
+            return chunks;
+        }
 
         // Calculate characters per chunk
         const charsPerChunk = this.CHUNK_SIZE * this.CHARS_PER_TOKEN;
@@ -229,60 +259,6 @@ export class IndexingService implements IIndexingService {
     }
 
     /**
-     * Validate file before indexing.
-     * 
-     * @param filePath - File path
-     * @param content - File content
-     * @returns Validation result
-     */
-    private validateFile(
-        filePath: string,
-        content: string
-    ): { valid: boolean; error?: string } {
-        // Check file size
-        const sizeBytes = Buffer.byteLength(content, 'utf-8');
-        if (sizeBytes > this.MAX_FILE_SIZE) {
-            return {
-                valid: false,
-                error: `File too large (${(sizeBytes / 1024 / 1024).toFixed(1)}MB > 10MB limit)`,
-            };
-        }
-
-        // Check if binary (simple heuristic)
-        if (this.isBinary(content)) {
-            return {
-                valid: false,
-                error: 'Binary files not supported',
-            };
-        }
-
-        return { valid: true };
-    }
-
-    /**
-     * Check if content is binary.
-     * 
-     * Heuristic: If >5% of sample characters are non-printable, treat as binary.
-     * 
-     * @param content - File content
-     * @returns True if likely binary
-     */
-    private isBinary(content: string): boolean {
-        let nonPrintable = 0;
-        const sampleSize = Math.min(1000, content.length);
-
-        for (let i = 0; i < sampleSize; i++) {
-            const code = content.charCodeAt(i);
-            // Non-printable range (excluding tab, newline, carriage return)
-            if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
-                nonPrintable++;
-            }
-        }
-
-        return nonPrintable / sampleSize > 0.05;
-    }
-
-    /**
      * Estimate token count from text.
      * 
      * Approximation: 1 token ≈ 4 characters for English.
@@ -294,3 +270,4 @@ export class IndexingService implements IIndexingService {
         return Math.ceil(text.length / this.CHARS_PER_TOKEN);
     }
 }
+

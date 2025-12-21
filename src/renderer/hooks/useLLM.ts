@@ -26,6 +26,7 @@ interface UseLLMReturn {
   sendQuery: (query: string) => Promise<void>;
   startIndexing: (path: string) => Promise<void>;
   stopIndexing: () => Promise<void>;
+  clearIndex: () => Promise<void>;
 }
 
 export function useLLM(): UseLLMReturn {
@@ -36,14 +37,14 @@ export function useLLM(): UseLLMReturn {
     total: 0,
     inProgress: false,
   });
-  
+
   // Use ref to track loading state to prevent stale closures
   const loadingRef = useRef<boolean>(false);
 
   const sendQuery = useCallback(async (query: string) => {
     // Check loading using ref to avoid stale closure
     if (!query.trim() || loadingRef.current) return;
-    
+
     loadingRef.current = true;
     setLoading(true);
 
@@ -125,6 +126,16 @@ export function useLLM(): UseLLMReturn {
     }
   }, []);
 
+  const clearIndex = useCallback(async () => {
+    try {
+      await window.electronAPI.llm.clearIndex();
+      setIndexingStatus({ indexed: 0, total: 0, inProgress: false });
+    } catch (error) {
+      console.error('Failed to clear index:', error);
+      throw error;
+    }
+  }, []);
+
   // Poll indexing status
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
@@ -157,5 +168,6 @@ export function useLLM(): UseLLMReturn {
     sendQuery,
     startIndexing,
     stopIndexing,
+    clearIndex,
   };
 }

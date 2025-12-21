@@ -59,7 +59,7 @@ function getDefaultAllowedRoots(): string[] {
  */
 export const defaultConfig: AppConfig = {
   app: {
-    name: 'Project-2 File Manager',
+    name: 'File Manager',
     version: '0.1.0',
     environment: process.env.NODE_ENV as any || 'development',
   },

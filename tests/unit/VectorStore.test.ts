@@ -68,6 +68,9 @@ describe('VectorStore', () => {
                 store.addChunks(chunks, embeddings, '/test/file.txt')
             ).resolves.not.toThrow();
 
+            // Flush pending records for batch write optimization
+            await store.flushPendingRecords();
+
             // Verify by checking stats
             const stats = await store.getStats();
             expect(stats.totalChunks).toBe(2);
@@ -106,6 +109,7 @@ describe('VectorStore', () => {
             ];
 
             await store.addChunks(chunks, embeddings, '/test/search.txt');
+            await store.flushPendingRecords();
         });
 
         it('should find similar chunks', async () => {
@@ -148,6 +152,7 @@ describe('VectorStore', () => {
             ];
 
             await store.addChunks(chunks, embeddings, '/test/delete-me.txt');
+            await store.flushPendingRecords();
 
             const deletedCount = await store.deleteFile('/test/delete-me.txt');
 
@@ -170,6 +175,7 @@ describe('VectorStore', () => {
             const embeddings: Embedding[] = [new Array(384).fill(0.5)];
 
             await store.addChunks(chunks, embeddings, '/test/stats.txt');
+            await store.flushPendingRecords();
 
             const stats = await store.getStats();
 
@@ -196,6 +202,7 @@ describe('VectorStore', () => {
             const embeddings: Embedding[] = [new Array(384).fill(0.5)];
 
             await store.addChunks(chunks, embeddings, '/test/clear-test.txt');
+            await store.flushPendingRecords();
 
             const result = await store.clear();
 

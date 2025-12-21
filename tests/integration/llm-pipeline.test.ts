@@ -105,7 +105,6 @@ Cook for 8-10 minutes until al dente.`;
         await embeddingModel.initialize();
 
         indexingService = new IndexingService(
-            mockFileSystemService as any,
             embeddingModel,
             vectorStore
         );
@@ -244,17 +243,16 @@ Cook for 8-10 minutes until al dente.`;
             expect(result.sources).toEqual([]);
         });
 
-        it('should handle binary file gracefully', async () => {
+        it('should handle binary file gracefully by indexing metadata', async () => {
             const binaryPath = path.join(testDir, 'binary-' + Date.now() + '.bin');
-            await fs.writeFile(binaryPath, Buffer.from([0xFF, 0xD8, 0xFF, 0xE0]));
-
-            mockFileSystemService.readFile.mockResolvedValueOnce(
-                Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x00, 0xFF]).toString()
-            );
+            // Write some binary data
+            await fs.writeFile(binaryPath, Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]), 'binary');
 
             const result = await indexingService.indexFile(binaryPath);
 
-            expect(result.success).toBe(false);
+            // Now expect SUCCESS (for metadata), not failure
+            expect(result.success).toBe(true);
+            expect(result.chunksCreated).toBe(1); // Metadata chunk
         });
     });
 

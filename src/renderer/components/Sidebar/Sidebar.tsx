@@ -3,6 +3,7 @@ import { QuickAccess } from './QuickAccess';
 import { DirectoryTree } from './DirectoryTree';
 import { FavoritesList } from './FavoritesList';
 import { UI_CONSTANTS } from '@renderer/utils/constants';
+import { Shield } from 'lucide-react';
 
 interface SidebarProps {
   width: number;
@@ -43,17 +44,24 @@ export const Sidebar: React.FC<SidebarProps> = ({ width, onResize, onNavigate })
 
   return (
     <div
-      className="bg-white border-r border-gray-200 flex flex-col h-full relative"
+      className="bg-white border-r border-primary-200 flex flex-col h-full relative shadow-elite"
       style={{ width: `${width}px` }}
     >
-      {/* Header */}
-      <div className="p-4 border-b border-gray-200">
-        <h1 className="text-xl font-bold text-gray-800">File Manager</h1>
-        <p className="text-xs text-gray-500 mt-1">Project-2 with LLM</p>
+      {/* Header - Elite branding */}
+      <div className="px-5 py-4 border-b border-primary-100 bg-gradient-to-b from-white to-primary-50/30">
+        <h1 className="text-lg font-semibold text-primary-900 tracking-tight">
+          File Manager
+        </h1>
+        <div className="flex items-center gap-1.5 mt-1">
+          <Shield className="w-3 h-3 text-primary-500" />
+          <span className="text-[11px] font-medium text-primary-500 tracking-wide uppercase">
+            PrivateVault AI
+          </span>
+        </div>
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-2 scrollbar-thin">
+      <div className="flex-1 overflow-y-auto py-3 scrollbar-thin">
         <QuickAccess onNavigate={onNavigate} />
         <DirectoryTree onNavigate={onNavigate} />
         <FavoritesList onNavigate={onNavigate} />
@@ -61,11 +69,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ width, onResize, onNavigate })
 
       {/* Resize handle */}
       <div
-        className={`absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-primary-500 transition-colors ${
-          isResizing ? 'bg-primary-500' : 'bg-transparent'
-        }`}
+        className={`absolute right-0 top-0 bottom-0 w-1 cursor-col-resize transition-colors ${isResizing ? 'bg-primary-400' : 'bg-transparent hover:bg-primary-300'
+          }`}
         onMouseDown={handleMouseDown}
       />
     </div>
   );
 };
+

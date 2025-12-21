@@ -189,7 +189,7 @@ const electronAPI = {
          * @returns Success status
          */
         startIndexing: (path: string) =>
-            ipcRenderer.invoke('LLM:START_INDEXING', path),
+            ipcRenderer.invoke('LLM:START_INDEXING', { path }),
 
         /**
          * Stop background indexing.
@@ -197,6 +197,13 @@ const electronAPI = {
          */
         stopIndexing: () =>
             ipcRenderer.invoke('LLM:STOP_INDEXING'),
+
+        /**
+         * Clear the vector index database.
+         * @returns Success status
+         */
+        clearIndex: () =>
+            ipcRenderer.invoke('LLM:CLEAR_INDEX'),
     },
 
     /**

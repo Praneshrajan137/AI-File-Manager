@@ -6,10 +6,14 @@
  * 
  * Privacy-first: All processing happens locally, no cloud APIs.
  */
+import { net } from 'electron';
 import {
     LLMQueryOptions,
     RetrievalResult,
 } from '../../shared/contracts';
+
+// Use Electron's net.fetch which works in the main process
+const electronFetch = net.fetch;
 
 /**
  * Streaming chunk from Ollama API
@@ -53,7 +57,7 @@ export class LLMInterface {
         const userPrompt = this.buildUserPrompt(userQuery, retrievalResult);
 
         try {
-            const response = await fetch(`${this.ollamaUrl}/api/chat`, {
+            const response = await electronFetch(`${this.ollamaUrl}/api/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -149,16 +153,28 @@ export class LLMInterface {
      * Build system prompt for file assistant.
      */
     private buildSystemPrompt(): string {
-        return `You are a helpful file system assistant. Your purpose is to answer questions about the user's files based on the provided context.
+        return `You are an intelligent file system assistant with access to the user's indexed files. Your role is to help users understand, navigate, and work with their file contents.
 
-CRITICAL RULES:
-1. Answer ONLY based on the provided context
-2. If context doesn't contain the answer, say "I don't have enough information in the indexed files"
-3. Cite specific file names when relevant
+CAPABILITIES:
+- Summarize and explain file contents (PDFs, documents, code, text files)
+- Answer questions based on indexed file content
+- Compare information across multiple files
+- Extract key information, dates, names, and data points
+- Help users find specific information within their files
+
+CONTEXT INTERPRETATION:
+- When context includes actual document text, provide detailed answers based on that content
+- When context only shows file metadata (name, path, type), acknowledge you can see the file exists but the content wasn't extracted (may be scanned PDF or unsupported format)
+- If a PDF shows only metadata, suggest the user check if it's a scanned/image-based PDF
+
+RESPONSE RULES:
+1. Answer ONLY based on the provided context - never make up file contents
+2. Cite specific file names when referencing information
+3. If context is insufficient, clearly state what information is missing
 4. Be concise but thorough
-5. Do NOT make up information
+5. Format responses for readability (use bullet points, headers when appropriate)
 
-Your responses should help users understand and navigate their file system.`;
+Your responses should help users efficiently access and understand information in their files.`;
     }
 
     /**
@@ -190,12 +206,38 @@ Please provide a clear answer based on the context above. If the context doesn't
      */
     async checkConnection(): Promise<boolean> {
         try {
-            const response = await fetch(`${this.ollamaUrl}/api/tags`, {
-                method: 'GET',
-                signal: AbortSignal.timeout(5000),
-            });
-            return response.ok;
-        } catch {
+            console.log('[LLMInterface] Checking Ollama connection at:', this.ollamaUrl);
+
+            // Try multiple endpoints
+            const endpoints = ['/api/tags', '/api/version', '/'];
+
+            for (const endpoint of endpoints) {
+                try {
+                    const url = `${this.ollamaUrl}${endpoint}`;
+                    console.log('[LLMInterface] Trying endpoint:', url);
+
+                    const response = await electronFetch(url, {
+                        method: 'GET',
+                        signal: AbortSignal.timeout(5000),
+                    });
+
+                    console.log('[LLMInterface] Response status:', response.status, 'for', endpoint);
+
+                    if (response.ok) {
+                        console.log('[LLMInterface] Ollama is available!');
+                        return true;
+                    }
+                } catch (e: unknown) {
+                    const msg = e instanceof Error ? e.message : String(e);
+                    console.log('[LLMInterface] Endpoint failed:', endpoint, '-', msg);
+                }
+            }
+
+            console.log('[LLMInterface] All endpoints failed, Ollama not available');
+            return false;
+        } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.log('[LLMInterface] checkConnection error:', msg);
             return false;
         }
     }
@@ -205,7 +247,7 @@ Please provide a clear answer based on the context above. If the context doesn't
      */
     async getAvailableModels(): Promise<string[]> {
         try {
-            const response = await fetch(`${this.ollamaUrl}/api/tags`);
+            const response = await electronFetch(`${this.ollamaUrl}/api/tags`);
             if (!response.ok) {
                 return [];
             }

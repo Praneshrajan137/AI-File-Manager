@@ -36,3 +36,4 @@ export const test = base.extend<ElectronTestFixtures>({
 });
 
 export { expect } from '@playwright/test';
+

@@ -1,6 +1,6 @@
 import React, { useCallback } from 'react';
 import { FileNode } from '@shared/contracts';
-import { getFileIcon } from '@renderer/utils/fileIcons';
+import { getFileIconWithColor } from '@renderer/utils/fileIcons';
 import { formatFileSize, formatDate } from '@renderer/utils/formatters';
 
 interface FileListItemProps {
@@ -18,7 +18,7 @@ export const FileListItem: React.FC<FileListItemProps> = React.memo(({
   onDoubleClick,
   onContextMenu
 }) => {
-  const Icon = getFileIcon(file);
+  const { icon: Icon, colorClass } = getFileIconWithColor(file);
 
   const handleKeyPress = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
@@ -29,12 +29,12 @@ export const FileListItem: React.FC<FileListItemProps> = React.memo(({
   return (
     <div
       className={`
-        flex items-center gap-3 p-3 rounded cursor-pointer transition-colors
-        ${selected 
-          ? 'bg-primary-100 border-l-4 border-primary-500' 
-          : 'hover:bg-gray-100'
+        flex items-center gap-4 px-4 py-2.5 rounded-lg cursor-pointer transition-all duration-150
+        ${selected
+          ? 'bg-primary-100 ring-1 ring-primary-300 ring-inset'
+          : 'hover:bg-primary-50'
         }
-        ${file.isHidden === true ? 'opacity-60 italic' : ''}
+        ${file.isHidden === true ? 'opacity-50' : ''}
       `}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
@@ -44,14 +44,17 @@ export const FileListItem: React.FC<FileListItemProps> = React.memo(({
       aria-selected={selected}
       onKeyPress={handleKeyPress}
     >
-      <Icon className="w-5 h-5 flex-shrink-0" />
-      <span className="flex-1 truncate text-sm text-gray-800">{file.name}</span>
+      {/* Colorful file type icon */}
+      <Icon className={`w-5 h-5 flex-shrink-0 ${colorClass}`} />
+      <span className={`flex-1 truncate text-sm font-medium ${selected ? 'text-primary-900' : 'text-primary-800'}`}>
+        {file.name}
+      </span>
       {!file.isDirectory && (
         <>
-          <span className="text-xs text-gray-500 w-20 text-right">
+          <span className="text-xs text-primary-400 w-20 text-right tabular-nums">
             {formatFileSize(file.size)}
           </span>
-          <span className="text-xs text-gray-500 w-24 text-right">
+          <span className="text-xs text-primary-400 w-24 text-right">
             {formatDate(file.modified)}
           </span>
         </>
@@ -61,3 +64,5 @@ export const FileListItem: React.FC<FileListItemProps> = React.memo(({
 });
 
 FileListItem.displayName = 'FileListItem';
+
+

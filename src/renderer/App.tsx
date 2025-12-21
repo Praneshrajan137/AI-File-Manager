@@ -287,8 +287,8 @@ const FileManagerApp: React.FC = () => {
 
       {/* Chat Panel */}
       {chatOpen && (
-        <div className="w-96 bg-white border-l border-gray-200" data-testid="chat-panel-container">
-          <ChatInterface />
+        <div className="w-96 bg-white border-l border-gray-200 shadow-lg" data-testid="chat-panel-container">
+          <ChatInterface currentPath={currentPath} />
         </div>
       )}
 

@@ -41,6 +41,10 @@ export class VectorStore implements IVectorStore {
     private readonly TABLE_NAME = 'file_chunks';
     private readonly EMBEDDING_DIM = 384;
 
+    /** Batch write optimization: accumulate records before flushing */
+    private pendingRecords: LanceRecord[] = [];
+    private readonly BATCH_WRITE_SIZE = 50;
+
     /**
      * Initialize vector database.
      */
@@ -116,11 +120,33 @@ export class VectorStore implements IVectorStore {
             indexed_at: Date.now(),
         }));
 
+        // Add to pending batch for optimized writes
+        this.pendingRecords.push(...records);
+
+        // Flush when batch size reached
+        if (this.pendingRecords.length >= this.BATCH_WRITE_SIZE) {
+            await this.flushPendingRecords();
+        }
+    }
+
+    /**
+     * Flush pending records to database.
+     * Call this after batch indexing operations complete.
+     */
+    async flushPendingRecords(): Promise<void> {
+        if (this.pendingRecords.length === 0) return;
+
+        this.ensureInitialized();
+
         try {
-            await this.table!.add(records);
+            await this.table!.add(this.pendingRecords);
+            this.pendingRecords = [];
+
+            // Yield after write to prevent blocking
+            await new Promise(resolve => setImmediate(resolve));
         } catch (error: unknown) {
             const msg = error instanceof Error ? error.message : String(error);
-            throw new Error(`Failed to add chunks: ${msg}`);
+            throw new Error(`Failed to flush pending records: ${msg}`);
         }
     }
 

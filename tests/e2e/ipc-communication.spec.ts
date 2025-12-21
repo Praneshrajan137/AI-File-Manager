@@ -134,3 +134,4 @@ test.describe('IPC Communication', () => {
     expect(Array.isArray(receivedEvents)).toBe(true);
   });
 });
+

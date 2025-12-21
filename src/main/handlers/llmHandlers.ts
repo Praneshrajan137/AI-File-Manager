@@ -21,7 +21,7 @@ import {
 import { IndexingStatus, IndexStats } from '../../shared/contracts';
 import { IPCLogger, LLMLogger } from '../../shared/logging';
 import { VectorStore } from '../../llm/services/VectorStore';
-import { EmbeddingModel } from '../../llm/models/EmbeddingModel';
+import { EmbeddingWorkerPool } from '../../llm/workers/EmbeddingWorkerPool';
 import { IndexingService } from '../../llm/services/IndexingService';
 import { RetrievalService } from '../../llm/services/RetrievalService';
 import { LLMInterface } from '../../llm/services/LLMInterface';
@@ -30,9 +30,26 @@ import { DirectoryScanner } from '../services/DirectoryScanner';
 import path from 'path';
 import os from 'os';
 
+/**
+ * Calculate adaptive yield duration based on file type and indexing progress.
+ * Heavy files (PDF, DOCX) need longer yields; system fatigue increases yield over time.
+ */
+function calculateAdaptiveYield(filePath: string, indexedCount: number): number {
+  const ext = path.extname(filePath).toLowerCase();
+
+  // Heavier files need longer yields to prevent blocking
+  const heavyExtensions = ['.pdf', '.docx', '.xlsx', '.pptx'];
+  const baseYield = heavyExtensions.includes(ext) ? 250 : 100;
+
+  // Increase yield every 10 files to let system breathe (fatigue factor)
+  const fatigueMultiplier = 1 + Math.floor(indexedCount / 10) * 0.1;
+
+  return Math.min(Math.round(baseYield * fatigueMultiplier), 500);
+}
+
 // Service instances (lazy initialization)
 let vectorStore: VectorStore | null = null;
-let embeddingModel: EmbeddingModel | null = null;
+let embeddingModel: EmbeddingWorkerPool | null = null;
 let indexingService: IndexingService | null = null;
 let retrievalService: RetrievalService | null = null;
 let llmInterface: LLMInterface | null = null;
@@ -62,18 +79,18 @@ async function ensureServicesInitialized(): Promise<void> {
     await vectorStore.initialize(dbPath);
     LLMLogger.info('VectorStore initialized', { dbPath });
 
-    // Initialize embedding model
-    embeddingModel = new EmbeddingModel();
+    // Initialize embedding model (runs in worker thread to avoid blocking main process)
+    embeddingModel = new EmbeddingWorkerPool();
     await embeddingModel.initialize();
-    LLMLogger.info('EmbeddingModel initialized');
+    LLMLogger.info('EmbeddingWorkerPool initialized (worker thread)');
 
     // Initialize file system service with home directory as allowed root
     const allowedRoot = os.homedir();
     fileSystemService = new FileSystemService(allowedRoot);
 
     // Initialize higher-level services
+    // Note: IndexingService no longer needs FileSystemService, uses FileContentExtractor internally
     indexingService = new IndexingService(
-      fileSystemService,
       embeddingModel,
       vectorStore
     );
@@ -212,7 +229,10 @@ async function handleStartIndexing(
     const scanner = new DirectoryScanner(fileSystemService!);
     const files = await scanner.scan(dirPath, {
       recursive: true,
-      extensions: ['txt', 'md', 'js', 'ts', 'jsx', 'tsx', 'py', 'java', 'cpp', 'c', 'h', 'json', 'yaml', 'yml', 'xml', 'html', 'css'],
+      extensions: [
+        'txt', 'md', 'js', 'ts', 'jsx', 'tsx', 'py', 'java', 'cpp', 'c', 'h', 'json', 'yaml', 'yml', 'xml', 'html', 'css',
+        'pdf', 'docx', 'png', 'jpg', 'jpeg', 'gif', 'svg'
+      ],
       maxSize: 10 * 1024 * 1024, // 10MB limit
     });
 
@@ -236,11 +256,18 @@ async function handleStartIndexing(
 
 /**
  * Index files in background with progress updates.
+ * 
+ * Optimized for responsiveness:
+ * - Longer yields between files
+ * - Batch pauses every 5 files
+ * - Proper error handling per file
  */
 async function indexFilesBackground(
   filePaths: string[],
   event: IpcMainInvokeEvent
 ): Promise<void> {
+  const BATCH_SIZE = 5; // Pause every 5 files for UI responsiveness
+
   for (const filePath of filePaths) {
     if (abortIndexing) {
       LLMLogger.info('Indexing aborted by user');
@@ -249,6 +276,11 @@ async function indexFilesBackground(
 
     try {
       currentFile = filePath;
+
+      // Adaptive yield based on file type and progress
+      const yieldDuration = calculateAdaptiveYield(filePath, indexedCount);
+      await new Promise(resolve => setTimeout(resolve, yieldDuration));
+
       await indexingService!.indexFile(filePath);
       indexedCount++;
 
@@ -258,10 +290,26 @@ async function indexFilesBackground(
         total: totalToIndex,
         currentFile: filePath,
       });
+
+      // Batch pause every N files with adaptive duration
+      if (indexedCount % BATCH_SIZE === 0) {
+        const batchYield = Math.min(300 + indexedCount * 2, 600);
+        await new Promise(resolve => setTimeout(resolve, batchYield));
+      }
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       LLMLogger.warn('Failed to index file', { filePath, error: msg });
+      // Continue with next file, don't break on error
     }
+  }
+
+  // Flush any remaining pending records in VectorStore
+  try {
+    await vectorStore!.flushPendingRecords();
+  } catch (flushError) {
+    LLMLogger.warn('Failed to flush pending records', {
+      error: flushError instanceof Error ? flushError.message : String(flushError)
+    });
   }
 
   indexingInProgress = false;
@@ -347,6 +395,37 @@ async function handleCheckOllama(
 }
 
 /**
+ * Handler: LLM:CLEAR_INDEX
+ * Clear the vector database and reset indexing state.
+ */
+async function handleClearIndex(
+  _event: IpcMainInvokeEvent,
+  _request: unknown
+): Promise<{ success: boolean; error?: string }> {
+  checkRateLimit('LLM:CLEAR_INDEX');
+
+  try {
+    await ensureServicesInitialized();
+
+    // Clear the vector store
+    const result = await vectorStore!.clear();
+
+    // Reset indexing counters
+    indexedCount = 0;
+    totalToIndex = 0;
+    currentFile = '';
+
+    LLMLogger.info('Vector index cleared');
+
+    return { success: result.success };
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    LLMLogger.error('Failed to clear index', { error: msg });
+    return { success: false, error: msg };
+  }
+}
+
+/**
  * Register all LLM IPC handlers.
  */
 export function registerLLMHandlers(): void {
@@ -382,5 +461,44 @@ export function registerLLMHandlers(): void {
     withErrorHandling(handleCheckOllama, 'LLM:CHECK_OLLAMA')
   );
 
-  IPCLogger.info('LLM IPC handlers registered (6 handlers)');
+  ipcMain.handle(
+    'LLM:CLEAR_INDEX',
+    withErrorHandling(handleClearIndex, 'LLM:CLEAR_INDEX')
+  );
+
+  IPCLogger.info('LLM IPC handlers registered (7 handlers)');
+}
+
+/**
+ * Cleanup LLM services on app shutdown.
+ * Call this before app.quit() to properly terminate worker threads.
+ */
+export async function cleanupLLMServices(): Promise<void> {
+  LLMLogger.info('Cleaning up LLM services...');
+
+  // Terminate embedding worker if active
+  if (embeddingModel) {
+    try {
+      await embeddingModel.terminate();
+      LLMLogger.info('EmbeddingWorkerPool terminated');
+    } catch (error) {
+      LLMLogger.warn('Error terminating embedding worker', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    embeddingModel = null;
+  }
+
+  // Close vector store
+  if (vectorStore) {
+    vectorStore = null;
+    LLMLogger.info('VectorStore closed');
+  }
+
+  indexingService = null;
+  retrievalService = null;
+  llmInterface = null;
+  fileSystemService = null;
+
+  LLMLogger.info('LLM services cleanup complete');
 }

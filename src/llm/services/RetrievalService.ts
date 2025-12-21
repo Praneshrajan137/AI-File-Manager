@@ -15,9 +15,9 @@ import {
     RetrievalResult,
     VectorRecord,
     Embedding,
+    IEmbeddingModel,
 } from '../../shared/contracts';
 import { VectorStore } from './VectorStore';
-import { EmbeddingModel } from '../models/EmbeddingModel';
 
 export class RetrievalService {
     /** Maximum tokens in context (fits most LLM context windows) */
@@ -28,7 +28,7 @@ export class RetrievalService {
 
     constructor(
         private vectorStore: VectorStore,
-        private embeddingModel: EmbeddingModel
+        private embeddingModel: IEmbeddingModel
     ) { }
 
     /**
@@ -80,29 +80,54 @@ export class RetrievalService {
     }
 
     /**
-     * Re-rank results by semantic similarity to query.
+     * Re-rank results using multi-signal scoring.
+     * 
+     * Signals:
+     * - Semantic similarity (primary)
+     * - Content length boost (more detailed = higher score)
+     * - Recency boost (recently indexed content)
      * 
      * @param queryEmbedding - Query vector
      * @param candidates - Initial search results
-     * @returns Sorted by similarity (highest first)
+     * @returns Sorted by composite score (highest first)
      */
     private rerank(
         queryEmbedding: Embedding,
         candidates: VectorRecord[]
     ): VectorRecord[] {
-        // Calculate similarity scores
-        const scored = candidates.map((candidate) => ({
-            record: candidate,
-            score: this.embeddingModel.similarity(
+        const scored = candidates.map((candidate) => {
+            // Base similarity score (0-1)
+            const similarityScore = this.embeddingModel.similarity(
                 queryEmbedding,
                 candidate.embedding
-            ),
-        }));
+            );
 
-        // Sort by score descending
+            // Length boost: reward more detailed chunks (max 0.15)
+            const lengthBoost = Math.min(candidate.chunk_text.length / 2000, 0.15);
+
+            // Recency boost: reward recently indexed content (max 0.1)
+            const recencyBoost = this.calculateRecencyBoost(candidate.indexed_at);
+
+            return {
+                record: candidate,
+                score: similarityScore + lengthBoost + recencyBoost,
+            };
+        });
+
+        // Sort by composite score descending
         scored.sort((a, b) => b.score - a.score);
 
         return scored.map((s) => s.record);
+    }
+
+    /**
+     * Calculate recency boost based on when content was indexed.
+     * Files indexed within the last day get maximum boost.
+     */
+    private calculateRecencyBoost(indexedAt: number): number {
+        const daysSinceIndexed = (Date.now() - indexedAt) / (1000 * 60 * 60 * 24);
+        // Max 0.1 boost for files indexed within last day, decreasing over time
+        return Math.max(0, 0.1 - daysSinceIndexed * 0.01);
     }
 
     /**
@@ -113,10 +138,17 @@ export class RetrievalService {
      */
     private formatContext(records: VectorRecord[]): string {
         const formatted = records.map((record) => {
-            return `[Source: ${record.file_path}]\n${record.chunk_text}`;
+            // Extract filename from path for cleaner citation
+            const fileName = record.file_path.split(/[\\/]/).pop() || record.file_path;
+
+            return `📄 **FILE: ${fileName}**
+📍 PATH: ${record.file_path}
+---
+${record.chunk_text}
+---`;
         });
 
-        return formatted.join('\n\n---\n\n');
+        return formatted.join('\n\n');
     }
 
     /**
@@ -133,7 +165,10 @@ export class RetrievalService {
         let totalTokens = 0;
 
         for (const record of records) {
-            const chunkText = `[Source: ${record.file_path}]\n${record.chunk_text}`;
+            // Use same format as formatContext for consistency
+            const fileName = record.file_path.split(/[\\/]/).pop() || record.file_path;
+            const chunkText = `📄 **FILE: ${fileName}**\n📍 PATH: ${record.file_path}\n---\n${record.chunk_text}\n---`;
+
             const chunkTokens = this.estimateTokens(chunkText);
 
             // Stop if adding this chunk would exceed limit
@@ -145,7 +180,7 @@ export class RetrievalService {
             totalTokens += chunkTokens;
         }
 
-        return chunks.join('\n\n---\n\n');
+        return chunks.join('\n\n');
     }
 
     /**

@@ -4,23 +4,35 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        // Elite primary palette - sophisticated slate
         primary: {
-          50: '#EFF6FF',
-          100: '#DBEAFE',
-          200: '#BFDBFE',
-          300: '#93C5FD',
-          400: '#60A5FA',
-          500: '#3B82F6',
-          600: '#2563EB',
-          700: '#1D4ED8',
-          800: '#1E40AF',
-          900: '#1E3A8A',
+          50: '#F8FAFC',
+          100: '#F1F5F9',
+          200: '#E2E8F0',
+          300: '#CBD5E1',
+          400: '#94A3B8',
+          500: '#64748B',
+          600: '#475569',
+          700: '#334155',
+          800: '#1E293B',
+          900: '#0F172A',
+        },
+        // Accent - deep charcoal for emphasis
+        accent: {
+          50: '#FAFAFA',
+          100: '#F4F4F5',
+          200: '#E4E4E7',
+          500: '#71717A',
+          600: '#52525B',
+          700: '#3F3F46',
+          800: '#27272A',
+          900: '#18181B',
         },
         success: {
           50: '#F0FDF4',
           100: '#DCFCE7',
-          500: '#10B981',
-          600: '#059669',
+          500: '#22C55E',
+          600: '#16A34A',
         },
         warning: {
           50: '#FFFBEB',
@@ -38,9 +50,17 @@ module.exports = {
         info: {
           50: '#F0F9FF',
           100: '#E0F2FE',
-          500: '#06B6D4',
-          600: '#0891B2',
+          500: '#0EA5E9',
+          600: '#0284C7',
         },
+      },
+      fontFamily: {
+        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+      },
+      boxShadow: {
+        'elite': '0 1px 3px 0 rgb(0 0 0 / 0.05), 0 1px 2px -1px rgb(0 0 0 / 0.05)',
+        'elite-md': '0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05)',
+        'elite-lg': '0 10px 15px -3px rgb(0 0 0 / 0.05), 0 4px 6px -4px rgb(0 0 0 / 0.05)',
       },
     },
   },

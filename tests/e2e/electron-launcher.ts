@@ -108,3 +108,4 @@ function getElectronPath(): string {
 export async function closeElectronApp(electronApp: ElectronApplication): Promise<void> {
   await electronApp.close();
 }
+

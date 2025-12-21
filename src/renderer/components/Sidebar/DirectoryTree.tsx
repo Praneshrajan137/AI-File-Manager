@@ -52,8 +52,8 @@ export const DirectoryTree: React.FC<DirectoryTreeProps> = ({
   if (!root) return null;
 
   return (
-    <div className="py-2" role="tree" aria-label="Directory tree">
-      <h3 className="text-xs font-semibold text-gray-500 uppercase px-2 mb-2">
+    <div className="py-2 px-3" role="tree" aria-label="Directory tree">
+      <h3 className="text-[10px] font-semibold text-primary-400 uppercase tracking-wider px-2 mb-3">
         Folders
       </h3>
       <DirectoryTreeNode node={root} onNavigate={onNavigate} />

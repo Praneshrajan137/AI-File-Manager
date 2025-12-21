@@ -141,17 +141,17 @@ function createWindow(): void {
       contextIsolation: true,    // Isolate renderer from Node.js context
       nodeIntegration: false,     // Disable Node.js in renderer
       sandbox: config.get('security').enableSandbox, // Enable OS-level sandboxing (from config)
-      
+
       // Preload script - bridge between Main and Renderer
       preload: path.join(__dirname, 'preload.js'),
-      
+
       // Additional security
       webSecurity: true,          // Enable web security
       allowRunningInsecureContent: false,
       experimentalFeatures: false,
       enableBlinkFeatures: '',    // No experimental features
     },
-    
+
     // Window appearance
     backgroundColor: '#ffffff',
     show: false, // Don't show until ready-to-show event
@@ -164,7 +164,7 @@ function createWindow(): void {
     const devUrl = 'http://localhost:8080';
     logger.info('Loading development URL', { url: devUrl });
     mainWindow.loadURL(devUrl);
-    
+
     // Open DevTools in development
     mainWindow.webContents.openDevTools();
   } else {
@@ -189,13 +189,13 @@ function createWindow(): void {
   // Security: Prevent navigation to external URLs
   mainWindow.webContents.on('will-navigate', (event, url) => {
     // Only allow navigation to localhost in dev or file:// in prod
-    const allowedOrigins = isDevelopment 
+    const allowedOrigins = isDevelopment
       ? ['http://localhost:8080']
       : [`file://${__dirname}`];
-    
+
     const urlObj = new URL(url);
     const isAllowed = allowedOrigins.some(origin => url.startsWith(origin));
-    
+
     if (!isAllowed) {
       logger.warn('Blocked navigation attempt', { url, allowed: allowedOrigins });
       event.preventDefault();
@@ -209,7 +209,7 @@ function createWindow(): void {
   });
 
   logger.info('Main window created successfully');
-  
+
   // Start file watcher after window is created
   startFileWatcher();
 }
@@ -231,17 +231,17 @@ let currentWatchPath: string | null = null;
  */
 function startFileWatcher(): void {
   const logger = getLogger();
-  
+
   if (globalFileWatcher) {
     logger.warn('FileWatcher already initialized');
     return;
   }
-  
+
   try {
     // Create event queue and file watcher
     const eventQueue = new EventQueue();
     globalFileWatcher = new FileWatcher(eventQueue);
-    
+
     // Connect file watcher events to IPC
     globalFileWatcher.on('fileCreated', (filePath: string) => {
       logger.debug('File created, broadcasting to renderer', { path: filePath });
@@ -249,36 +249,36 @@ function startFileWatcher(): void {
         window.webContents.send('FILE_CREATED', filePath);
       });
     });
-    
+
     globalFileWatcher.on('fileChanged', (filePath: string) => {
       logger.debug('File changed, broadcasting to renderer', { path: filePath });
       BrowserWindow.getAllWindows().forEach(window => {
         window.webContents.send('FILE_CHANGED', filePath);
       });
     });
-    
+
     globalFileWatcher.on('fileDeleted', (filePath: string) => {
       logger.debug('File deleted, broadcasting to renderer', { path: filePath });
       BrowserWindow.getAllWindows().forEach(window => {
         window.webContents.send('FILE_DELETED', filePath);
       });
     });
-    
+
     globalFileWatcher.on('error', (error: Error) => {
       // Log errors but don't crash - file watcher errors are non-fatal
       logger.warn('FileWatcher error (non-fatal)', {
         error: error.message,
       });
     });
-    
+
     globalFileWatcher.on('ready', () => {
       logger.info('FileWatcher ready and monitoring', { path: currentWatchPath });
     });
-    
+
     // NOTE: Do NOT auto-start watching home directory!
     // The watcher will be started dynamically when user navigates.
     logger.info('FileWatcher initialized (not started - waiting for navigation)');
-    
+
   } catch (error) {
     logger.error('Failed to initialize FileWatcher', {
       error: error instanceof Error ? error.message : String(error),
@@ -294,23 +294,23 @@ function startFileWatcher(): void {
  */
 export async function updateWatchPath(newPath: string): Promise<void> {
   const logger = getLogger();
-  
+
   if (!globalFileWatcher) {
     logger.warn('FileWatcher not initialized, cannot update watch path');
     return;
   }
-  
+
   // Skip if already watching this path
   if (currentWatchPath === newPath) {
     return;
   }
-  
+
   try {
     // Stop current watcher if running
     if (globalFileWatcher.isWatching()) {
       await globalFileWatcher.stop();
     }
-    
+
     // Start watching the new path (non-recursive, single directory)
     currentWatchPath = newPath;
     await globalFileWatcher.start(newPath, {
@@ -319,7 +319,7 @@ export async function updateWatchPath(newPath: string): Promise<void> {
       // CRITICAL: Only watch immediate directory, not subdirectories
       // depth: 0 is not directly supported, but we use ignored patterns
     });
-    
+
     logger.info('FileWatcher updated to watch', { path: newPath });
   } catch (error) {
     logger.error('Failed to update FileWatcher path', {
@@ -336,7 +336,7 @@ export async function updateWatchPath(newPath: string): Promise<void> {
 app.whenReady().then(() => {
   const logger = getLogger();
   logger.info('Electron app ready, registering IPC handlers and creating window');
-  
+
   // CRITICAL: Register all IPC handlers BEFORE creating window
   // This ensures handlers are ready when renderer process starts
   try {
@@ -351,7 +351,7 @@ app.whenReady().then(() => {
     // Don't create window if handlers failed to register
     throw error;
   }
-  
+
   createWindow();
 
   // macOS: Re-create window when dock icon clicked
@@ -370,7 +370,7 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   const logger = getLogger();
   logger.info('All windows closed');
-  
+
   // Stop file watcher
   if (globalFileWatcher) {
     globalFileWatcher.stop().then(() => {
@@ -382,7 +382,22 @@ app.on('window-all-closed', () => {
     });
     globalFileWatcher = null;
   }
-  
+
+  // Cleanup LLM services (terminates worker threads)
+  try {
+    const { cleanupLLMServices } = require('./handlers/llmHandlers');
+    cleanupLLMServices().then(() => {
+      logger.info('LLM services cleaned up');
+    }).catch((error: Error) => {
+      logger.error('Error cleaning up LLM services', {
+        error: error.message,
+      });
+    });
+  } catch (error) {
+    // LLM handlers may not be initialized
+    logger.debug('LLM cleanup skipped (not initialized)');
+  }
+
   if (process.platform !== 'darwin') {
     logger.info('Quitting application');
     app.quit();
@@ -392,27 +407,29 @@ app.on('window-all-closed', () => {
 /**
  * Single instance lock: Prevent multiple app instances.
  * If user tries to open second instance, focus existing window instead.
+ *
+ * TEMPORARILY DISABLED FOR DEBUGGING
  */
-const gotTheLock = app.requestSingleInstanceLock();
-
-if (!gotTheLock) {
-  const logger = getLogger();
-  logger.warn('Another instance is already running, quitting');
-  app.quit();
-} else {
-  app.on('second-instance', () => {
-    const logger = getLogger();
-    logger.info('Second instance launch attempt, focusing existing window');
-    
-    // Someone tried to run a second instance, focus our window
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore();
-      }
-      mainWindow.focus();
-    }
-  });
-}
+// const gotTheLock = app.requestSingleInstanceLock();
+// 
+// if (!gotTheLock) {
+//   const logger = getLogger();
+//   logger.warn('Another instance is already running, quitting');
+//   app.quit();
+// } else {
+//   app.on('second-instance', () => {
+//     const logger = getLogger();
+//     logger.info('Second instance launch attempt, focusing existing window');
+//     
+//     // Someone tried to run a second instance, focus our window
+//     if (mainWindow) {
+//       if (mainWindow.isMinimized()) {
+//         mainWindow.restore();
+//       }
+//       mainWindow.focus();
+//     }
+//   });
+// }
 
 /**
  * Note: Error handling is now managed by ErrorHandler.

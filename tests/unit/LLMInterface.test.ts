@@ -7,7 +7,13 @@
 
 // Mock fetch globally
 const mockFetch = jest.fn();
-global.fetch = mockFetch as unknown as typeof fetch;
+
+// Mock Electron's net module before importing LLMInterface
+jest.mock('electron', () => ({
+    net: {
+        fetch: mockFetch,
+    },
+}));
 
 import { LLMInterface } from '../../src/llm/services/LLMInterface';
 import { RetrievalResult } from '../../src/shared/contracts';

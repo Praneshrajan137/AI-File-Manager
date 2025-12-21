@@ -22,7 +22,7 @@ import { z } from 'zod';
  */
 export const appConfigSchema = z.object({
   app: z.object({
-    name: z.string().default('Project-2 File Manager'),
+    name: z.string().default('File Manager'),
     version: z.string().default('0.1.0'),
     environment: z.enum(['development', 'production', 'test']).default('development'),
   }),

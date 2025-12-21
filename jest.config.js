@@ -9,6 +9,16 @@ module.exports = {
     '^@renderer/(.*)$': '<rootDir>/src/renderer/$1',
     '^@llm/(.*)$': '<rootDir>/src/llm/$1',
   },
+  // Transform ES modules from @xenova/transformers
+  transformIgnorePatterns: [
+    'node_modules/(?!(@xenova/transformers)/)',
+  ],
+  transform: {
+    '^.+\\.tsx?$': ['ts-jest', {
+      useESM: false,
+    }],
+    '^.+\\.jsx?$': 'babel-jest',
+  },
   collectCoverageFrom: [
     'src/**/*.{ts,tsx}',
     '!src/**/*.d.ts',

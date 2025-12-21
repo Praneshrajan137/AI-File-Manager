@@ -1,7 +1,8 @@
 /**
  * index.css - Global Styles with Tailwind CSS
  * 
- * This file imports Tailwind's utility classes and defines global styles.
+ * Elite File Manager - Premium design system
+ * Uses system fonts for security (no external requests)
  */
 
 /* Tailwind CSS Imports */
@@ -25,41 +26,62 @@
   }
 
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-      'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-      sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto',
+      'Helvetica Neue', sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    background-color: #F8FAFC;
+    color: #1E293B;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   }
 
   code {
-    font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-      monospace;
+    font-family: 'JetBrains Mono', source-code-pro, Menlo, Monaco, Consolas, monospace;
+  }
+
+  /* Smooth transitions globally */
+  button,
+  a,
+  input,
+  select {
+    transition: all 0.15s ease;
   }
 }
 
 /* Custom Utility Classes */
 @layer utilities {
+
+  /* Elite scrollbar */
   .scrollbar-thin {
     scrollbar-width: thin;
+    scrollbar-color: #CBD5E1 transparent;
   }
 
   .scrollbar-thin::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
   }
 
   .scrollbar-thin::-webkit-scrollbar-track {
-    background: #f1f1f1;
+    background: transparent;
   }
 
   .scrollbar-thin::-webkit-scrollbar-thumb {
-    background: #888;
-    border-radius: 4px;
+    background: #CBD5E1;
+    border-radius: 3px;
   }
 
   .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-    background: #555;
+    background: #94A3B8;
+  }
+
+  /* Hide scrollbar until hover */
+  .scrollbar-hidden::-webkit-scrollbar-thumb {
+    background: transparent;
+  }
+
+  .scrollbar-hidden:hover::-webkit-scrollbar-thumb {
+    background: #CBD5E1;
   }
 
   /* Toast slide-in animation */
@@ -68,6 +90,7 @@
       transform: translateX(100%);
       opacity: 0;
     }
+
     to {
       transform: translateX(0);
       opacity: 1;
@@ -76,5 +99,45 @@
 
   .animate-slideIn {
     animation: slideIn 0.3s ease-out;
+  }
+
+  /* Subtle fade in */
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+
+    to {
+      opacity: 1;
+    }
+  }
+
+  .animate-fadeIn {
+    animation: fadeIn 0.2s ease-out;
+  }
+}
+
+/* Component layer for reusable patterns */
+@layer components {
+
+  /* Elite button base */
+  .btn-elite {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-150;
+    @apply bg-primary-800 text-white hover:bg-primary-900;
+    @apply shadow-elite hover:shadow-elite-md;
+  }
+
+  /* Elite card */
+  .card-elite {
+    @apply bg-white rounded-lg border border-primary-200;
+    @apply shadow-elite;
+  }
+
+  /* Elite input */
+  .input-elite {
+    @apply px-3 py-2 rounded-lg border border-primary-200;
+    @apply bg-white text-primary-900 placeholder-primary-400;
+    @apply focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-300;
+    @apply transition-all duration-150;
   }
 }
