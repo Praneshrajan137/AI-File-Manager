@@ -3,7 +3,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Electron](https://img.shields.io/badge/Electron-28.0-47848F?logo=electron)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18.2-61DAFB?logo=react)](https://reactjs.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 
 > **Industrial-grade OS File Manager with Local AI Integration**
 > 
@@ -219,7 +219,13 @@ npm run test:all
 
 ## 📝 License
 
-MIT License — see [LICENSE](LICENSE) for details.
+**CC BY-NC 4.0** — This project is licensed under the Creative Commons Attribution-NonCommercial 4.0 International License.
+
+- ✅ Free for personal and educational use
+- ✅ Modification and sharing allowed with attribution
+- ❌ **Commercial use is NOT permitted**
+
+See [LICENSE](LICENSE) for details.
 
 ---
 
