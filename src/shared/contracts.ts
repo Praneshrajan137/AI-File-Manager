@@ -1,4 +1,10 @@
 /**
+ * @copyright 2025 Praneshrajan
+ * @license CC-BY-NC-4.0
+ * @author Praneshrajan (https://github.com/Praneshrajan137)
+ */
+
+/**
  * contracts.ts - Interface Contracts (CRITICAL FILE)
  * 
  * This file defines ALL interfaces that govern communication between layers.

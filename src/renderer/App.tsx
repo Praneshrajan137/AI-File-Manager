@@ -1,4 +1,10 @@
 /**
+ * @copyright 2025 Praneshrajan
+ * @license CC-BY-NC-4.0
+ * @author Praneshrajan (https://github.com/Praneshrajan137)
+ */
+
+/**
  * App.tsx - Root React Component (Phase 5 Complete Integration)
  * 
  * Main application layout with complete UI implementation:

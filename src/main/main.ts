@@ -1,4 +1,10 @@
 /**
+ * @copyright 2025 Praneshrajan
+ * @license CC-BY-NC-4.0
+ * @author Praneshrajan (https://github.com/Praneshrajan137)
+ */
+
+/**
  * main.ts - Electron Main Process Entry Point
  * 
  * This is the ONLY process that has access to Node.js APIs and file system.

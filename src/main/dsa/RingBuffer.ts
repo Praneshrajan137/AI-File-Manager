@@ -1,4 +1,10 @@
 /**
+ * @copyright 2025 Praneshrajan
+ * @license CC-BY-NC-4.0
+ * @author Praneshrajan (https://github.com/Praneshrajan137)
+ */
+
+/**
  * RingBuffer - Circular buffer for efficient log file preview.
  * 
  * Implements fixed-size buffer that overwrites oldest entries when full.

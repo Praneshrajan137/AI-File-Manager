@@ -1,4 +1,10 @@
 /**
+ * @copyright 2025 Praneshrajan
+ * @license CC-BY-NC-4.0
+ * @author Praneshrajan (https://github.com/Praneshrajan137)
+ */
+
+/**
  * preload.ts - Electron Preload Script (Security Bridge)
  * 
  * This script runs in the renderer process BUT has access to Node.js APIs.

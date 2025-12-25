@@ -1,3 +1,9 @@
+/**
+ * @copyright 2025 Praneshrajan
+ * @license CC-BY-NC-4.0
+ * @author Praneshrajan (https://github.com/Praneshrajan137)
+ */
+
 import { FileEvent, EventPriority } from '@shared/contracts';
 
 /**
