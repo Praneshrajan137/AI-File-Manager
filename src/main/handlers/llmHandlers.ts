@@ -13,12 +13,11 @@
  * - LLM:CHECK_OLLAMA - Check if Ollama is running
  */
 
-import { ipcMain, IpcMainInvokeEvent, BrowserWindow } from 'electron';
-import {
-  withErrorHandling,
-  checkRateLimit,
-} from './securityMiddleware';
-import { IndexingStatus, IndexStats } from '../../shared/contracts';
+import { ipcMain, IpcMainInvokeEvent } from 'electron';
+import { withContract, resolveAllowedRoots } from './securityMiddleware';
+import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
+import { IndexingStatus } from '../../shared/contracts';
+import { IPCChannel } from '@shared/ipc/contracts';
 import { IPCLogger, LLMLogger } from '../../shared/logging';
 import { VectorStore } from '../../llm/services/VectorStore';
 import { EmbeddingWorkerPool } from '../../llm/workers/EmbeddingWorkerPool';
@@ -84,9 +83,8 @@ async function ensureServicesInitialized(): Promise<void> {
     await embeddingModel.initialize();
     LLMLogger.info('EmbeddingWorkerPool initialized (worker thread)');
 
-    // Initialize file system service with home directory as allowed root
-    const allowedRoot = os.homedir();
-    fileSystemService = new FileSystemService(allowedRoot);
+    // Initialize file system service synced with ConfigManager allowed roots
+    fileSystemService = new FileSystemService(resolveAllowedRoots());
 
     // Initialize higher-level services
     // Note: IndexingService no longer needs FileSystemService, uses FileContentExtractor internally
@@ -112,57 +110,70 @@ async function ensureServicesInitialized(): Promise<void> {
  */
 async function handleQuery(
   event: IpcMainInvokeEvent,
-  request: unknown
+  input: { query: string; channel: string }
 ): Promise<{ success: boolean; error?: string }> {
-  checkRateLimit('LLM:QUERY');
-
-  if (!request || typeof request !== 'object') {
-    throw new TypeError('Request must be an object');
-  }
-
-  const { query, channel } = request as { query: string; channel: string };
-
-  if (typeof query !== 'string') {
-    throw new TypeError('Field "query" must be a string');
-  }
-
-  if (typeof channel !== 'string') {
-    throw new TypeError('Field "channel" must be a string');
-  }
-
+  const { query, channel } = input;
   LLMLogger.info('LLM query received', { query: query.substring(0, 100) });
+
+  const safeSend = (streamChannel: string, payload: unknown): void => {
+    if (!event.sender.isDestroyed()) {
+      event.sender.send(streamChannel, payload);
+    }
+  };
+
+  let retrievalMs = 0;
+  let generationMs = 0;
 
   try {
     await ensureServicesInitialized();
 
-    // 1. Retrieve relevant context
+    const retrievalStart = Date.now();
     const retrievalResult = await retrievalService!.retrieve(query);
+    retrievalMs = Date.now() - retrievalStart;
+
     LLMLogger.info('Context retrieved', {
       sources: retrievalResult.sources.length,
       tokens: retrievalResult.tokenCount,
     });
 
-    // 2. Check if Ollama is available
     const ollamaAvailable = await llmInterface!.checkConnection();
     if (!ollamaAvailable) {
-      event.sender.send(channel, 'Ollama is not running. Please start Ollama with: ollama serve');
-      event.sender.send(channel, '[DONE]');
+      const msg = 'Ollama is not running. Please start Ollama with: ollama serve';
+      safeSend(channel, msg);
+      safeSend(`${channel}:end`, { ok: false, error: 'Ollama not available' });
+      RuntimeDiagnostics.getInstance().recordLlmQuery({
+        success: false,
+        retrievalMs,
+        generationMs: 0,
+        error: 'Ollama not available',
+      });
       return { success: false, error: 'Ollama not available' };
     }
 
-    // 3. Query LLM with streaming
+    const genStart = Date.now();
     for await (const chunk of llmInterface!.query(query, retrievalResult)) {
-      event.sender.send(channel, chunk);
+      safeSend(channel, chunk);
     }
+    generationMs = Date.now() - genStart;
 
-    // 4. Signal completion
-    event.sender.send(channel, '[DONE]');
+    safeSend(`${channel}:end`, { ok: true });
+    RuntimeDiagnostics.getInstance().recordLlmQuery({
+      success: true,
+      retrievalMs,
+      generationMs,
+    });
 
     return { success: true };
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
-    event.sender.send(channel, `Error: ${msg}`);
-    event.sender.send(channel, '[DONE]');
+    safeSend(channel, `Error: ${msg}`);
+    safeSend(`${channel}:end`, { ok: false, error: msg });
+    RuntimeDiagnostics.getInstance().recordLlmQuery({
+      success: false,
+      retrievalMs,
+      generationMs,
+      error: msg,
+    });
     return { success: false, error: msg };
   }
 }
@@ -173,18 +184,17 @@ async function handleQuery(
  */
 async function handleIndexStatus(
   _event: IpcMainInvokeEvent,
-  _request: unknown
-): Promise<IndexingStatus & Partial<IndexStats>> {
+  _input: Record<string, never>
+): Promise<IndexingStatus> {
   try {
     await ensureServicesInitialized();
-    const stats = await indexingService!.getStats();
+    await indexingService!.getStats();
 
     return {
       indexed: indexedCount,
       total: totalToIndex,
       inProgress: indexingInProgress,
       currentFile: currentFile || undefined,
-      ...stats,
     };
   } catch {
     return {
@@ -202,15 +212,9 @@ async function handleIndexStatus(
  */
 async function handleStartIndexing(
   event: IpcMainInvokeEvent,
-  request: unknown
-): Promise<{ success: boolean; message?: string; total?: number }> {
-  checkRateLimit('LLM:START_INDEXING');
-
-  if (!request || typeof request !== 'object' || !('path' in request)) {
-    throw new TypeError('Request missing required field: path');
-  }
-
-  const { path: dirPath } = request as { path: string };
+  input: { path: string }
+): Promise<{ success: boolean; message?: string; total?: number; error?: string }> {
+  const dirPath = input.path;
 
   if (indexingInProgress) {
     return { success: false, message: 'Indexing already in progress' };
@@ -225,21 +229,19 @@ async function handleStartIndexing(
     indexedCount = 0;
     abortIndexing = false;
 
-    // Scan directory for files
     const scanner = new DirectoryScanner(fileSystemService!);
     const files = await scanner.scan(dirPath, {
       recursive: true,
       extensions: [
         'txt', 'md', 'js', 'ts', 'jsx', 'tsx', 'py', 'java', 'cpp', 'c', 'h', 'json', 'yaml', 'yml', 'xml', 'html', 'css',
-        'pdf', 'docx', 'png', 'jpg', 'jpeg', 'gif', 'svg'
+        'pdf', 'docx', 'png', 'jpg', 'jpeg', 'gif', 'svg',
       ],
-      maxSize: 10 * 1024 * 1024, // 10MB limit
+      maxSize: 10 * 1024 * 1024,
     });
 
     totalToIndex = files.length;
     LLMLogger.info('Files to index', { count: totalToIndex });
 
-    // Start background indexing
     indexFilesBackground(
       files.map((f) => f.path),
       event
@@ -250,7 +252,7 @@ async function handleStartIndexing(
     indexingInProgress = false;
     const msg = error instanceof Error ? error.message : String(error);
     LLMLogger.error('Failed to start indexing', { error: msg });
-    return { success: false, message: msg };
+    return { success: false, message: msg, error: msg };
   }
 }
 
@@ -284,12 +286,13 @@ async function indexFilesBackground(
       await indexingService!.indexFile(filePath);
       indexedCount++;
 
-      // Send progress update
-      event.sender.send('LLM:INDEXING_PROGRESS', {
-        indexed: indexedCount,
-        total: totalToIndex,
-        currentFile: filePath,
-      });
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('LLM:INDEXING_PROGRESS', {
+          indexed: indexedCount,
+          total: totalToIndex,
+          currentFile: filePath,
+        });
+      }
 
       // Batch pause every N files with adaptive duration
       if (indexedCount % BATCH_SIZE === 0) {
@@ -316,10 +319,12 @@ async function indexFilesBackground(
   currentFile = '';
 
   // Send completion event
-  event.sender.send('LLM:INDEXING_COMPLETE', {
-    indexed: indexedCount,
-    total: totalToIndex,
-  });
+  if (!event.sender.isDestroyed()) {
+    event.sender.send('LLM:INDEXING_COMPLETE', {
+      indexed: indexedCount,
+      total: totalToIndex,
+    });
+  }
 
   LLMLogger.info('Indexing complete', { indexed: indexedCount, total: totalToIndex });
 }
@@ -330,10 +335,8 @@ async function indexFilesBackground(
  */
 async function handleStopIndexing(
   _event: IpcMainInvokeEvent,
-  _request: unknown
+  _input: Record<string, never>
 ): Promise<{ success: boolean }> {
-  checkRateLimit('LLM:STOP_INDEXING');
-
   if (!indexingInProgress) {
     return { success: true };
   }
@@ -350,19 +353,11 @@ async function handleStopIndexing(
  */
 async function handleIndexFile(
   _event: IpcMainInvokeEvent,
-  request: unknown
+  input: { filePath: string }
 ): Promise<{ success: boolean; chunksCreated?: number; error?: string }> {
-  checkRateLimit('LLM:INDEX_FILE');
-
-  if (!request || typeof request !== 'object' || !('filePath' in request)) {
-    throw new TypeError('Request missing required field: filePath');
-  }
-
-  const { filePath } = request as { filePath: string };
-
   try {
     await ensureServicesInitialized();
-    const result = await indexingService!.indexFile(filePath);
+    const result = await indexingService!.indexFile(input.filePath);
 
     return {
       success: result.success,
@@ -381,7 +376,7 @@ async function handleIndexFile(
  */
 async function handleCheckOllama(
   _event: IpcMainInvokeEvent,
-  _request: unknown
+  _input: Record<string, never>
 ): Promise<{ available: boolean; models: string[] }> {
   try {
     await ensureServicesInitialized();
@@ -400,17 +395,13 @@ async function handleCheckOllama(
  */
 async function handleClearIndex(
   _event: IpcMainInvokeEvent,
-  _request: unknown
+  _input: Record<string, never>
 ): Promise<{ success: boolean; error?: string }> {
-  checkRateLimit('LLM:CLEAR_INDEX');
-
   try {
     await ensureServicesInitialized();
 
-    // Clear the vector store
     const result = await vectorStore!.clear();
 
-    // Reset indexing counters
     indexedCount = 0;
     totalToIndex = 0;
     currentFile = '';
@@ -425,48 +416,32 @@ async function handleClearIndex(
   }
 }
 
+const LLM_CHANNELS: IPCChannel[] = [
+  'LLM:QUERY',
+  'LLM:INDEX_STATUS',
+  'LLM:START_INDEXING',
+  'LLM:STOP_INDEXING',
+  'LLM:INDEX_FILE',
+  'LLM:CHECK_OLLAMA',
+  'LLM:CLEAR_INDEX',
+];
+
 /**
  * Register all LLM IPC handlers.
  */
-export function registerLLMHandlers(): void {
+export function registerLLMHandlers(): IPCChannel[] {
   IPCLogger.info('Registering LLM IPC handlers');
 
-  ipcMain.handle(
-    'LLM:QUERY',
-    withErrorHandling(handleQuery, 'LLM:QUERY')
-  );
-
-  ipcMain.handle(
-    'LLM:INDEX_STATUS',
-    withErrorHandling(handleIndexStatus, 'LLM:INDEX_STATUS')
-  );
-
-  ipcMain.handle(
-    'LLM:START_INDEXING',
-    withErrorHandling(handleStartIndexing, 'LLM:START_INDEXING')
-  );
-
-  ipcMain.handle(
-    'LLM:STOP_INDEXING',
-    withErrorHandling(handleStopIndexing, 'LLM:STOP_INDEXING')
-  );
-
-  ipcMain.handle(
-    'LLM:INDEX_FILE',
-    withErrorHandling(handleIndexFile, 'LLM:INDEX_FILE')
-  );
-
-  ipcMain.handle(
-    'LLM:CHECK_OLLAMA',
-    withErrorHandling(handleCheckOllama, 'LLM:CHECK_OLLAMA')
-  );
-
-  ipcMain.handle(
-    'LLM:CLEAR_INDEX',
-    withErrorHandling(handleClearIndex, 'LLM:CLEAR_INDEX')
-  );
+  ipcMain.handle('LLM:QUERY', withContract('LLM:QUERY', handleQuery));
+  ipcMain.handle('LLM:INDEX_STATUS', withContract('LLM:INDEX_STATUS', handleIndexStatus));
+  ipcMain.handle('LLM:START_INDEXING', withContract('LLM:START_INDEXING', handleStartIndexing));
+  ipcMain.handle('LLM:STOP_INDEXING', withContract('LLM:STOP_INDEXING', handleStopIndexing));
+  ipcMain.handle('LLM:INDEX_FILE', withContract('LLM:INDEX_FILE', handleIndexFile));
+  ipcMain.handle('LLM:CHECK_OLLAMA', withContract('LLM:CHECK_OLLAMA', handleCheckOllama));
+  ipcMain.handle('LLM:CLEAR_INDEX', withContract('LLM:CLEAR_INDEX', handleClearIndex));
 
   IPCLogger.info('LLM IPC handlers registered (7 handlers)');
+  return [...LLM_CHANNELS];
 }
 
 /**

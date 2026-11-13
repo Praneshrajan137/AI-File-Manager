@@ -1,3 +1,4 @@
+import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { ValidationResult } from '@shared/contracts';
@@ -13,54 +14,66 @@ import { ConfigManager } from '@shared/config';
  * 3. Directory escape via prefix matching
  * 4. Access to system-critical paths
  * 5. Null byte injection
+ * 6. Symlink / junction escapes outside allowed roots
  * 
  * ALL paths MUST be validated before ANY fs operation.
- * 
- * Security fixes applied:
- * - BUG FIX #1: Check '..' in ORIGINAL path BEFORE normalization
- * - BUG FIX #2: Decode URL encoding to prevent %2e%2e attacks
- * - BUG FIX #3: Use exact match OR path.sep for forbidden paths
- * 
- * @example
- * const validator = new PathValidator('/home/user/documents');
- * const result = validator.validate('/home/user/documents/file.txt');
- * if (!result.valid) {
- *   throw new Error(result.error);
- * }
  */
 export class PathValidator {
     private allowedRoot: string;
+    private allowedRoots: string[];
     private forbiddenPaths: string[];
 
-    /**
-     * Create path validator for specific root directory.
-     * 
-     * @param allowedRoot - Root directory that paths must be under
-     * 
-     * @example
-     * const validator = new PathValidator('/home/user/documents');
-     * const result = validator.validate('/home/user/documents/file.txt');
-     * if (!result.valid) {
-     *   throw new Error(result.error);
-     * }
-     */
-    constructor(allowedRoot: string) {
-        // Normalize and resolve root to absolute path
-        this.allowedRoot = path.resolve(path.normalize(allowedRoot));
+    constructor(allowedRoots: string | string[]) {
+        const candidates = Array.isArray(allowedRoots) ? allowedRoots : [allowedRoots];
+        const normalized = candidates
+            .map((root) => root.trim())
+            .filter((root) => root.length > 0)
+            .map((root) => this.stripTrailingSep(path.resolve(path.normalize(root))));
+
+        this.allowedRoots = normalized.length > 0
+            ? Array.from(new Set(normalized))
+            : [this.stripTrailingSep(path.resolve(os.homedir()))];
+        this.allowedRoot = this.allowedRoots[0];
 
         // Initialize OS-specific forbidden paths
-        this.forbiddenPaths = this.getForbiddenPaths();
+        this.forbiddenPaths = this.getForbiddenPaths().map((entry) =>
+            this.stripTrailingSep(path.resolve(path.normalize(entry)))
+        );
+    }
+
+    private stripTrailingSep(targetPath: string): string {
+        const parsed = path.parse(targetPath);
+        if (targetPath === parsed.root) {
+            return targetPath;
+        }
+        return targetPath.replace(/[/\\]+$/, '');
+    }
+
+    private normalizeForCompare(targetPath: string): string {
+        const clean = this.stripTrailingSep(path.resolve(path.normalize(targetPath)));
+        return process.platform === 'win32' ? clean.toLowerCase() : clean;
+    }
+
+    private isWithinDirectory(candidatePath: string, rootPath: string): boolean {
+        const candidateNorm = this.normalizeForCompare(candidatePath);
+        const rootNorm = this.normalizeForCompare(rootPath);
+        if (candidateNorm === rootNorm) {
+            return true;
+        }
+        const rootWithSep = rootNorm.endsWith(path.sep) ? rootNorm : rootNorm + path.sep;
+        return candidateNorm.startsWith(rootWithSep);
+    }
+
+    private decodeSafe(requestedPath: string): string {
+        try {
+            return decodeURIComponent(requestedPath);
+        } catch {
+            return requestedPath;
+        }
     }
 
     /**
-     * Validate path for security.
-     * 
-     * @param requestedPath - Path to validate
-     * @returns Validation result with error details if invalid
-     * 
-     * @example
-     * const result = validator.validate('/home/user/../../etc/passwd');
-     * // Returns: { valid: false, error: 'PATH_TRAVERSAL', details: '...' }
+     * Validate path for security (lexical validation).
      */
     validate(requestedPath: string): ValidationResult {
         // Step 1: Check for empty path
@@ -86,17 +99,9 @@ export class PathValidator {
         }
 
         // Step 3: Decode URL encoding to prevent %2e%2e attacks (BUG FIX #2)
-        let decoded: string;
-        try {
-            decoded = decodeURIComponent(requestedPath);
-        } catch (e) {
-            // If decoding fails, use original (might be malformed URL encoding)
-            decoded = requestedPath;
-        }
+        const decoded = this.decodeSafe(requestedPath);
 
         // Step 4: CHECK FOR '..' IN ORIGINAL PATH FIRST (BUG FIX #1)
-        // This is CRITICAL - must check BEFORE any normalization
-        // because path.normalize() and path.resolve() remove '..'
         if (decoded.includes('..')) {
             SecurityLogger.error('Path traversal attempt detected', {
                 originalPath: requestedPath,
@@ -105,26 +110,16 @@ export class PathValidator {
             return {
                 valid: false,
                 error: 'PATH_TRAVERSAL',
-                details: `Path traversal detected: relative paths with ".." are not allowed`,
+                details: 'Path traversal detected: relative paths with ".." are not allowed',
             };
         }
 
-        // Step 5: Normalize path (handle //, ./, etc.)
-        const normalized = path.normalize(decoded);
+        // Step 5-6: Normalize and resolve to absolute path
+        const resolved = this.stripTrailingSep(path.resolve(path.normalize(decoded)));
 
-        // Step 6: Resolve to absolute path
-        const resolved = path.resolve(normalized);
-
-        // Step 7: Check against forbidden paths FIRST (BUG FIX #3)
-        // Check this BEFORE allowed root check to ensure forbidden paths
-        // are always blocked with the correct error message
-        // Use exact match OR prefix match with path.sep
+        // Step 7: Check against forbidden paths FIRST (exact match or nested child, case-safe on Windows)
         for (const forbidden of this.forbiddenPaths) {
-            // Exact match OR starts with forbidden path + separator
-            // This prevents '/etc/passwd_backup' from being blocked when '/etc/passwd' is forbidden
-            // But still blocks '/etc/passwd/file' when '/etc/passwd' is forbidden
-            if (resolved === forbidden ||
-                resolved.startsWith(forbidden + path.sep)) {
+            if (this.isWithinDirectory(resolved, forbidden)) {
                 SecurityLogger.error('Forbidden path access attempt', {
                     requestedPath,
                     resolvedPath: resolved,
@@ -138,18 +133,16 @@ export class PathValidator {
             }
         }
 
-        // Step 8: Ensure within allowed root (BUG FIX #3)
-        // CRITICAL: Must append path.sep to prevent prefix escape
-        // Without this: '/home/user2' passes check for '/home/user'
-        const rootWithSep = this.allowedRoot.endsWith(path.sep)
-            ? this.allowedRoot
-            : this.allowedRoot + path.sep;
-
-        if (!resolved.startsWith(rootWithSep) && resolved !== this.allowedRoot) {
+        // Step 8: Ensure within at least one allowed root
+        const insideAllowedRoot = this.allowedRoots.some((root) =>
+            this.isWithinDirectory(resolved, root)
+        );
+        if (!insideAllowedRoot) {
             SecurityLogger.error('Unauthorized directory access attempt', {
                 requestedPath,
                 resolvedPath: resolved,
                 allowedRoot: this.allowedRoot,
+                allowedRoots: this.allowedRoots,
             });
             return {
                 valid: false,
@@ -164,6 +157,146 @@ export class PathValidator {
             resolvedPath: resolved,
         });
         return { valid: true };
+    }
+
+    /**
+     * Resolve canonical path via fs.realpath while also catching dangling symlinks
+     * and non-existent creation targets under existing symlinked ancestors.
+     */
+    private async resolveCanonicalTarget(
+        resolvedTarget: string,
+        visitedSymlinks: Set<string> = new Set()
+    ): Promise<string> {
+        try {
+            return await fs.promises.realpath(resolvedTarget);
+        } catch (err: unknown) {
+            const code = (err as { code?: string })?.code;
+            if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+                return resolvedTarget;
+            }
+        }
+
+        // Walk up to inspect existing ancestors (catching both dangling symlinks and missing leaf creations)
+        const pendingSegments: string[] = [];
+        let cursor = resolvedTarget;
+        let walkedUp = 0;
+
+        while (walkedUp < 256) {
+            walkedUp += 1;
+            try {
+                const lstat = await fs.promises.lstat(cursor);
+                if (lstat.isSymbolicLink()) {
+                    const normalizedCursor = this.normalizeForCompare(cursor);
+                    if (visitedSymlinks.has(normalizedCursor)) {
+                        throw new Error(`Circular symbolic link detected at "${cursor}"`);
+                    }
+                    visitedSymlinks.add(normalizedCursor);
+                    const rawLinkTarget = await fs.promises.readlink(cursor);
+                    const linkDestination = path.resolve(path.dirname(cursor), rawLinkTarget);
+                    const resolvedDestination = await this.resolveCanonicalTarget(
+                        linkDestination,
+                        visitedSymlinks
+                    );
+                    return pendingSegments.length > 0
+                        ? path.join(resolvedDestination, ...pendingSegments.reverse())
+                        : resolvedDestination;
+                }
+
+                const realExisting = await fs.promises.realpath(cursor);
+                return pendingSegments.length > 0
+                    ? path.join(realExisting, ...pendingSegments.reverse())
+                    : realExisting;
+            } catch (err: unknown) {
+                if (err instanceof Error && err.message.startsWith('Circular symbolic link')) {
+                    throw err;
+                }
+                const parent = path.dirname(cursor);
+                if (parent === cursor) {
+                    return resolvedTarget;
+                }
+                pendingSegments.push(path.basename(cursor));
+                cursor = parent;
+            }
+        }
+
+        throw new Error(`Maximum path depth exceeded while resolving "${resolvedTarget}"`);
+    }
+
+    private async safeRealpathOrResolved(targetPath: string): Promise<string> {
+        try {
+            return await fs.promises.realpath(targetPath);
+        } catch {
+            return targetPath;
+        }
+    }
+
+    /**
+     * Validate path both lexically AND canonically (resolving symlinks & junctions).
+     */
+    async validateCanonical(requestedPath: string): Promise<ValidationResult> {
+        const lexical = this.validate(requestedPath);
+        if (!lexical.valid) {
+            return lexical;
+        }
+
+        const decoded = this.decodeSafe(requestedPath);
+        const resolvedLexical = this.stripTrailingSep(path.resolve(path.normalize(decoded)));
+
+        let canonicalTarget: string;
+        try {
+            canonicalTarget = this.stripTrailingSep(
+                await this.resolveCanonicalTarget(resolvedLexical)
+            );
+        } catch (err: unknown) {
+            return {
+                valid: false,
+                error: 'SYMLINK_ESCAPE',
+                details: err instanceof Error ? err.message : 'Symlink resolution failed',
+            };
+        }
+
+        const canonicalForbidden = await Promise.all(
+            this.forbiddenPaths.map((p) => this.safeRealpathOrResolved(p))
+        );
+        for (const forbidden of canonicalForbidden) {
+            if (this.isWithinDirectory(canonicalTarget, forbidden)) {
+                SecurityLogger.error('Canonical path resolves to forbidden path', {
+                    requestedPath,
+                    canonicalTarget,
+                    forbidden,
+                });
+                return {
+                    valid: false,
+                    error: 'SYMLINK_ESCAPE',
+                    details: `Canonical target "${canonicalTarget}" escapes into forbidden path "${forbidden}"`,
+                };
+            }
+        }
+
+        const canonicalRoots = await Promise.all(
+            this.allowedRoots.map((root) => this.safeRealpathOrResolved(root))
+        );
+        const insideCanonicalRoot = canonicalRoots.some((root) =>
+            this.isWithinDirectory(canonicalTarget, root)
+        );
+        if (!insideCanonicalRoot) {
+            SecurityLogger.error('Symlink escape outside allowed roots blocked', {
+                requestedPath,
+                resolvedLexical,
+                canonicalTarget,
+                allowedRoots: canonicalRoots,
+            });
+            return {
+                valid: false,
+                error: 'SYMLINK_ESCAPE',
+                details: `Path "${requestedPath}" resolves outside allowed roots ("${canonicalTarget}")`,
+            };
+        }
+
+        return {
+            valid: true,
+            canonicalPath: canonicalTarget,
+        };
     }
 
     /**
@@ -226,6 +359,13 @@ export class PathValidator {
      */
     getAllowedRoot(): string {
         return this.allowedRoot;
+    }
+
+    /**
+     * Get all configured allowed root directories.
+     */
+    getAllowedRoots(): string[] {
+        return [...this.allowedRoots];
     }
 
     /**

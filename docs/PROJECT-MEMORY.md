@@ -19,7 +19,7 @@
 
 - [x] **M0 (Diagnostic Experiment)**: Reproduced M0 watcher/Journey 6 tests (`2/2` in `15.8s`). Confirmed `--remote-debugging-port=9222` static port risk across 30 consecutive launches AND discovered `ipc-communication.spec.ts:134` assertion (`expect(Array.isArray(receivedEvents)).toBe(true)`) silently passed with `0` events received!
 - [x] **M1 (Memory, RuntimeDiagnostics & Tooling Baseline)** — `RuntimeDiagnostics` + `shared/diagnostics.ts` live; `jest.config.js` excludes `tests/e2e/`; `webpack.main.config.js` adds `@llm`; `ConfigManager` supports test/E2E-gated `FILE_MANAGER_ALLOWED_ROOTS`; M1 files 0 ESLint errors; `tsc --noEmit` exit `0`; `npx jest tests/unit` `19/19` suites (`356/356` tests) green.
-- [ ] **M2 (Contract-Enforced IPC & Canonical Security Boundary)** — in progress
+- [x] **M2 (Contract-Enforced IPC & Canonical Security Boundary)** — `shared/ipc/contracts.ts` (28 Zod contracts + safe entry name & regex stream channel) + zero-dep `shared/ipc/envelope.ts`; canonical `PathValidator.validateCanonical` (`fs.realpath` + missing-leaf ancestor walk + dangling symlink/junction blocking + multi-root + Windows case-insensitivity); `withContract` + `IPCEnvelope<T>` error rehydration in `preload.ts`; dynamic `ALL_IPC_CHANNELS` registry + `RUNTIME:GET_DIAGNOSTICS` + `ping`; eliminated path/channel bypasses in `FS:CREATE_*`, `FS:RENAME`, `SEARCH:QUERY`, `LLM:*`, `SHELL:OPEN_PATH`; fixed `main.ts` `will-navigate` `pathToFileURL` & `isDestroyed()` guards; fixed `LLM:QUERY` stream listener cleanup + `[DONE]` bug; lazy fetch in `LLMInterface.ts`. Verified: `npm run type-check` exit 0; `npx jest tests/unit` `20/20` suites (`362/362` tests) passed; M2 files `0` new ESLint errors (`FileSystemService.ts` retains 9 pre-existing `any` catches for M3 refactor).
 - [ ] **M3 (Closed-Loop Reactive Workspace Kernel & DSA Wiring)**
 - [ ] **M4 (Node-Decoupled Hybrid RAG, ContextManager & LLMMetrics)**
 - [ ] **M5 (Surgical UI Inspector, Quick Preview Drawer & Control Fixes)**
@@ -29,8 +29,8 @@
 
 | Criterion | Status | Evidence |
 | --- | --- | --- |
-| **AC-1** Zero unvalidated path bypasses & symlink escape blocked | Pending | `—` |
-| **AC-2** Single IPC contract source of truth + clean stream unsubscribe | Pending | `—` |
+| **AC-1** Zero unvalidated path bypasses & symlink escape blocked | Verified (Unit & IPC; E2E in M6) | `PathValidator.validateCanonical` blocks junction/symlink escape on read & nested write; `ipcSecurityAndContracts.test.ts` proves bypass elimination across `SEARCH:QUERY`, `LLM:*`, `SHELL:OPEN_PATH`, `FS:CREATE_*`, `FS:RENAME`; `main.ts` uses `pathToFileURL`. |
+| **AC-2** Single IPC contract source of truth + clean stream unsubscribe | Verified (Unit & IPC; E2E in M6) | `shared/ipc/contracts.ts` defines all 28 channels; `ipcHandlers.ts` registers dynamically from `ALL_IPC_CHANNELS` with real `areHandlersRegistered()`; `preload.ts` unwraps `IPCEnvelope<T>` & cleans stream listeners in `finally`. |
 | **AC-3** Live reactive kernel (`Watcher -> EventQueue -> Trie/Cache/Index`) | Pending | `—` |
 | **AC-4** `RingBuffer` + `LRUCache` power `FS:PREVIEW_FILE` UI drawer | Pending | `—` |
 | **AC-5** Node-decoupled Hybrid RAG + small-batch flush + chunk dedup + mock streaming | Pending | `—` |

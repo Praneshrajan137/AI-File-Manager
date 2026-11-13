@@ -78,10 +78,33 @@ export interface ValidationResult {
   valid: boolean;
 
   /** Error code if validation failed */
-  error?: 'PATH_TRAVERSAL' | 'UNAUTHORIZED_ACCESS' | 'INVALID_PATH';
+  error?: 'PATH_TRAVERSAL' | 'UNAUTHORIZED_ACCESS' | 'INVALID_PATH' | 'SYMLINK_ESCAPE';
 
   /** Human-readable details about the validation failure */
   details?: string;
+
+  /** Canonical resolved path (populated by validateCanonical) */
+  canonicalPath?: string;
+}
+
+export interface FilePreviewResult {
+  path: string;
+  name: string;
+  extension: string;
+  size: number;
+  modified: number;
+  lines: string[];
+  totalLinesBuffered: number;
+  truncated: boolean;
+  binary: boolean;
+  fromCache: boolean;
+}
+
+export interface SystemPaths {
+  home: string;
+  documents: string;
+  downloads: string;
+  pictures: string;
 }
 
 /**

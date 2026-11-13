@@ -6,291 +6,204 @@
 
 /**
  * preload.ts - Electron Preload Script (Security Bridge)
- * 
- * This script runs in the renderer process BUT has access to Node.js APIs.
- * It's the ONLY way to safely expose controlled APIs to the renderer.
- * 
- * SECURITY MODEL:
- * - Renderer process is sandboxed (no Node.js access)
- * - Preload script uses contextBridge to expose ONLY specific APIs
- * - All file operations go through IPC to Main process
- * - Main process validates ALL requests before executing
- * 
- * CRITICAL: Never expose dangerous APIs like require(), process, or fs directly!
+ *
+ * Exposes a contract-enforced, frozen API via contextBridge while preserving
+ * strict Electron sandboxing (no Node.js primitives exposed to renderer).
  */
 
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
+import { isIPCEnvelope } from '@shared/ipc/envelope';
+import type { IPCChannel, IPCResponse } from '@shared/ipc/contracts';
+
+interface RehydratedIPCError extends Error {
+  code?: string;
+  userMessage?: string;
+  isOperational?: boolean;
+  details?: Record<string, unknown>;
+}
+
+let llmStreamCounter = 0;
 
 /**
- * Exposed API for Renderer process.
- * This object will be available as window.electronAPI in renderer.
- * 
- * RULES:
- * 1. Only expose invoke() for request-response IPC
- * 2. Never expose send() or sendSync() (security risk)
- * 3. Validate all inputs before sending to Main
- * 4. Use TypeScript types for type safety
+ * Unwrap Main-process IPCEnvelope responses cleanly and rehydrate structured Error instances.
  */
+async function invokeContract<C extends IPCChannel>(
+  channel: C,
+  payload?: unknown
+): Promise<IPCResponse<C>> {
+  const raw = await ipcRenderer.invoke(channel, payload);
+
+  if (isIPCEnvelope<IPCResponse<C>>(raw)) {
+    if (raw.ok) {
+      return raw.data;
+    }
+
+    const err: RehydratedIPCError = new Error(raw.error.userMessage || raw.error.message);
+    err.name = raw.error.name || 'IPCError';
+    err.code = raw.error.code;
+    err.userMessage = raw.error.userMessage;
+    err.isOperational = raw.error.isOperational;
+    err.details = raw.error.details;
+    throw err;
+  }
+
+  return raw as IPCResponse<C>;
+}
+
 const electronAPI = {
-    /**
-     * File System Operations
-     */
-    fs: {
-        /**
-         * Read directory contents.
-         * @param path - Absolute path to directory
-         * @returns Array of FileNode objects
-         */
-        readDirectory: (path: string) =>
-            ipcRenderer.invoke('FS:READ_DIR', { path }),
+  /**
+   * File System Operations
+   */
+  fs: {
+    readDirectory: (path: string) => invokeContract('FS:READ_DIR', { path }),
 
-        /**
-         * Read file content.
-         * @param path - Absolute path to file
-         * @returns File content as string
-         */
-        readFile: (path: string) =>
-            ipcRenderer.invoke('FS:READ_FILE', { path }),
+    readFile: (path: string) => invokeContract('FS:READ_FILE', { path }),
 
-        /**
-         * Write content to file.
-         * @param path - Absolute path to file
-         * @param content - Content to write
-         * @returns Success status
-         */
-        writeFile: (path: string, content: string) =>
-            ipcRenderer.invoke('FS:WRITE_FILE', { path, content }),
+    previewFile: (path: string, maxLines?: number) =>
+      invokeContract('FS:PREVIEW_FILE', { path, maxLines }),
 
-        /**
-         * Delete file or directory.
-         * @param path - Absolute path to delete
-         * @param recursive - If true, delete directories recursively
-         * @returns Success status
-         */
-        delete: (path: string, recursive?: boolean) =>
-            ipcRenderer.invoke('FS:DELETE', { path, recursive }),
+    writeFile: (path: string, content: string) =>
+      invokeContract('FS:WRITE_FILE', { path, content }),
 
-        /**
-         * Move/rename file or directory.
-         * @param source - Current path
-         * @param destination - New path
-         * @returns Success status and new path
-         */
-        move: (source: string, destination: string) =>
-            ipcRenderer.invoke('FS:MOVE', { source, destination }),
+    createFile: (path: string, name: string, content?: string) =>
+      invokeContract('FS:CREATE_FILE', { path, name, content }),
 
-        /**
-         * Get file statistics.
-         * @param path - Absolute path
-         * @returns FileStats object
-         */
-        getStats: (path: string) =>
-            ipcRenderer.invoke('FS:GET_STATS', { path }),
+    createDirectory: (path: string, name: string) =>
+      invokeContract('FS:CREATE_DIR', { path, name }),
 
-        /**
-         * Get system paths (home, documents, downloads, pictures).
-         * @returns Object with system paths
-         */
-        getSystemPaths: () =>
-            ipcRenderer.invoke('FS:GET_SYSTEM_PATHS'),
+    delete: (path: string, recursive?: boolean) =>
+      invokeContract('FS:DELETE', { path, recursive }),
 
-        /**
-         * Rename a file or directory.
-         * @param oldPath - Current absolute path
-         * @param newName - New name (not path, just the filename)
-         * @returns Result with success flag and new path
-         */
-        rename: (oldPath: string, newName: string) =>
-            ipcRenderer.invoke('FS:RENAME', { oldPath, newName }),
+    move: (source: string, destination: string) =>
+      invokeContract('FS:MOVE', { source, destination }),
+
+    getStats: (path: string) => invokeContract('FS:GET_STATS', { path }),
+
+    getSystemPaths: () => invokeContract('FS:GET_SYSTEM_PATHS'),
+
+    rename: (oldPath: string, newName: string) =>
+      invokeContract('FS:RENAME', { oldPath, newName }),
+  },
+
+  /**
+   * Navigation Operations
+   */
+  navigation: {
+    back: () => invokeContract('NAV:BACK'),
+
+    forward: () => invokeContract('NAV:FORWARD'),
+
+    push: (path: string) => invokeContract('NAV:PUSH', { path }),
+
+    getState: () => invokeContract('NAV:GET_STATE'),
+  },
+
+  /**
+   * Search Operations
+   */
+  search: {
+    autocomplete: (prefix: string, maxResults?: number) =>
+      invokeContract('SEARCH:AUTOCOMPLETE', { prefix, maxResults }),
+
+    query: (query: string, searchRoot: string) =>
+      invokeContract('SEARCH:QUERY', { query, searchRoot }),
+  },
+
+  /**
+   * LLM Operations
+   */
+  llm: {
+    query: async (query: string, callback: (chunk: string) => void) => {
+      llmStreamCounter += 1;
+      const channel = `LLM:QUERY:${Date.now()}:${llmStreamCounter}`;
+
+      const handleChunk = (_event: IpcRendererEvent, chunk: unknown) => {
+        if (typeof chunk === 'string' && chunk !== '[DONE]') {
+          callback(chunk);
+        }
+      };
+
+      const handleEnd = () => {
+        ipcRenderer.removeListener(channel, handleChunk);
+      };
+
+      ipcRenderer.on(channel, handleChunk);
+      ipcRenderer.once(`${channel}:end`, handleEnd);
+
+      try {
+        return await invokeContract('LLM:QUERY', { query, channel });
+      } finally {
+        ipcRenderer.removeListener(channel, handleChunk);
+        ipcRenderer.removeListener(`${channel}:end`, handleEnd);
+      }
     },
 
-    /**
-     * Navigation Operations
-     */
-    navigation: {
-        /**
-         * Navigate backward in history.
-         * @returns Previous path or null
-         */
-        back: () =>
-            ipcRenderer.invoke('NAV:BACK'),
+    getIndexingStatus: () => invokeContract('LLM:INDEX_STATUS'),
 
-        /**
-         * Navigate forward in history.
-         * @returns Next path or null
-         */
-        forward: () =>
-            ipcRenderer.invoke('NAV:FORWARD'),
+    startIndexing: (path: string) => invokeContract('LLM:START_INDEXING', { path }),
 
-        /**
-         * Add path to navigation history.
-         * @param path - Path to add
-         */
-        push: (path: string) =>
-            ipcRenderer.invoke('NAV:PUSH', { path }),
+    stopIndexing: () => invokeContract('LLM:STOP_INDEXING'),
 
-        /**
-         * Get navigation state.
-         * @returns Whether back/forward are available
-         */
-        getState: () =>
-            ipcRenderer.invoke('NAV:GET_STATE'),
+    indexFile: (filePath: string) => invokeContract('LLM:INDEX_FILE', { filePath }),
+
+    checkOllama: () => invokeContract('LLM:CHECK_OLLAMA'),
+
+    clearIndex: () => invokeContract('LLM:CLEAR_INDEX'),
+  },
+
+  /**
+   * File Watcher Operations
+   */
+  fileWatcher: {
+    subscribe: (callback: (event: { type: string; path: string }) => void) => {
+      const handleFileCreated = (_event: IpcRendererEvent, filePath: string) => {
+        callback({ type: 'create', path: filePath });
+      };
+
+      const handleFileChanged = (_event: IpcRendererEvent, filePath: string) => {
+        callback({ type: 'change', path: filePath });
+      };
+
+      const handleFileDeleted = (_event: IpcRendererEvent, filePath: string) => {
+        callback({ type: 'unlink', path: filePath });
+      };
+
+      ipcRenderer.on('FILE_CREATED', handleFileCreated);
+      ipcRenderer.on('FILE_CHANGED', handleFileChanged);
+      ipcRenderer.on('FILE_DELETED', handleFileDeleted);
+
+      return () => {
+        ipcRenderer.removeListener('FILE_CREATED', handleFileCreated);
+        ipcRenderer.removeListener('FILE_CHANGED', handleFileChanged);
+        ipcRenderer.removeListener('FILE_DELETED', handleFileDeleted);
+      };
     },
+  },
 
-    /**
-     * Search Operations
-     */
-    search: {
-        /**
-         * Get autocomplete suggestions.
-         * @param prefix - Search prefix
-         * @param maxResults - Maximum results to return
-         * @returns Array of matching paths
-         */
-        autocomplete: (prefix: string, maxResults?: number) =>
-            ipcRenderer.invoke('SEARCH:AUTOCOMPLETE', { prefix, maxResults }),
+  /**
+   * Clipboard Operations
+   */
+  clipboard: {
+    writeText: (text: string) => invokeContract('CLIPBOARD:WRITE_TEXT', { text }),
+  },
 
-        /**
-         * Search for files.
-         * @param query - Search query
-         * @param searchRoot - Directory to search in
-         * @returns Array of matching FileNode objects
-         */
-        query: (query: string, searchRoot: string) =>
-            ipcRenderer.invoke('SEARCH:QUERY', { query, searchRoot }),
-    },
+  /**
+   * Shell Operations
+   */
+  shell: {
+    openPath: (path: string) => invokeContract('SHELL:OPEN_PATH', { path }),
+  },
 
-    /**
-     * LLM Operations
-     */
-    llm: {
-        /**
-         * Query LLM with streaming response.
-         * @param query - User's question
-         * @param callback - Called for each chunk of response
-         * @returns Promise that resolves when streaming complete
-         */
-        query: (query: string, callback: (chunk: string) => void) => {
-            // Set up listener for streaming chunks
-            const channel = `LLM:QUERY:${Date.now()}`;
+  /**
+   * Runtime Telemetry & Self-Diagnostics
+   */
+  diagnostics: {
+    getSnapshot: () => invokeContract('RUNTIME:GET_DIAGNOSTICS'),
+  },
 
-            ipcRenderer.on(channel, (_event: IpcRendererEvent, chunk: string) => {
-                callback(chunk);
-            });
-
-            // Send query
-            return ipcRenderer.invoke('LLM:QUERY', { query, channel });
-        },
-
-        /**
-         * Get indexing status.
-         * @returns Indexing progress
-         */
-        getIndexingStatus: () =>
-            ipcRenderer.invoke('LLM:INDEX_STATUS'),
-
-        /**
-         * Start indexing directory.
-         * @param path - Directory to index
-         * @returns Success status
-         */
-        startIndexing: (path: string) =>
-            ipcRenderer.invoke('LLM:START_INDEXING', { path }),
-
-        /**
-         * Stop background indexing.
-         * @returns Success status
-         */
-        stopIndexing: () =>
-            ipcRenderer.invoke('LLM:STOP_INDEXING'),
-
-        /**
-         * Clear the vector index database.
-         * @returns Success status
-         */
-        clearIndex: () =>
-            ipcRenderer.invoke('LLM:CLEAR_INDEX'),
-    },
-
-    /**
-     * File Watcher Operations
-     */
-    fileWatcher: {
-        /**
-         * Subscribe to file system events.
-         * @param callback - Called when file events occur
-         * @returns Cleanup function to remove listener
-         */
-        subscribe: (callback: (event: { type: string; path: string }) => void) => {
-            const handleFileCreated = (_event: IpcRendererEvent, path: string) => {
-                callback({ type: 'create', path });
-            };
-
-            const handleFileChanged = (_event: IpcRendererEvent, path: string) => {
-                callback({ type: 'change', path });
-            };
-
-            const handleFileDeleted = (_event: IpcRendererEvent, path: string) => {
-                callback({ type: 'unlink', path });
-            };
-
-            // Listen to Main Process file watcher events
-            ipcRenderer.on('FILE_CREATED', handleFileCreated);
-            ipcRenderer.on('FILE_CHANGED', handleFileChanged);
-            ipcRenderer.on('FILE_DELETED', handleFileDeleted);
-
-            // Return cleanup function
-            return () => {
-                ipcRenderer.removeListener('FILE_CREATED', handleFileCreated);
-                ipcRenderer.removeListener('FILE_CHANGED', handleFileChanged);
-                ipcRenderer.removeListener('FILE_DELETED', handleFileDeleted);
-            };
-        },
-    },
-
-    /**
-     * Clipboard Operations
-     * Uses Electron's clipboard module for reliable cross-platform support
-     */
-    clipboard: {
-        /**
-         * Write text to clipboard.
-         * @param text - Text to copy
-         */
-        writeText: (text: string) =>
-            ipcRenderer.invoke('CLIPBOARD:WRITE_TEXT', text),
-    },
-
-    /**
-     * Shell Operations
-     * Uses Electron's shell module for OS integration
-     */
-    shell: {
-        /**
-         * Open file with default application.
-         * @param path - Absolute path to file
-         * @returns Error message if failed, empty string if success
-         */
-        openPath: (path: string) =>
-            ipcRenderer.invoke('SHELL:OPEN_PATH', path),
-    },
-
-    /**
-     * Utility: Ping test for IPC connectivity.
-     */
-    ping: () => ipcRenderer.invoke('ping'),
+  ping: () => invokeContract('ping'),
 };
 
-/**
- * Expose API to renderer process.
- * 
- * SECURITY: This is the ONLY way renderer can communicate with Main process.
- * The API is frozen and cannot be modified by renderer code.
- */
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
 
-/**
- * TypeScript type definition for window.electronAPI
- * This should be declared in a .d.ts file for renderer to use.
- */
 export type ElectronAPI = typeof electronAPI;

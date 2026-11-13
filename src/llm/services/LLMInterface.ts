@@ -6,14 +6,15 @@
  * 
  * Privacy-first: All processing happens locally, no cloud APIs.
  */
-import { net } from 'electron';
+import * as electron from 'electron';
 import {
     LLMQueryOptions,
     RetrievalResult,
 } from '../../shared/contracts';
 
-// Use Electron's net.fetch which works in the main process
-const electronFetch = net.fetch;
+export interface LLMInterfaceOptions {
+    fetchImpl?: typeof fetch;
+}
 
 /**
  * Streaming chunk from Ollama API
@@ -30,9 +31,25 @@ interface OllamaStreamChunk {
 export class LLMInterface {
     private readonly ollamaUrl: string;
     private readonly defaultModel = 'llama3.2';
+    private readonly customFetch?: typeof fetch;
 
-    constructor(ollamaUrl: string = 'http://localhost:11434') {
+    constructor(ollamaUrl: string = 'http://localhost:11434', options: LLMInterfaceOptions = {}) {
         this.ollamaUrl = ollamaUrl;
+        this.customFetch = options.fetchImpl;
+    }
+
+    private fetchRequest(url: string, init?: RequestInit): Promise<Response> {
+        if (this.customFetch) {
+            return this.customFetch(url, init);
+        }
+        const electronNet = (electron as unknown as { net?: { fetch?: typeof fetch } })?.net;
+        if (electronNet && typeof electronNet.fetch === 'function') {
+            return electronNet.fetch(url, init);
+        }
+        if (typeof globalThis.fetch === 'function') {
+            return globalThis.fetch(url, init);
+        }
+        throw new Error('No fetch implementation available in current runtime');
     }
 
     /**
@@ -57,7 +74,7 @@ export class LLMInterface {
         const userPrompt = this.buildUserPrompt(userQuery, retrievalResult);
 
         try {
-            const response = await electronFetch(`${this.ollamaUrl}/api/chat`, {
+            const response = await this.fetchRequest(`${this.ollamaUrl}/api/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -216,7 +233,7 @@ Please provide a clear answer based on the context above. If the context doesn't
                     const url = `${this.ollamaUrl}${endpoint}`;
                     console.log('[LLMInterface] Trying endpoint:', url);
 
-                    const response = await electronFetch(url, {
+                    const response = await this.fetchRequest(url, {
                         method: 'GET',
                         signal: AbortSignal.timeout(5000),
                     });
@@ -247,7 +264,7 @@ Please provide a clear answer based on the context above. If the context doesn't
      */
     async getAvailableModels(): Promise<string[]> {
         try {
-            const response = await electronFetch(`${this.ollamaUrl}/api/tags`);
+            const response = await this.fetchRequest(`${this.ollamaUrl}/api/tags`);
             if (!response.ok) {
                 return [];
             }

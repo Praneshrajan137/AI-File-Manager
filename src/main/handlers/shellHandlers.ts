@@ -1,109 +1,62 @@
 /**
  * shellHandlers.ts - IPC handlers for shell and clipboard operations
- * 
- * Implements secure handlers for:
- * - CLIPBOARD:WRITE_TEXT - Copy text to clipboard
- * - SHELL:OPEN_PATH - Open file with default OS application
- * 
- * SECURITY: 
- * - Path validation before opening files
- * - Only opens files within allowed root directory
+ *
+ * SECURITY:
+ * - Path validation enforced by withContract('SHELL:OPEN_PATH') against canonical allowed roots
+ * - Clipboard text size bounded by contract schema (max 1MB)
  */
 
 import { ipcMain, shell, clipboard, IpcMainInvokeEvent } from 'electron';
-import { withErrorHandling, validatePathOrThrow } from './securityMiddleware';
-import { SecurityLogger, IPCLogger } from '@shared/logging';
+import { withContract } from './securityMiddleware';
+import { IPCLogger } from '@shared/logging';
+import { IPCChannel } from '@shared/ipc/contracts';
 
-/**
- * Handler: CLIPBOARD:WRITE_TEXT
- * Write text to system clipboard.
- * 
- * Input: string (text to copy)
- * Output: { success: boolean }
- */
 async function handleClipboardWrite(
-    event: IpcMainInvokeEvent,
-    text: unknown
+  _event: IpcMainInvokeEvent,
+  input: { text: string }
 ): Promise<{ success: boolean }> {
-    if (typeof text !== 'string') {
-        throw new TypeError('Clipboard text must be a string');
-    }
+  clipboard.writeText(input.text);
+  IPCLogger.debug('Text written to clipboard', { length: input.text.length });
 
-    // Security: Limit clipboard content size to prevent memory attacks
-    const MAX_CLIPBOARD_SIZE = 1024 * 1024; // 1MB
-    if (text.length > MAX_CLIPBOARD_SIZE) {
-        throw new Error('Text too large for clipboard');
-    }
-
-    clipboard.writeText(text);
-    IPCLogger.debug('Text written to clipboard', { length: text.length });
-
-    return { success: true };
+  return { success: true };
 }
 
-/**
- * Handler: SHELL:OPEN_PATH
- * Open file with default OS application.
- * 
- * SECURITY: Validates path is within allowed root before opening.
- * 
- * Input: string (absolute path to file)
- * Output: { success: boolean, error?: string }
- */
 async function handleShellOpenPath(
-    event: IpcMainInvokeEvent,
-    filePath: unknown
+  _event: IpcMainInvokeEvent,
+  input: { path: string }
 ): Promise<{ success: boolean; error?: string }> {
-    if (typeof filePath !== 'string' || filePath.trim() === '') {
-        throw new TypeError('File path must be a non-empty string');
-    }
+  IPCLogger.info('Opening file with default application', { path: input.path });
 
-    // SECURITY: Validate path is within allowed root
-    // This prevents opening arbitrary system files
-    try {
-        validatePathOrThrow(filePath);
-    } catch (error) {
-        SecurityLogger.warn('Blocked shell.openPath for unauthorized path', {
-            path: filePath,
-            error: error instanceof Error ? error.message : String(error)
-        });
-        return {
-            success: false,
-            error: 'Access denied: path outside allowed directory'
-        };
-    }
+  // shell.openPath returns empty string on success, error message on failure
+  const errorMessage = await shell.openPath(input.path);
 
-    IPCLogger.info('Opening file with default application', { path: filePath });
+  if (errorMessage) {
+    IPCLogger.warn('Failed to open file', { path: input.path, error: errorMessage });
+    return { success: false, error: errorMessage };
+  }
 
-    // shell.openPath returns empty string on success, error message on failure
-    const errorMessage = await shell.openPath(filePath);
-
-    if (errorMessage) {
-        IPCLogger.warn('Failed to open file', { path: filePath, error: errorMessage });
-        return { success: false, error: errorMessage };
-    }
-
-    IPCLogger.info('File opened successfully', { path: filePath });
-    return { success: true };
+  IPCLogger.info('File opened successfully', { path: input.path });
+  return { success: true };
 }
+
+const SHELL_CHANNELS: IPCChannel[] = ['CLIPBOARD:WRITE_TEXT', 'SHELL:OPEN_PATH'];
 
 /**
  * Register all shell/clipboard IPC handlers.
- * 
- * Call this once during app initialization.
  */
-export function registerShellHandlers(): void {
-    IPCLogger.info('Registering shell IPC handlers');
+export function registerShellHandlers(): IPCChannel[] {
+  IPCLogger.info('Registering shell/clipboard IPC handlers');
 
-    ipcMain.handle(
-        'CLIPBOARD:WRITE_TEXT',
-        withErrorHandling(handleClipboardWrite, 'CLIPBOARD:WRITE_TEXT')
-    );
+  ipcMain.handle(
+    'CLIPBOARD:WRITE_TEXT',
+    withContract('CLIPBOARD:WRITE_TEXT', handleClipboardWrite)
+  );
 
-    ipcMain.handle(
-        'SHELL:OPEN_PATH',
-        withErrorHandling(handleShellOpenPath, 'SHELL:OPEN_PATH')
-    );
+  ipcMain.handle(
+    'SHELL:OPEN_PATH',
+    withContract('SHELL:OPEN_PATH', handleShellOpenPath)
+  );
 
-    IPCLogger.info('Shell IPC handlers registered successfully');
+  IPCLogger.info('Shell/clipboard IPC handlers registered successfully');
+  return [...SHELL_CHANNELS];
 }

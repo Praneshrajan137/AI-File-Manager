@@ -24,9 +24,9 @@
  * 5. IPC handlers
  */
 
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow } from 'electron';
 import * as path from 'path';
-import * as os from 'os';
+import { pathToFileURL } from 'url';
 import { ConfigManager } from '@shared/config';
 import { Logger, getLogger } from '@shared/logging';
 import { ErrorHandler } from './middleware/ErrorHandler';
@@ -192,15 +192,26 @@ function createWindow(): void {
     mainWindow = null;
   });
 
-  // Security: Prevent navigation to external URLs
+  // Security: Prevent navigation to external URLs or arbitrary local files
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    // Only allow navigation to localhost in dev or file:// in prod
+    const rendererDirUrl = pathToFileURL(path.resolve(__dirname, '../renderer')).href;
     const allowedOrigins = isDevelopment
       ? ['http://localhost:8080']
-      : [`file://${__dirname}`];
+      : [rendererDirUrl];
 
-    const urlObj = new URL(url);
-    const isAllowed = allowedOrigins.some(origin => url.startsWith(origin));
+    let isAllowed = false;
+    try {
+      const parsedUrl = new URL(url);
+      if (isDevelopment) {
+        isAllowed = parsedUrl.origin === 'http://localhost:8080';
+      } else {
+        isAllowed =
+          parsedUrl.protocol === 'file:' &&
+          parsedUrl.href.toLowerCase().startsWith(rendererDirUrl.toLowerCase());
+      }
+    } catch {
+      isAllowed = false;
+    }
 
     if (!isAllowed) {
       logger.warn('Blocked navigation attempt', { url, allowed: allowedOrigins });
@@ -252,21 +263,27 @@ function startFileWatcher(): void {
     globalFileWatcher.on('fileCreated', (filePath: string) => {
       logger.debug('File created, broadcasting to renderer', { path: filePath });
       BrowserWindow.getAllWindows().forEach(window => {
-        window.webContents.send('FILE_CREATED', filePath);
+        if (!window.isDestroyed()) {
+          window.webContents.send('FILE_CREATED', filePath);
+        }
       });
     });
 
     globalFileWatcher.on('fileChanged', (filePath: string) => {
       logger.debug('File changed, broadcasting to renderer', { path: filePath });
       BrowserWindow.getAllWindows().forEach(window => {
-        window.webContents.send('FILE_CHANGED', filePath);
+        if (!window.isDestroyed()) {
+          window.webContents.send('FILE_CHANGED', filePath);
+        }
       });
     });
 
     globalFileWatcher.on('fileDeleted', (filePath: string) => {
       logger.debug('File deleted, broadcasting to renderer', { path: filePath });
       BrowserWindow.getAllWindows().forEach(window => {
-        window.webContents.send('FILE_DELETED', filePath);
+        if (!window.isDestroyed()) {
+          window.webContents.send('FILE_DELETED', filePath);
+        }
       });
     });
 
@@ -339,14 +356,14 @@ export async function updateWatchPath(newPath: string): Promise<void> {
  * Application lifecycle: Ready
  * Called when Electron has finished initialization.
  */
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   const logger = getLogger();
   logger.info('Electron app ready, registering IPC handlers and creating window');
 
   // CRITICAL: Register all IPC handlers BEFORE creating window
   // This ensures handlers are ready when renderer process starts
   try {
-    const { registerAllHandlers } = require('./handlers/ipcHandlers');
+    const { registerAllHandlers } = await import('./handlers/ipcHandlers');
     registerAllHandlers();
     logger.info('All IPC handlers registered successfully');
   } catch (error) {
@@ -390,19 +407,14 @@ app.on('window-all-closed', () => {
   }
 
   // Cleanup LLM services (terminates worker threads)
-  try {
-    const { cleanupLLMServices } = require('./handlers/llmHandlers');
-    cleanupLLMServices().then(() => {
+  import('./handlers/llmHandlers')
+    .then(({ cleanupLLMServices }) => cleanupLLMServices())
+    .then(() => {
       logger.info('LLM services cleaned up');
-    }).catch((error: Error) => {
-      logger.error('Error cleaning up LLM services', {
-        error: error.message,
-      });
+    })
+    .catch(() => {
+      logger.debug('LLM cleanup skipped (not initialized)');
     });
-  } catch (error) {
-    // LLM handlers may not be initialized
-    logger.debug('LLM cleanup skipped (not initialized)');
-  }
 
   if (process.platform !== 'darwin') {
     logger.info('Quitting application');

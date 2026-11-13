@@ -19,13 +19,10 @@
 
 import { ipcMain, IpcMainInvokeEvent } from 'electron';
 import { HistoryStack } from '@main/dsa/HistoryStack';
-import {
-  validatePathRequest,
-  withErrorHandling,
-  checkRateLimit,
-} from './securityMiddleware';
+import { withContract } from './securityMiddleware';
 import { IPCLogger } from '@shared/logging';
 import { INavigationService } from '@shared/contracts';
+import { IPCChannel } from '@shared/ipc/contracts';
 
 /**
  * NavigationService implementation using HistoryStack.
@@ -136,11 +133,9 @@ function getNavigationService(): NavigationService {
  * Output: string | null
  */
 async function handleBack(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  _input: Record<string, never>
 ): Promise<string | null> {
-  checkRateLimit('NAV:BACK');
-
   const service = getNavigationService();
   const prevPath = service.back();
 
@@ -155,16 +150,11 @@ async function handleBack(
 /**
  * Handler: NAV:FORWARD
  * Navigate forward in history.
- * 
- * Input: {}
- * Output: string | null
  */
 async function handleForward(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  _input: Record<string, never>
 ): Promise<string | null> {
-  checkRateLimit('NAV:FORWARD');
-
   const service = getNavigationService();
   const nextPath = service.forward();
 
@@ -179,35 +169,15 @@ async function handleForward(
 /**
  * Handler: NAV:PUSH
  * Add path to navigation history.
- * 
- * Input: { path: string } or just string
- * Output: { success: boolean }
  */
 async function handlePush(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  input: { path: string }
 ): Promise<{ success: boolean }> {
-  checkRateLimit('NAV:PUSH');
-
-  // Extract path from request - no security validation needed for navigation history
-  // Security is enforced when actually accessing files via FS:* handlers
-  let path: string;
-  if (typeof request === 'string') {
-    path = request;
-  } else if (request && typeof request === 'object' && 'path' in request) {
-    const requestPath = (request as { path: unknown }).path;
-    if (typeof requestPath !== 'string' || requestPath.trim() === '') {
-      throw new TypeError('Field "path" must be a non-empty string');
-    }
-    path = requestPath;
-  } else {
-    throw new TypeError('Request must be a string or object with path property');
-  }
-
   const service = getNavigationService();
-  service.push(path);
+  service.push(input.path);
 
-  IPCLogger.info('Path pushed to navigation history', { path });
+  IPCLogger.info('Path pushed to navigation history', { path: input.path });
 
   return { success: true };
 }
@@ -215,16 +185,11 @@ async function handlePush(
 /**
  * Handler: NAV:GET_STATE
  * Get current navigation state.
- * 
- * Input: {}
- * Output: { canGoBack: boolean, canGoForward: boolean }
  */
 async function handleGetState(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  _input: Record<string, never>
 ): Promise<{ canGoBack: boolean; canGoForward: boolean }> {
-  // No rate limit for state queries (cheap operation)
-
   const service = getNavigationService();
   const state = service.getState();
 
@@ -233,40 +198,26 @@ async function handleGetState(
   return state;
 }
 
+const NAVIGATION_CHANNELS: IPCChannel[] = [
+  'NAV:BACK',
+  'NAV:FORWARD',
+  'NAV:PUSH',
+  'NAV:GET_STATE',
+];
+
 /**
  * Register all navigation IPC handlers.
- * 
- * Call this once during app initialization.
- * 
- * @example
- * // In main.ts:
- * registerNavigationHandlers();
  */
-export function registerNavigationHandlers(): void {
+export function registerNavigationHandlers(): IPCChannel[] {
   IPCLogger.info('Registering navigation IPC handlers');
 
-  // Register all handlers with error handling middleware
-  ipcMain.handle(
-    'NAV:BACK',
-    withErrorHandling(handleBack, 'NAV:BACK')
-  );
-
-  ipcMain.handle(
-    'NAV:FORWARD',
-    withErrorHandling(handleForward, 'NAV:FORWARD')
-  );
-
-  ipcMain.handle(
-    'NAV:PUSH',
-    withErrorHandling(handlePush, 'NAV:PUSH')
-  );
-
-  ipcMain.handle(
-    'NAV:GET_STATE',
-    withErrorHandling(handleGetState, 'NAV:GET_STATE')
-  );
+  ipcMain.handle('NAV:BACK', withContract('NAV:BACK', handleBack));
+  ipcMain.handle('NAV:FORWARD', withContract('NAV:FORWARD', handleForward));
+  ipcMain.handle('NAV:PUSH', withContract('NAV:PUSH', handlePush));
+  ipcMain.handle('NAV:GET_STATE', withContract('NAV:GET_STATE', handleGetState));
 
   IPCLogger.info('Navigation IPC handlers registered successfully');
+  return [...NAVIGATION_CHANNELS];
 }
 
 /**

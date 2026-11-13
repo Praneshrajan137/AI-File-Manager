@@ -1,130 +1,168 @@
 /**
- * securityMiddleware.ts - Security middleware for IPC handlers
- * 
- * Provides centralized security validation for all IPC requests:
- * - Path validation using PathValidator
- * - Type checking for request payloads
- * - Rate limiting for expensive operations
- * - Error serialization using ErrorSerializer
- * 
- * CRITICAL: All IPC handlers MUST use this middleware before processing.
- * 
- * @example
- * ipcMain.handle('FS:READ_DIR', async (event, request) => {
- *   const validatedPath = await validatePathRequest(request.path);
- *   return fileSystemService.readDirectory(validatedPath);
- * });
+ * securityMiddleware.ts - Security & Contract Middleware for IPC handlers
+ *
+ * Enforces Zod input contracts, canonical path/symlink validation against
+ * ConfigManager allowed roots, rate limiting, RuntimeDiagnostics telemetry,
+ * and structured IPCEnvelope serialization.
  */
 
+import type { IpcMainInvokeEvent } from 'electron';
+import os from 'os';
+import path from 'path';
 import { PathValidator } from '@main/services/PathValidator';
 import { ErrorSerializer, SerializedError } from '@main/middleware/ErrorSerializer';
+import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
 import { SecurityLogger, IPCLogger } from '@shared/logging';
 import { ConfigManager } from '@shared/config';
-import os from 'os';
+import { ValidationError } from '@shared/errors';
+import {
+  IPC_CONTRACTS,
+  IPCChannel,
+  IPCEnvelope,
+  IPCRateLimitPolicy,
+  IPCRequest,
+  IPCResponse,
+  IPCSerializedErrorPayload,
+  wrapIPCError,
+  wrapIPCSuccess,
+} from '@shared/ipc/contracts';
 
-/**
- * Default path validator instance.
- * Uses user's home directory as allowed root by default.
- */
 let defaultValidator: PathValidator | null = null;
 
+function isLegacyUncustomizedSubfolderDefault(roots: string[], homeDir: string): boolean {
+  if (roots.length !== 3) {
+    return false;
+  }
+  const normalize = (p: string): string =>
+    process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
+  const legacyDefaults = new Set([
+    normalize(path.join(homeDir, 'Documents')),
+    normalize(path.join(homeDir, 'Downloads')),
+    normalize(path.join(homeDir, 'Desktop')),
+  ]);
+  return roots.every((r) => legacyDefaults.has(normalize(r)));
+}
+
 /**
- * Get or create default path validator.
- * 
- * @returns PathValidator instance
+ * Resolve allowed filesystem roots from ConfigManager.
+ * Normalizes legacy default `[Documents, Downloads, Desktop]` config files to `[os.homedir()]`
+ * so navigating Home never fails on upgraded installations while honoring custom configurations.
+ */
+export function resolveAllowedRoots(): string[] {
+  const homeDir = os.homedir();
+  let roots: string[] = [homeDir];
+
+  try {
+    const config = ConfigManager.getInstance();
+    const configured = config.get('fileSystem')?.allowedRoots;
+    if (Array.isArray(configured) && configured.length > 0) {
+      roots = isLegacyUncustomizedSubfolderDefault(configured, homeDir)
+        ? [homeDir]
+        : Array.from(new Set(configured.map((entry) => path.resolve(entry))));
+    }
+  } catch (error) {
+    SecurityLogger.debug('ConfigManager unavailable during root resolution, using homedir', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  RuntimeDiagnostics.getInstance().setAllowedRoots(roots);
+  return roots;
+}
+
+/**
+ * Get or create default path validator synced with ConfigManager allowedRoots.
  */
 export function getPathValidator(): PathValidator {
   if (!defaultValidator) {
-    // Always use home directory as allowed root to allow access to all user folders
-    const homeDir = os.homedir();
-    defaultValidator = new PathValidator(homeDir);
-    SecurityLogger.info('Path validator initialized', { root: homeDir });
+    const roots = resolveAllowedRoots();
+    defaultValidator = new PathValidator(roots);
+    SecurityLogger.info('Path validator initialized', { roots });
   }
 
   return defaultValidator;
 }
 
 /**
- * Validate path and throw if invalid.
- * 
- * @param path - Path to validate
- * @param customValidator - Optional custom validator
- * @returns Validated path (unchanged if valid)
- * @throws Error if path is invalid
- * 
- * @example
- * const validPath = validatePathOrThrow('/home/user/file.txt');
+ * Reset cached default path validator (used after config changes or in tests).
+ */
+export function resetPathValidator(): void {
+  defaultValidator = null;
+}
+
+function createPathSecurityError(code: string | undefined, message: string): Error {
+  const error = new Error(message) as Error & { code?: string; userMessage?: string };
+  error.name = 'SecurityError';
+  error.code = code || 'UNAUTHORIZED_ACCESS';
+  error.userMessage = message;
+  return error;
+}
+
+/**
+ * Validate path lexically and throw if invalid.
  */
 export function validatePathOrThrow(
-  path: string,
+  requestedPath: string,
   customValidator?: PathValidator
 ): string {
   const validator = customValidator || getPathValidator();
-  const result = validator.validate(path);
+  const result = validator.validate(requestedPath);
 
   if (!result.valid) {
     SecurityLogger.error('Path validation failed', {
-      path,
+      path: requestedPath,
       error: result.error,
       details: result.details,
     });
 
-    throw new Error(result.details || `Invalid path: ${result.error}`);
+    throw createPathSecurityError(
+      result.error,
+      result.details || `Invalid path: ${result.error}`
+    );
   }
 
-  return path;
+  return requestedPath;
 }
 
 /**
- * Validate multiple paths and throw if any are invalid.
- * 
- * @param paths - Array of paths to validate
- * @param customValidator - Optional custom validator
- * @returns Validated paths (unchanged if valid)
- * @throws Error if any path is invalid
- * 
- * @example
- * const [source, dest] = validatePathsOrThrow([sourceFile, destFile]);
+ * Validate path both lexically and canonically (resolving symlinks & junctions),
+ * returning the canonical resolved path.
+ */
+export async function validateCanonicalPathOrThrow(
+  requestedPath: string,
+  customValidator?: PathValidator
+): Promise<string> {
+  const validator = customValidator || getPathValidator();
+  const result = await validator.validateCanonical(requestedPath);
+
+  if (!result.valid) {
+    SecurityLogger.error('Canonical path validation failed', {
+      path: requestedPath,
+      error: result.error,
+      details: result.details,
+    });
+
+    throw createPathSecurityError(
+      result.error,
+      result.details || `Invalid path: ${result.error}`
+    );
+  }
+
+  return result.canonicalPath ?? requestedPath;
+}
+
+/**
+ * Validate multiple paths lexically and throw if any are invalid.
  */
 export function validatePathsOrThrow(
   paths: string[],
   customValidator?: PathValidator
 ): string[] {
-  return paths.map(path => validatePathOrThrow(path, customValidator));
-}
-
-/**
- * Type guard for object with path property.
- */
-interface WithPath {
-  path: string;
-}
-
-/**
- * Type guard to check if request has path property.
- * 
- * @param request - Request object
- * @returns True if request has path property
- */
-function hasPath(request: unknown): request is WithPath {
-  return (
-    typeof request === 'object' &&
-    request !== null &&
-    'path' in request &&
-    typeof (request as any).path === 'string'
-  );
+  return paths.map((entry) => validatePathOrThrow(entry, customValidator));
 }
 
 /**
  * Validate request payload has required path property.
- * 
- * @param request - Request payload
- * @param fieldName - Name of path field (default: 'path')
- * @returns Validated path string
- * @throws Error if path field missing or invalid type
- * 
- * @example
- * const path = validatePathRequest(request);
  */
 export function validatePathRequest(
   request: unknown,
@@ -138,32 +176,21 @@ export function validatePathRequest(
     throw new TypeError(`Request missing required field: ${fieldName}`);
   }
 
-  const path = (request as any)[fieldName];
+  const candidatePath = (request as Record<string, unknown>)[fieldName];
 
-  if (typeof path !== 'string') {
+  if (typeof candidatePath !== 'string') {
     throw new TypeError(`Field "${fieldName}" must be a string`);
   }
 
-  if (path.trim() === '') {
+  if (candidatePath.trim() === '') {
     throw new TypeError(`Field "${fieldName}" cannot be empty`);
   }
 
-  // Validate path security
-  return validatePathOrThrow(path);
+  return validatePathOrThrow(candidatePath);
 }
 
 /**
- * Validate request has required fields of correct types.
- * 
- * @param request - Request payload
- * @param schema - Schema defining required fields and types
- * @throws TypeError if validation fails
- * 
- * @example
- * validateRequestSchema(request, {
- *   path: 'string',
- *   recursive: 'boolean'
- * });
+ * Validate request has required fields of expected primitive types.
  */
 export function validateRequestSchema(
   request: unknown,
@@ -178,7 +205,7 @@ export function validateRequestSchema(
       throw new TypeError(`Request missing required field: ${field}`);
     }
 
-    const value = (request as any)[field];
+    const value = (request as Record<string, unknown>)[field];
     const actualType = typeof value;
 
     if (actualType !== expectedType) {
@@ -190,24 +217,127 @@ export function validateRequestSchema(
 }
 
 /**
- * Wrap handler function with error serialization.
- * 
- * Catches all errors from handler and serializes them for IPC transmission.
- * 
- * @param handler - Handler function to wrap
- * @param channelName - IPC channel name for logging
- * @returns Wrapped handler that catches and serializes errors
- * 
- * @example
- * ipcMain.handle('FS:READ_DIR', withErrorHandling(async (event, request) => {
- *   // Handler code...
- * }, 'FS:READ_DIR'));
+ * Serialize any thrown error into a structured IPC payload with preserved error code.
  */
-export function withErrorHandling<T extends (...args: any[]) => Promise<any>>(
-  handler: T,
+export function serializeIPCError(error: unknown): IPCSerializedErrorPayload {
+  const errObj = error instanceof Error ? error : new Error(String(error));
+  const serialized = ErrorSerializer.serialize(errObj);
+  const errorWithExtras = error as { code?: unknown; userMessage?: unknown } | undefined;
+
+  const code =
+    typeof errorWithExtras?.code === 'string' && errorWithExtras.code.length > 0
+      ? errorWithExtras.code
+      : serialized.code;
+
+  const userMessage =
+    typeof errorWithExtras?.userMessage === 'string' && errorWithExtras.userMessage.length > 0
+      ? errorWithExtras.userMessage
+      : serialized.message;
+
+  return {
+    name: serialized.name,
+    code,
+    message: serialized.message,
+    userMessage,
+    isOperational: serialized.isOperational,
+    timestamp: serialized.timestamp,
+    details: serialized.metadata,
+  };
+}
+
+/**
+ * Validate input against registered contract schema, canonicalize path fields,
+ * enforce rate limit, execute handler, record telemetry, and return IPCEnvelope.
+ */
+export async function validateAndInvokeContract<C extends IPCChannel>(
+  channel: C,
+  event: IpcMainInvokeEvent,
+  rawRequest: unknown,
+  handler: (event: IpcMainInvokeEvent, input: IPCRequest<C>) => Promise<IPCResponse<C>>
+): Promise<IPCEnvelope<IPCResponse<C>>> {
+  const startTime = Date.now();
+  const contract = IPC_CONTRACTS[channel];
+
+  try {
+    IPCLogger.debug(`IPC request received: ${channel}`, { channel });
+
+    const parsed = contract.schema.safeParse(rawRequest);
+    if (!parsed.success) {
+      const firstIssue = parsed.error.issues[0];
+      const fieldPath = firstIssue?.path?.join('.') || 'request';
+      const detail = firstIssue?.message || 'Invalid request payload';
+      throw new ValidationError(
+        'INVALID_INPUT',
+        `Invalid IPC payload for ${channel} (${fieldPath}): ${detail}`,
+        { field: fieldPath, value: rawRequest }
+      );
+    }
+
+    let validatedInput = parsed.data as IPCRequest<C>;
+
+    if (contract.pathFields.length > 0 && validatedInput && typeof validatedInput === 'object') {
+      const mutableCopy = { ...(validatedInput as Record<string, unknown>) };
+      for (const pathField of contract.pathFields) {
+        const candidate = mutableCopy[pathField];
+        if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+          throw new ValidationError(
+            'MISSING_REQUIRED_FIELD',
+            `Request missing required path field: ${pathField}`,
+            { field: pathField }
+          );
+        }
+        mutableCopy[pathField] = await validateCanonicalPathOrThrow(candidate);
+      }
+      validatedInput = mutableCopy as IPCRequest<C>;
+    }
+
+    checkRateLimit(channel, contract.rateLimit);
+
+    const data = await handler(event, validatedInput);
+    const duration = Date.now() - startTime;
+
+    RuntimeDiagnostics.getInstance().recordIpcCall(channel, duration, true);
+    IPCLogger.debug(`IPC request completed: ${channel}`, {
+      channel,
+      duration_ms: duration,
+      success: true,
+    });
+
+    return wrapIPCSuccess(data);
+  } catch (error: unknown) {
+    const duration = Date.now() - startTime;
+    RuntimeDiagnostics.getInstance().recordIpcCall(channel, duration, false);
+
+    IPCLogger.error(`IPC request failed: ${channel}`, {
+      channel,
+      duration_ms: duration,
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    return wrapIPCError(serializeIPCError(error));
+  }
+}
+
+/**
+ * Wrap an IPC handler with declarative contract validation, canonical path security,
+ * telemetry recording, and envelope serialization.
+ */
+export function withContract<C extends IPCChannel>(
+  channel: C,
+  handler: (event: IpcMainInvokeEvent, input: IPCRequest<C>) => Promise<IPCResponse<C>>
+): (event: IpcMainInvokeEvent, rawRequest?: unknown) => Promise<IPCEnvelope<IPCResponse<C>>> {
+  return (event: IpcMainInvokeEvent, rawRequest?: unknown) =>
+    validateAndInvokeContract(channel, event, rawRequest, handler);
+}
+
+/**
+ * Legacy wrapper preserved for backwards compatibility with non-contracted call sites.
+ */
+export function withErrorHandling<TArgs extends unknown[], TResult>(
+  handler: (...args: TArgs) => Promise<TResult>,
   channelName: string
-): T {
-  return (async (...args: Parameters<T>) => {
+): (...args: TArgs) => Promise<TResult> {
+  return async (...args: TArgs): Promise<TResult> => {
     const startTime = Date.now();
 
     try {
@@ -218,6 +348,7 @@ export function withErrorHandling<T extends (...args: any[]) => Promise<any>>(
       const result = await handler(...args);
 
       const duration = Date.now() - startTime;
+      RuntimeDiagnostics.getInstance().recordIpcCall(channelName, duration, true);
       IPCLogger.debug(`IPC request completed: ${channelName}`, {
         channel: channelName,
         duration_ms: duration,
@@ -225,8 +356,9 @@ export function withErrorHandling<T extends (...args: any[]) => Promise<any>>(
       });
 
       return result;
-    } catch (error) {
+    } catch (error: unknown) {
       const duration = Date.now() - startTime;
+      RuntimeDiagnostics.getInstance().recordIpcCall(channelName, duration, false);
 
       IPCLogger.error(`IPC request failed: ${channelName}`, {
         channel: channelName,
@@ -234,43 +366,30 @@ export function withErrorHandling<T extends (...args: any[]) => Promise<any>>(
         error: error instanceof Error ? error.message : String(error),
       });
 
-      // Serialize error for IPC transmission
       const serialized: SerializedError = ErrorSerializer.serialize(
         error instanceof Error ? error : new Error(String(error))
       );
 
-      // Re-throw serialized error so renderer receives it
       throw serialized;
     }
-  }) as T;
+  };
 }
 
-/**
- * Rate limiter for expensive operations.
- * 
- * Tracks request counts per channel and enforces limits.
- */
 class RateLimiter {
   private requestCounts = new Map<string, { count: number; resetTime: number }>();
-  private readonly windowMs: number;
-  private readonly maxRequests: number;
+  private readonly defaultWindowMs: number;
+  private readonly defaultMaxRequests: number;
 
   constructor(windowMs: number = 60000, maxRequests: number = 100) {
-    this.windowMs = windowMs;
-    this.maxRequests = maxRequests;
+    this.defaultWindowMs = windowMs;
+    this.defaultMaxRequests = maxRequests;
   }
 
-  /**
-   * Check if request should be rate limited.
-   * 
-   * @param channel - IPC channel name
-   * @returns True if request should be allowed
-   */
-  checkLimit(channel: string): boolean {
+  checkLimit(channel: string, policy?: IPCRateLimitPolicy): boolean {
     const now = Date.now();
+    const windowMs = policy?.windowMs ?? this.defaultWindowMs;
+    const maxRequests = policy?.maxRequests ?? this.defaultMaxRequests;
 
-    // Clean up expired entries periodically to prevent memory leak
-    // Only clean if Map has grown large (every 100 entries)
     if (this.requestCounts.size > 100 && this.requestCounts.size % 100 === 0) {
       for (const [ch, rec] of this.requestCounts.entries()) {
         if (now > rec.resetTime) {
@@ -282,22 +401,21 @@ class RateLimiter {
     const record = this.requestCounts.get(channel);
 
     if (!record || now > record.resetTime) {
-      // Start new window (and remove old entry if expired)
       if (record && now > record.resetTime) {
         this.requestCounts.delete(channel);
       }
       this.requestCounts.set(channel, {
         count: 1,
-        resetTime: now + this.windowMs,
+        resetTime: now + windowMs,
       });
       return true;
     }
 
-    if (record.count >= this.maxRequests) {
+    if (record.count >= maxRequests) {
       SecurityLogger.warn('Rate limit exceeded', {
         channel,
         count: record.count,
-        maxRequests: this.maxRequests,
+        maxRequests,
       });
       return false;
     }
@@ -306,39 +424,22 @@ class RateLimiter {
     return true;
   }
 
-  /**
-   * Reset rate limit for channel.
-   * 
-   * @param channel - IPC channel name
-   */
   reset(channel: string): void {
     this.requestCounts.delete(channel);
   }
 
-  /**
-   * Clear all rate limits.
-   */
   clear(): void {
     this.requestCounts.clear();
   }
 }
 
-/**
- * Global rate limiter instance.
- */
 const rateLimiter = new RateLimiter();
 
 /**
  * Check if request should be rate limited.
- * 
- * @param channel - IPC channel name
- * @throws Error if rate limit exceeded
- * 
- * @example
- * checkRateLimit('FS:READ_DIR');
  */
-export function checkRateLimit(channel: string): void {
-  if (!rateLimiter.checkLimit(channel)) {
+export function checkRateLimit(channel: string, policy?: IPCRateLimitPolicy): void {
+  if (!rateLimiter.checkLimit(channel, policy)) {
     throw new Error('Rate limit exceeded. Please try again later.');
   }
 }

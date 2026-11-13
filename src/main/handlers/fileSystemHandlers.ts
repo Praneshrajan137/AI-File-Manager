@@ -1,72 +1,47 @@
 /**
  * fileSystemHandlers.ts - IPC handlers for file system operations
- * 
- * Implements 8 IPC handlers that map to IFileSystemService methods:
- * - FS:READ_DIR - Read directory contents
- * - FS:READ_FILE - Read file content
- * - FS:WRITE_FILE - Write content to file
- * - FS:DELETE - Delete file or directory
- * - FS:MOVE - Move/rename file or directory
- * - FS:CREATE_FILE - Create new file
- * - FS:CREATE_DIR - Create new directory
- * - FS:GET_STATS - Get file statistics
- * 
- * SECURITY: All handlers use securityMiddleware for validation.
- * 
- * @example
- * // In main.ts:
- * import { registerFileSystemHandlers } from './handlers/fileSystemHandlers';
- * registerFileSystemHandlers();
+ *
+ * Enforces declarative contracts (FS:READ_DIR, FS:READ_FILE, FS:PREVIEW_FILE,
+ * FS:WRITE_FILE, FS:DELETE, FS:MOVE, FS:CREATE_FILE, FS:CREATE_DIR,
+ * FS:GET_STATS, FS:GET_SYSTEM_PATHS, FS:RENAME) via securityMiddleware.
  */
 
 import { ipcMain, IpcMainInvokeEvent } from 'electron';
-import * as fs from 'fs/promises';
-import { FileSystemService } from '@main/services/FileSystemService';
 import {
-  validatePathRequest,
-  validatePathsOrThrow,
-  validateRequestSchema,
-  withErrorHandling,
-  checkRateLimit,
+  withContract,
+  resolveAllowedRoots,
+  validateCanonicalPathOrThrow,
 } from './securityMiddleware';
-import { FileNode, FileStats } from '@shared/contracts';
-import { FileSystemLogger } from '@shared/logging';
-import { ConfigManager } from '@shared/config';
+import { FileSystemService } from '../services/FileSystemService';
+import { FileNode, FilePreviewResult, FileStats, SystemPaths } from '@shared/contracts';
+import { FileSystemLogger, IPCLogger } from '@shared/logging';
+import { IPCChannel } from '@shared/ipc/contracts';
 import os from 'os';
 import path from 'path';
 
-/**
- * Singleton FileSystemService instance.
- * Uses first allowed root from config, or home directory as fallback.
- */
 let fileSystemService: FileSystemService | null = null;
 
 /**
- * Get or create FileSystemService instance.
- * 
- * @returns FileSystemService instance
+ * Get or create FileSystemService instance configured with canonical allowed roots.
  */
-function getFileSystemService(): FileSystemService {
+export function getFileSystemService(): FileSystemService {
   if (!fileSystemService) {
-    // Always use home directory as allowed root to access all user folders
-    const homeDir = os.homedir();
-    fileSystemService = new FileSystemService(homeDir);
-    FileSystemLogger.info('FileSystemService initialized', { root: homeDir });
+    const roots = resolveAllowedRoots();
+    fileSystemService = new FileSystemService(roots);
+    FileSystemLogger.info('FileSystemService initialized', { roots });
   }
 
   return fileSystemService;
 }
 
 /**
- * Get system paths (home, documents, downloads, pictures).
- * Used by renderer QuickAccess component.
+ * Reset singleton FileSystemService (used after config changes or in tests).
  */
-function getSystemPaths(): {
-  home: string;
-  documents: string;
-  downloads: string;
-  pictures: string;
-} {
+export function resetFileSystemService(): void {
+  fileSystemService = null;
+}
+
+function getSystemPaths(): SystemPaths {
   const homeDir = os.homedir();
   return {
     home: homeDir,
@@ -76,264 +51,155 @@ function getSystemPaths(): {
   };
 }
 
-/**
- * Handler: FS:READ_DIR
- * Read directory contents with metadata.
- * 
- * Input: { path: string }
- * Output: FileNode[]
- */
 async function handleReadDirectory(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  input: { path: string }
 ): Promise<FileNode[]> {
-  checkRateLimit('FS:READ_DIR');
-
-  // Validate and extract path
-  const dirPath = validatePathRequest(request, 'path');
-
-  FileSystemLogger.info('Reading directory', { path: dirPath });
+  FileSystemLogger.info('Reading directory', { path: input.path });
 
   const service = getFileSystemService();
-  const files = await service.readDirectory(dirPath);
+  const files = await service.readDirectory(input.path);
 
   FileSystemLogger.info('Directory read successful', {
-    path: dirPath,
+    path: input.path,
     fileCount: files.length,
   });
 
   return files;
 }
 
-/**
- * Handler: FS:READ_FILE
- * Read file content as string.
- * 
- * Input: { path: string }
- * Output: { content: string, encoding: string }
- */
 async function handleReadFile(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  input: { path: string }
 ): Promise<{ content: string; encoding: string }> {
-  checkRateLimit('FS:READ_FILE');
-
-  // Validate and extract path
-  const filePath = validatePathRequest(request, 'path');
-
-  FileSystemLogger.info('Reading file', { path: filePath });
+  FileSystemLogger.info('Reading file', { path: input.path });
 
   const service = getFileSystemService();
-  const content = await service.readFile(filePath);
+  const content = await service.readFile(input.path);
 
   FileSystemLogger.info('File read successful', {
-    path: filePath,
+    path: input.path,
     contentLength: content.length,
   });
 
   return { content, encoding: 'utf-8' };
 }
 
-/**
- * Handler: FS:WRITE_FILE
- * Write content to file.
- * 
- * Input: { path: string, content: string }
- * Output: { success: boolean }
- */
+async function handlePreviewFile(
+  _event: IpcMainInvokeEvent,
+  input: { path: string; maxLines?: number }
+): Promise<FilePreviewResult> {
+  const maxLines = input.maxLines ?? 100;
+  const service = getFileSystemService();
+  const stats = await service.getStats(input.path);
+  const raw = await service.readFile(input.path);
+  const binary = raw.includes('\0');
+  const allLines = binary ? [] : raw.split(/\r?\n/);
+  const sliced = allLines.slice(0, maxLines);
+
+  return {
+    path: input.path,
+    name: path.basename(input.path),
+    extension: path.extname(input.path).replace(/^\./, '').toLowerCase(),
+    size: stats.size,
+    modified: stats.modified,
+    lines: sliced,
+    totalLinesBuffered: sliced.length,
+    truncated: allLines.length > maxLines,
+    binary,
+    fromCache: false,
+  };
+}
+
 async function handleWriteFile(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  input: { path: string; content: string }
 ): Promise<{ success: boolean }> {
-  checkRateLimit('FS:WRITE_FILE');
-
-  // Validate request schema
-  validateRequestSchema(request, {
-    path: 'string',
-    content: 'string',
-  });
-
-  const { path: filePath, content } = request as { path: string; content: string };
-
-  // Validate path
-  validatePathsOrThrow([filePath]);
-
   FileSystemLogger.info('Writing file', {
-    path: filePath,
-    contentLength: content.length,
+    path: input.path,
+    contentLength: input.content.length,
   });
 
   const service = getFileSystemService();
-  const result = await service.writeFile(filePath, content);
+  const result = await service.writeFile(input.path, input.content);
 
-  FileSystemLogger.info('File write successful', { path: filePath });
+  FileSystemLogger.info('File write successful', { path: input.path });
 
   return result;
 }
 
-/**
- * Handler: FS:DELETE
- * Delete file or directory.
- * 
- * Input: { path: string, recursive?: boolean }
- * Output: { success: boolean }
- */
 async function handleDelete(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  input: { path: string; recursive?: boolean }
 ): Promise<{ success: boolean }> {
-  checkRateLimit('FS:DELETE');
-
-  // Validate request has path
-  if (!request || typeof request !== 'object' || !('path' in request)) {
-    throw new TypeError('Request missing required field: path');
-  }
-
-  const { path: filePath, recursive } = request as { path: string; recursive?: boolean };
-
-  // Validate path
-  validatePathsOrThrow([filePath]);
-
-  // Validate recursive flag if present
-  if (recursive !== undefined && typeof recursive !== 'boolean') {
-    throw new TypeError('Field "recursive" must be a boolean');
-  }
-
   FileSystemLogger.info('Deleting file/directory', {
-    path: filePath,
-    recursive: recursive || false,
+    path: input.path,
+    recursive: input.recursive || false,
   });
 
   const service = getFileSystemService();
-  const result = await service.delete(filePath, recursive);
+  const result = await service.delete(input.path, input.recursive);
 
-  FileSystemLogger.info('Delete successful', { path: filePath });
+  FileSystemLogger.info('Delete successful', { path: input.path });
 
   return result;
 }
 
-/**
- * Handler: FS:MOVE
- * Move or rename file/directory.
- * 
- * Input: { source: string, destination: string }
- * Output: { success: boolean, newPath: string }
- */
 async function handleMove(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  input: { source: string; destination: string }
 ): Promise<{ success: boolean; newPath: string }> {
-  checkRateLimit('FS:MOVE');
-
-  // Validate request schema
-  validateRequestSchema(request, {
-    source: 'string',
-    destination: 'string',
-  });
-
-  const { source, destination } = request as { source: string; destination: string };
-
-  // Validate both paths
-  validatePathsOrThrow([source, destination]);
-
   FileSystemLogger.info('Moving file/directory', {
-    source,
-    destination,
+    source: input.source,
+    destination: input.destination,
   });
 
   const service = getFileSystemService();
-  const result = await service.move(source, destination);
+  const result = await service.move(input.source, input.destination);
 
   FileSystemLogger.info('Move successful', {
-    source,
+    source: input.source,
     destination: result.newPath,
   });
 
   return result;
 }
 
-/**
- * Handler: FS:CREATE_FILE
- * Create new empty file.
- * 
- * Input: { path: string, name: string }
- * Output: { success: boolean, path: string }
- */
 async function handleCreateFile(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  input: { path: string; name: string; content?: string }
 ): Promise<{ success: boolean; path: string }> {
-  checkRateLimit('FS:CREATE_FILE');
-
-  // Validate request schema
-  validateRequestSchema(request, {
-    path: 'string',
-    name: 'string',
-  });
-
-  const { path: dirPath, name } = request as { path: string; name: string };
-
-  // Validate directory path
-  validatePathsOrThrow([dirPath]);
-
-  // Construct full file path
-  const fullPath = path.join(dirPath, name);
-
-  // Validate full path (security check)
-  validatePathsOrThrow([fullPath]);
+  // Entry name already validated by safeEntryNameSchema; re-verify full joined canonical target
+  const candidatePath = path.join(input.path, input.name);
+  const fullPath = await validateCanonicalPathOrThrow(candidatePath);
 
   FileSystemLogger.info('Creating file', {
-    directory: dirPath,
-    name,
+    directory: input.path,
+    name: input.name,
     fullPath,
   });
 
-  // Create empty file
   const service = getFileSystemService();
-  await service.writeFile(fullPath, '');
+  await service.writeFile(fullPath, input.content ?? '');
 
   FileSystemLogger.info('File created successfully', { path: fullPath });
 
   return { success: true, path: fullPath };
 }
 
-/**
- * Handler: FS:CREATE_DIR
- * Create new directory.
- * 
- * Input: { path: string, name: string }
- * Output: { success: boolean, path: string }
- */
 async function handleCreateDirectory(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  input: { path: string; name: string }
 ): Promise<{ success: boolean; path: string }> {
-  checkRateLimit('FS:CREATE_DIR');
-
-  // Validate request schema
-  validateRequestSchema(request, {
-    path: 'string',
-    name: 'string',
-  });
-
-  const { path: parentPath, name } = request as { path: string; name: string };
-
-  // Validate parent path
-  validatePathsOrThrow([parentPath]);
-
-  // Construct full directory path
-  const fullPath = path.join(parentPath, name);
-
-  // Validate full path (security check)
-  validatePathsOrThrow([fullPath]);
+  const candidatePath = path.join(input.path, input.name);
+  const fullPath = await validateCanonicalPathOrThrow(candidatePath);
 
   FileSystemLogger.info('Creating directory', {
-    parent: parentPath,
-    name,
+    parent: input.path,
+    name: input.name,
     fullPath,
   });
 
-  // Create directory using FileSystemService
   const service = getFileSystemService();
   await service.createDirectory(fullPath);
 
@@ -342,165 +208,81 @@ async function handleCreateDirectory(
   return { success: true, path: fullPath };
 }
 
-/**
- * Handler: FS:GET_STATS
- * Get detailed file statistics.
- * 
- * Input: { path: string }
- * Output: FileStats
- */
 async function handleGetStats(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  input: { path: string }
 ): Promise<FileStats> {
-  checkRateLimit('FS:GET_STATS');
-
-  // Validate and extract path
-  const filePath = validatePathRequest(request, 'path');
-
-  FileSystemLogger.info('Getting file stats', { path: filePath });
+  FileSystemLogger.debug('Getting file stats', { path: input.path });
 
   const service = getFileSystemService();
-  const stats = await service.getStats(filePath);
-
-  FileSystemLogger.debug('File stats retrieved', {
-    path: filePath,
-    size: stats.size,
-    isDirectory: stats.isDirectory,
-  });
+  const stats = await service.getStats(input.path);
 
   return stats;
 }
 
-/**
- * Register all file system IPC handlers.
- * 
- * Call this once during app initialization.
- * 
- * @example
- * // In main.ts:
- * registerFileSystemHandlers();
- */
-export function registerFileSystemHandlers(): void {
-  FileSystemLogger.info('Registering file system IPC handlers');
-
-  // Register all handlers with error handling middleware
-  ipcMain.handle(
-    'FS:READ_DIR',
-    withErrorHandling(handleReadDirectory, 'FS:READ_DIR')
-  );
-
-  ipcMain.handle(
-    'FS:READ_FILE',
-    withErrorHandling(handleReadFile, 'FS:READ_FILE')
-  );
-
-  ipcMain.handle(
-    'FS:WRITE_FILE',
-    withErrorHandling(handleWriteFile, 'FS:WRITE_FILE')
-  );
-
-  ipcMain.handle(
-    'FS:DELETE',
-    withErrorHandling(handleDelete, 'FS:DELETE')
-  );
-
-  ipcMain.handle(
-    'FS:MOVE',
-    withErrorHandling(handleMove, 'FS:MOVE')
-  );
-
-  ipcMain.handle(
-    'FS:CREATE_FILE',
-    withErrorHandling(handleCreateFile, 'FS:CREATE_FILE')
-  );
-
-  ipcMain.handle(
-    'FS:CREATE_DIR',
-    withErrorHandling(handleCreateDirectory, 'FS:CREATE_DIR')
-  );
-
-  ipcMain.handle(
-    'FS:GET_STATS',
-    withErrorHandling(handleGetStats, 'FS:GET_STATS')
-  );
-
-  // System paths handler (no validation needed - returns constant paths)
-  ipcMain.handle('FS:GET_SYSTEM_PATHS', async () => {
-    FileSystemLogger.debug('Getting system paths');
-    return getSystemPaths();
-  });
-
-  ipcMain.handle(
-    'FS:RENAME',
-    withErrorHandling(handleRename, 'FS:RENAME')
-  );
-
-  FileSystemLogger.info('File system IPC handlers registered successfully');
-}
-
-/**
- * Handler: FS:RENAME
- * Rename a file or directory.
- * 
- * SECURITY: Both old and new paths must be within allowed root.
- * New name cannot contain path separators (prevents directory traversal).
- * 
- * Input: { oldPath: string, newName: string }
- * Output: { success: boolean, newPath: string }
- */
 async function handleRename(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  input: { oldPath: string; newName: string }
 ): Promise<{ success: boolean; newPath: string }> {
-  checkRateLimit('FS:RENAME');
-
-  // Validate request schema
-  validateRequestSchema(request, {
-    oldPath: 'string',
-    newName: 'string',
-  });
-
-  const { oldPath, newName } = request as { oldPath: string; newName: string };
-
-  // SECURITY: Validate new name doesn't contain path separators
-  // This prevents renaming to "../../../etc/passwd" or similar attacks
-  if (newName.includes('/') || newName.includes('\\')) {
-    throw new Error('New name cannot contain path separators');
-  }
-
-  // SECURITY: Validate new name isn't empty or just whitespace
-  if (!newName.trim()) {
-    throw new Error('New name cannot be empty');
-  }
-
-  // SECURITY: Validate new name doesn't start with '..' 
-  if (newName.startsWith('..')) {
-    throw new Error('Invalid file name');
-  }
-
-  // Validate old path is within allowed root
-  validatePathsOrThrow([oldPath]);
-
-  // Construct new path (same directory, different name)
-  const directory = path.dirname(oldPath);
-  const newPath = path.join(directory, newName);
-
-  // SECURITY: Validate new path is also within allowed root
-  // (should always be true if above checks pass, but defense in depth)
-  validatePathsOrThrow([newPath]);
+  const directory = path.dirname(input.oldPath);
+  const candidateNewPath = path.join(directory, input.newName);
+  const canonicalNewPath = await validateCanonicalPathOrThrow(candidateNewPath);
 
   FileSystemLogger.info('Renaming file', {
-    oldPath,
-    newPath,
-    newName,
+    oldPath: input.oldPath,
+    newPath: canonicalNewPath,
+    newName: input.newName,
   });
 
-  // Perform rename
-  await fs.rename(oldPath, newPath);
+  const service = getFileSystemService();
+  const result = await service.move(input.oldPath, canonicalNewPath);
 
-  FileSystemLogger.info('File renamed successfully', { oldPath, newPath });
+  FileSystemLogger.info('File renamed successfully', {
+    oldPath: input.oldPath,
+    newPath: result.newPath,
+  });
 
-  return { success: true, newPath };
+  return result;
 }
 
+const FILE_SYSTEM_CHANNELS: IPCChannel[] = [
+  'FS:READ_DIR',
+  'FS:READ_FILE',
+  'FS:PREVIEW_FILE',
+  'FS:WRITE_FILE',
+  'FS:DELETE',
+  'FS:MOVE',
+  'FS:CREATE_FILE',
+  'FS:CREATE_DIR',
+  'FS:GET_STATS',
+  'FS:GET_SYSTEM_PATHS',
+  'FS:RENAME',
+];
+
+/**
+ * Register all file system IPC handlers through the declarative contract wrapper.
+ */
+export function registerFileSystemHandlers(): IPCChannel[] {
+  IPCLogger.info('Registering file system IPC handlers');
+
+  ipcMain.handle('FS:READ_DIR', withContract('FS:READ_DIR', handleReadDirectory));
+  ipcMain.handle('FS:READ_FILE', withContract('FS:READ_FILE', handleReadFile));
+  ipcMain.handle('FS:PREVIEW_FILE', withContract('FS:PREVIEW_FILE', handlePreviewFile));
+  ipcMain.handle('FS:WRITE_FILE', withContract('FS:WRITE_FILE', handleWriteFile));
+  ipcMain.handle('FS:DELETE', withContract('FS:DELETE', handleDelete));
+  ipcMain.handle('FS:MOVE', withContract('FS:MOVE', handleMove));
+  ipcMain.handle('FS:CREATE_FILE', withContract('FS:CREATE_FILE', handleCreateFile));
+  ipcMain.handle('FS:CREATE_DIR', withContract('FS:CREATE_DIR', handleCreateDirectory));
+  ipcMain.handle('FS:GET_STATS', withContract('FS:GET_STATS', handleGetStats));
+  ipcMain.handle(
+    'FS:GET_SYSTEM_PATHS',
+    withContract('FS:GET_SYSTEM_PATHS', async () => {
+      FileSystemLogger.debug('Getting system paths');
+      return getSystemPaths();
+    })
+  );
+  ipcMain.handle('FS:RENAME', withContract('FS:RENAME', handleRename));
+
+  IPCLogger.info('File system IPC handlers registered successfully');
+  return [...FILE_SYSTEM_CHANNELS];
+}

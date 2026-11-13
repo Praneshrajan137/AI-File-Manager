@@ -1,67 +1,90 @@
 /**
  * Type definitions for Electron API exposed via preload script.
- * 
- * This file provides TypeScript types for window.electronAPI
- * so renderer code has full type safety and autocomplete.
  */
 
-/**
- * Electron API exposed to renderer process via contextBridge.
- */
+import type {
+  FileNode,
+  FilePreviewResult,
+  FileStats,
+  IndexingStatus,
+  SystemPaths,
+} from '../shared/contracts';
+import type { RuntimeDiagnosticsSnapshot } from '../shared/diagnostics';
+
 interface ElectronAPI {
-    fs: {
-        readDirectory: (path: string) => Promise<any[]>;
-        readFile: (path: string) => Promise<{ content: string; encoding: string }>;
-        writeFile: (path: string, content: string) => Promise<{ success: boolean }>;
-        delete: (path: string, recursive?: boolean) => Promise<{ success: boolean }>;
-        move: (source: string, destination: string) => Promise<{ success: boolean; newPath: string }>;
-        getStats: (path: string) => Promise<any>;
-        getSystemPaths: () => Promise<{ home: string; documents: string; downloads: string; pictures: string }>;
-        rename: (oldPath: string, newName: string) => Promise<{ success: boolean; newPath: string }>;
-    };
+  fs: {
+    readDirectory: (path: string) => Promise<FileNode[]>;
+    readFile: (path: string) => Promise<{ content: string; encoding: string }>;
+    previewFile: (path: string, maxLines?: number) => Promise<FilePreviewResult>;
+    writeFile: (path: string, content: string) => Promise<{ success: boolean }>;
+    createFile: (
+      path: string,
+      name: string,
+      content?: string
+    ) => Promise<{ success: boolean; path: string }>;
+    createDirectory: (
+      path: string,
+      name: string
+    ) => Promise<{ success: boolean; path: string }>;
+    delete: (path: string, recursive?: boolean) => Promise<{ success: boolean }>;
+    move: (source: string, destination: string) => Promise<{ success: boolean; newPath: string }>;
+    getStats: (path: string) => Promise<FileStats>;
+    getSystemPaths: () => Promise<SystemPaths>;
+    rename: (oldPath: string, newName: string) => Promise<{ success: boolean; newPath: string }>;
+  };
 
-    navigation: {
-        back: () => Promise<string | null>;
-        forward: () => Promise<string | null>;
-        push: (path: string) => Promise<void>;
-        getState: () => Promise<{ canGoBack: boolean; canGoForward: boolean }>;
-    };
+  navigation: {
+    back: () => Promise<string | null>;
+    forward: () => Promise<string | null>;
+    push: (path: string) => Promise<{ success: boolean }>;
+    getState: () => Promise<{ canGoBack: boolean; canGoForward: boolean }>;
+  };
 
-    search: {
-        autocomplete: (prefix: string, maxResults?: number) => Promise<string[]>;
-        query: (query: string, searchRoot: string) => Promise<any[]>;
-    };
+  search: {
+    autocomplete: (prefix: string, maxResults?: number) => Promise<string[]>;
+    query: (query: string, searchRoot: string) => Promise<FileNode[]>;
+  };
 
-    llm: {
-        query: (query: string, callback: (chunk: string) => void) => Promise<void>;
-        getIndexingStatus: () => Promise<{ indexed: number; total: number; inProgress: boolean; currentFile?: string }>;
-        startIndexing: (path: string) => Promise<{ success: boolean; message?: string; total?: number }>;
-        stopIndexing: () => Promise<{ success: boolean }>;
-        clearIndex: () => Promise<{ success: boolean; error?: string }>;
-    };
+  llm: {
+    query: (
+      query: string,
+      callback: (chunk: string) => void
+    ) => Promise<{ success: boolean; error?: string }>;
+    getIndexingStatus: () => Promise<IndexingStatus>;
+    startIndexing: (
+      path: string
+    ) => Promise<{ success: boolean; message?: string; total?: number; error?: string }>;
+    stopIndexing: () => Promise<{ success: boolean }>;
+    indexFile: (
+      filePath: string
+    ) => Promise<{ success: boolean; chunksCreated?: number; error?: string }>;
+    checkOllama: () => Promise<{ available: boolean; models: string[] }>;
+    clearIndex: () => Promise<{ success: boolean; error?: string }>;
+  };
 
-    fileWatcher: {
-        subscribe: (callback: (event: { type: string; path: string }) => void) => () => void;
-    };
+  fileWatcher: {
+    subscribe: (callback: (event: { type: string; path: string }) => void) => () => void;
+  };
 
-    clipboard: {
-        writeText: (text: string) => Promise<{ success: boolean }>;
-    };
+  clipboard: {
+    writeText: (text: string) => Promise<{ success: boolean }>;
+  };
 
-    shell: {
-        openPath: (path: string) => Promise<{ success: boolean; error?: string }>;
-    };
+  shell: {
+    openPath: (path: string) => Promise<{ success: boolean; error?: string }>;
+  };
 
-    ping: () => Promise<string>;
+  diagnostics: {
+    getSnapshot: () => Promise<RuntimeDiagnosticsSnapshot>;
+  };
+
+  ping: () => Promise<'pong'>;
 }
 
-/**
- * Extend Window interface to include electronAPI.
- */
 declare global {
-    interface Window {
-        electronAPI: ElectronAPI;
-    }
+  interface Window {
+    electronAPI: ElectronAPI;
+  }
 }
 
-export { };
+export {};

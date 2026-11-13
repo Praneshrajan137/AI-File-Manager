@@ -34,12 +34,18 @@ export class FileSystemService implements IFileSystemService {
      * const service = new FileSystemService('/home/user/documents');
      * const files = await service.readDirectory('/home/user/documents');
      */
-    constructor(allowedRoot: string) {
-        if (!allowedRoot || allowedRoot.trim() === '') {
+    constructor(allowedRoot: string | string[]) {
+        const roots = Array.isArray(allowedRoot)
+            ? allowedRoot.filter((entry) => entry && entry.trim() !== '')
+            : allowedRoot && allowedRoot.trim() !== ''
+                ? [allowedRoot]
+                : [];
+
+        if (roots.length === 0) {
             throw new Error('Allowed root directory cannot be empty');
         }
 
-        this.validator = new PathValidator(allowedRoot);
+        this.validator = new PathValidator(roots);
     }
 
     /**

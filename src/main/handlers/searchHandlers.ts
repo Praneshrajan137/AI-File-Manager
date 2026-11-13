@@ -23,13 +23,13 @@ import { PathTrie } from '@main/dsa/PathTrie';
 import { DirectoryScanner } from '@main/services/DirectoryScanner';
 import { FileSystemService } from '@main/services/FileSystemService';
 import {
-  validateRequestSchema,
-  withErrorHandling,
-  checkRateLimit,
+  withContract,
+  resolveAllowedRoots,
 } from './securityMiddleware';
 import { FileNode, FileMetadata } from '@shared/contracts';
 import { IPCLogger, getLogger } from '@shared/logging';
 import { ConfigManager } from '@shared/config';
+import { IPCChannel } from '@shared/ipc/contracts';
 import os from 'os';
 
 /**
@@ -297,224 +297,81 @@ let searchService: SearchService | null = null;
  */
 function getSearchService(): SearchService {
   if (!searchService) {
-    try {
-      const config = ConfigManager.getInstance();
-      const allowedRoots = config.get('fileSystem').allowedRoots;
-      const defaultRoot = allowedRoots && allowedRoots.length > 0
-        ? allowedRoots[0]
-        : os.homedir();
-
-      const pathTrie = new PathTrie();
-      const fileSystemService = new FileSystemService(defaultRoot);
-
-      searchService = new SearchService(pathTrie, fileSystemService);
-      IPCLogger.info('SearchService initialized');
-    } catch (error) {
-      // Fallback
-      const pathTrie = new PathTrie();
-      const fileSystemService = new FileSystemService(os.homedir());
-
-      searchService = new SearchService(pathTrie, fileSystemService);
-      IPCLogger.info('SearchService initialized with fallback');
-    }
+    const roots = resolveAllowedRoots();
+    const pathTrie = new PathTrie();
+    const fileSystemService = new FileSystemService(roots);
+    searchService = new SearchService(pathTrie, fileSystemService);
+    IPCLogger.info('SearchService initialized', { roots });
   }
 
   return searchService;
 }
 
-/**
- * Handler: SEARCH:AUTOCOMPLETE
- * Get autocomplete suggestions for prefix.
- * 
- * Input: { prefix: string, maxResults?: number }
- * Output: string[]
- */
+export function resetSearchService(): void {
+  searchService = null;
+}
+
 async function handleAutocomplete(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  input: { prefix: string; maxResults?: number }
 ): Promise<string[]> {
-  checkRateLimit('SEARCH:AUTOCOMPLETE');
-
-  // Validate request schema
-  if (!request || typeof request !== 'object' || !('prefix' in request)) {
-    throw new TypeError('Request missing required field: prefix');
-  }
-
-  const { prefix, maxResults } = request as { prefix: string; maxResults?: number };
-
-  if (typeof prefix !== 'string') {
-    throw new TypeError('Field "prefix" must be a string');
-  }
-
-  if (maxResults !== undefined && typeof maxResults !== 'number') {
-    throw new TypeError('Field "maxResults" must be a number');
-  }
+  const maxResults = input.maxResults ?? 10;
 
   IPCLogger.info('Autocomplete request', {
-    prefix,
-    maxResults: maxResults || 10,
+    prefix: input.prefix,
+    maxResults,
   });
 
   const service = getSearchService();
-  const results = await service.autocomplete(prefix, maxResults || 10);
+  const results = await service.autocomplete(input.prefix, maxResults);
 
   IPCLogger.info('Autocomplete completed', {
-    prefix,
+    prefix: input.prefix,
     resultCount: results.length,
   });
 
   return results;
 }
 
-/**
- * Handler: SEARCH:QUERY
- * Search for files matching query using direct file system access.
- * 
- * This implementation performs a simple, reliable case-insensitive
- * substring search on the current directory.
- * 
- * Input: { query: string, searchRoot: string }
- * Output: FileNode[]
- */
 async function handleQuery(
-  event: IpcMainInvokeEvent,
-  request: unknown
+  _event: IpcMainInvokeEvent,
+  input: { query: string; searchRoot: string }
 ): Promise<FileNode[]> {
-  checkRateLimit('SEARCH:QUERY');
+  const queryLower = input.query.toLowerCase().trim();
+  const fsService = new FileSystemService(resolveAllowedRoots());
+  const entries = await fsService.readDirectory(input.searchRoot);
 
-  // Validate request schema
-  validateRequestSchema(request, {
-    query: 'string',
-    searchRoot: 'string',
+  const fileNodes =
+    queryLower.length === 0
+      ? entries
+      : entries.filter((entry) => entry.name.toLowerCase().includes(queryLower));
+
+  IPCLogger.info('Search query completed', {
+    query: input.query,
+    searchRoot: input.searchRoot,
+    resultCount: fileNodes.length,
   });
 
-  const { query, searchRoot } = request as { query: string; searchRoot: string };
-
-  IPCLogger.info('Search query request', {
-    query,
-    searchRoot,
-  });
-
-  const queryLower = query.toLowerCase().trim();
-  const fileNodes: FileNode[] = [];
-
-  // Direct file system search - bypasses PathTrie and path validation issues
-  try {
-    const fsPromises = await import('fs/promises');
-    const nodePath = await import('path');
-
-    // Read directory contents directly
-    const entries = await fsPromises.readdir(searchRoot, { withFileTypes: true });
-
-    for (const entry of entries) {
-      // Case-insensitive substring match on file name
-      if (entry.name.toLowerCase().includes(queryLower)) {
-        const fullPath = nodePath.join(searchRoot, entry.name);
-
-        try {
-          const stats = await fsPromises.stat(fullPath);
-
-          // Get extension
-          const ext = nodePath.extname(entry.name);
-          const extension = ext ? ext.slice(1).toLowerCase() : '';
-
-          // Build FileNode
-          const fileNode: FileNode = {
-            path: fullPath,
-            name: entry.name,
-            isDirectory: entry.isDirectory(),
-            size: stats.size,
-            modified: stats.mtimeMs,
-            extension,
-            mimeType: getMimeTypeForSearch(extension),
-            isHidden: entry.name.startsWith('.'),
-          };
-
-          fileNodes.push(fileNode);
-        } catch (statError) {
-          // Skip files we can't stat (permissions etc)
-          IPCLogger.debug('Failed to stat file during search', {
-            path: fullPath,
-            error: statError instanceof Error ? statError.message : String(statError),
-          });
-        }
-      }
-    }
-
-    IPCLogger.info('Search query completed', {
-      query,
-      searchRoot,
-      resultCount: fileNodes.length,
-    });
-
-    return fileNodes;
-  } catch (error) {
-    IPCLogger.error('Search failed', {
-      query,
-      searchRoot,
-      error: error instanceof Error ? error.message : String(error),
-    });
-
-    // Return empty array instead of throwing - more user-friendly
-    return [];
-  }
+  return fileNodes;
 }
 
-/**
- * Helper function to get MIME type for search results.
- */
-function getMimeTypeForSearch(extension: string): string {
-  const mimeTypes: Record<string, string> = {
-    txt: 'text/plain',
-    md: 'text/markdown',
-    js: 'text/javascript',
-    ts: 'text/typescript',
-    json: 'application/json',
-    html: 'text/html',
-    css: 'text/css',
-    png: 'image/png',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    gif: 'image/gif',
-    svg: 'image/svg+xml',
-    pdf: 'application/pdf',
-    zip: 'application/zip',
-    exe: 'application/x-executable',
-    doc: 'application/msword',
-    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    xls: 'application/vnd.ms-excel',
-    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    mp3: 'audio/mpeg',
-    mp4: 'video/mp4',
-  };
+const SEARCH_CHANNELS: IPCChannel[] = ['SEARCH:AUTOCOMPLETE', 'SEARCH:QUERY'];
 
-  return mimeTypes[extension.toLowerCase()] || 'application/octet-stream';
-}
-
-/**
- * Register all search IPC handlers.
- * 
- * Call this once during app initialization.
- * 
- * @example
- * // In main.ts:
- * registerSearchHandlers();
- */
-export function registerSearchHandlers(): void {
+export function registerSearchHandlers(): IPCChannel[] {
   IPCLogger.info('Registering search IPC handlers');
 
-  // Register all handlers with error handling middleware
   ipcMain.handle(
     'SEARCH:AUTOCOMPLETE',
-    withErrorHandling(handleAutocomplete, 'SEARCH:AUTOCOMPLETE')
+    withContract('SEARCH:AUTOCOMPLETE', handleAutocomplete)
   );
 
   ipcMain.handle(
     'SEARCH:QUERY',
-    withErrorHandling(handleQuery, 'SEARCH:QUERY')
+    withContract('SEARCH:QUERY', handleQuery)
   );
 
   IPCLogger.info('Search IPC handlers registered successfully');
+  return [...SEARCH_CHANNELS];
 }
 
 /**
