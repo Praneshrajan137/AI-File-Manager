@@ -18,6 +18,8 @@ import {
     Embedding,
     IndexStats,
 } from '../../shared/contracts';
+import { HybridLexicalIndex, LexicalSearchMatch } from './HybridLexicalIndex';
+import { RuntimeDiagnostics } from '../../main/services/RuntimeDiagnostics';
 import fs from 'fs/promises';
 
 // Type definitions for LanceDB
@@ -43,6 +45,8 @@ export class VectorStore implements IVectorStore {
 
     /** Batch write optimization: accumulate records before flushing */
     private pendingRecords: LanceRecord[] = [];
+    private filesPendingReplace = new Set<string>();
+    private lexicalIndex = new HybridLexicalIndex();
     private readonly BATCH_WRITE_SIZE = 50;
 
     /**
@@ -62,12 +66,47 @@ export class VectorStore implements IVectorStore {
             const tableNames = await this.db.tableNames();
             if (tableNames.includes(this.TABLE_NAME)) {
                 this.table = await this.db.openTable(this.TABLE_NAME);
+                await this.rebuildLexicalIndexFromTable();
             } else {
                 await this.createTable();
+                this.lexicalIndex.clear();
             }
+
+            RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                initialized: true,
+                totalChunks: this.lexicalIndex.size(),
+                indexedFiles: this.lexicalIndex.fileCount(),
+                lexicalDocs: this.lexicalIndex.size(),
+                pendingBuffer: this.pendingRecords.length,
+            });
         } catch (error: unknown) {
             const msg = error instanceof Error ? error.message : String(error);
             throw new Error(`Failed to initialize vector store: ${msg}`);
+        }
+    }
+
+    private async rebuildLexicalIndexFromTable(): Promise<void> {
+        if (!this.table) {
+            return;
+        }
+        try {
+            const count = await this.table.countRows();
+            if (count === 0) {
+                this.lexicalIndex.clear();
+                return;
+            }
+            const rows = (await this.table.query().toArray()) as LanceRecord[];
+            const vectorRecords: VectorRecord[] = rows.map((row) => ({
+                id: row.id,
+                chunk_text: row.chunk_text,
+                embedding: this.toPlainVector(row.vector),
+                file_path: row.file_path,
+                chunk_index: row.chunk_index,
+                indexed_at: row.indexed_at,
+            }));
+            this.lexicalIndex.rebuildFromRecords(vectorRecords);
+        } catch {
+            this.lexicalIndex.clear();
         }
     }
 
@@ -111,17 +150,41 @@ export class VectorStore implements IVectorStore {
             return;
         }
 
-        const records = chunks.map((chunk, i) => ({
+        const now = Date.now();
+        const records: LanceRecord[] = chunks.map((chunk, i) => ({
             id: `${filePath}:${chunk.chunkIndex}`,
             chunk_text: chunk.text,
             vector: embeddings[i],
             file_path: filePath,
             chunk_index: chunk.chunkIndex,
-            indexed_at: Date.now(),
+            indexed_at: now,
         }));
+
+        // Eliminate any older pending records & schedule persisted delete-before-upsert
+        this.pendingRecords = this.pendingRecords.filter((rec) => rec.file_path !== filePath);
+        this.filesPendingReplace.add(filePath);
+
+        // Keep hybrid lexical BM25 index immediately synchronized
+        this.lexicalIndex.removeByFilePath(filePath);
+        this.lexicalIndex.upsertBatch(
+            records.map((r) => ({
+                id: r.id,
+                chunk_text: r.chunk_text,
+                embedding: r.vector,
+                file_path: r.file_path,
+                chunk_index: r.chunk_index,
+                indexed_at: r.indexed_at,
+            }))
+        );
 
         // Add to pending batch for optimized writes
         this.pendingRecords.push(...records);
+
+        RuntimeDiagnostics.getInstance().setVectorStoreStats({
+            initialized: true,
+            lexicalDocs: this.lexicalIndex.size(),
+            pendingBuffer: this.pendingRecords.length,
+        });
 
         // Flush when batch size reached
         if (this.pendingRecords.length >= this.BATCH_WRITE_SIZE) {
@@ -130,17 +193,37 @@ export class VectorStore implements IVectorStore {
     }
 
     /**
-     * Flush pending records to database.
-     * Call this after batch indexing operations complete.
+     * Flush pending records to database (delete-before-upsert guarantees zero duplicates on re-index).
      */
     async flushPendingRecords(): Promise<void> {
-        if (this.pendingRecords.length === 0) return;
+        if (this.pendingRecords.length === 0 && this.filesPendingReplace.size === 0) return;
 
         this.ensureInitialized();
 
         try {
-            await this.table!.add(this.pendingRecords);
-            this.pendingRecords = [];
+            // Delete existing LanceDB chunks for re-indexed files first
+            const filesToDelete = Array.from(this.filesPendingReplace);
+            for (const filePath of filesToDelete) {
+                try {
+                    await this.table!.delete(`file_path = '${this.escapeSql(filePath)}'`);
+                } catch {
+                    // Ignore when table is empty or filter finds 0 rows
+                }
+            }
+            this.filesPendingReplace.clear();
+
+            if (this.pendingRecords.length > 0) {
+                await this.table!.add(this.pendingRecords);
+                this.pendingRecords = [];
+            }
+
+            RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                initialized: true,
+                totalChunks: this.lexicalIndex.size(),
+                indexedFiles: this.lexicalIndex.fileCount(),
+                lexicalDocs: this.lexicalIndex.size(),
+                pendingBuffer: 0,
+            });
 
             // Yield after write to prevent blocking
             await new Promise(resolve => setImmediate(resolve));
@@ -156,6 +239,10 @@ export class VectorStore implements IVectorStore {
     ): Promise<VectorRecord[]> {
         this.ensureInitialized();
 
+        if (this.pendingRecords.length > 0 || this.filesPendingReplace.size > 0) {
+            await this.flushPendingRecords();
+        }
+
         try {
             const count = await this.table!.countRows();
             if (count === 0) {
@@ -167,12 +254,12 @@ export class VectorStore implements IVectorStore {
             // Chain: .limit(n).toArray() to get results
             const results = await this.table!.vectorSearch(queryEmbedding).limit(topK).toArray() as LanceRecord[];
 
-            // Map LanceDB results to VectorRecord
+            // Map LanceDB results to VectorRecord (converting Arrow Vector -> plain number[])
             // Results include: id, chunk_text, vector, file_path, chunk_index, indexed_at, _distance
             return results.map((row) => ({
                 id: row.id,
                 chunk_text: row.chunk_text,
-                embedding: row.vector,
+                embedding: this.toPlainVector(row.vector),
                 file_path: row.file_path,
                 chunk_index: row.chunk_index,
                 indexed_at: row.indexed_at,
@@ -215,27 +302,44 @@ export class VectorStore implements IVectorStore {
         return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
     }
 
+    searchLexical(query: string, topK: number = 10): LexicalSearchMatch[] {
+        return this.lexicalIndex.search(query, topK);
+    }
+
     async deleteFile(filePath: string): Promise<number> {
         this.ensureInitialized();
 
+        const beforePendingCount = this.pendingRecords.length;
+        this.pendingRecords = this.pendingRecords.filter((rec) => rec.file_path !== filePath);
+        const removedPending = beforePendingCount - this.pendingRecords.length;
+        this.filesPendingReplace.delete(filePath);
+        this.lexicalIndex.removeByFilePath(filePath);
+
         try {
-            // Get all rows first to count
+            // Get all rows first to count persisted records
             const allRows = await this.table!.query().toArray() as LanceRecord[];
             const matchingRows = allRows.filter(
                 (r) => r.file_path === filePath
             );
-            const count = matchingRows.length;
+            const persistedCount = matchingRows.length;
 
-            if (count === 0) {
-                return 0;
+            if (persistedCount > 0) {
+                await this.table!.delete(`file_path = '${this.escapeSql(filePath)}'`);
             }
 
-            await this.table!.delete(`file_path = '${this.escapeSql(filePath)}'`);
-            return count;
+            RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                initialized: true,
+                totalChunks: this.lexicalIndex.size(),
+                indexedFiles: this.lexicalIndex.fileCount(),
+                lexicalDocs: this.lexicalIndex.size(),
+                pendingBuffer: this.pendingRecords.length,
+            });
+
+            return persistedCount + removedPending;
         } catch (error: unknown) {
             const msg = error instanceof Error ? error.message : String(error);
             if (msg.includes('not found') || msg.includes('empty')) {
-                return 0;
+                return removedPending;
             }
             throw new Error(`Delete failed: ${msg}`);
         }
@@ -244,10 +348,21 @@ export class VectorStore implements IVectorStore {
     async getStats(): Promise<IndexStats> {
         this.ensureInitialized();
 
+        if (this.pendingRecords.length > 0 || this.filesPendingReplace.size > 0) {
+            await this.flushPendingRecords();
+        }
+
         try {
             const count = await this.table!.countRows();
 
             if (count === 0) {
+                RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                    initialized: true,
+                    totalChunks: 0,
+                    indexedFiles: 0,
+                    lexicalDocs: this.lexicalIndex.size(),
+                    pendingBuffer: this.pendingRecords.length,
+                });
                 return {
                     totalFiles: 0,
                     totalChunks: 0,
@@ -268,6 +383,14 @@ export class VectorStore implements IVectorStore {
             const lastIndexed = allRows.length > 0
                 ? Math.max(...allRows.map((r) => r.indexed_at))
                 : 0;
+
+            RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                initialized: true,
+                totalChunks: allRows.length,
+                indexedFiles: uniqueFiles.size,
+                lexicalDocs: this.lexicalIndex.size(),
+                pendingBuffer: this.pendingRecords.length,
+            });
 
             return {
                 totalFiles: uniqueFiles.size,
@@ -291,13 +414,46 @@ export class VectorStore implements IVectorStore {
         this.ensureInitialized();
 
         try {
+            this.pendingRecords = [];
+            this.filesPendingReplace.clear();
+            this.lexicalIndex.clear();
             await this.db!.dropTable(this.TABLE_NAME);
             await this.createTable();
+
+            RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                initialized: true,
+                totalChunks: 0,
+                indexedFiles: 0,
+                lexicalDocs: 0,
+                pendingBuffer: 0,
+            });
+
             return { success: true };
         } catch (error: unknown) {
             const msg = error instanceof Error ? error.message : String(error);
             throw new Error(`Clear failed: ${msg}`);
         }
+    }
+
+    private toPlainVector(raw: unknown): number[] {
+        if (Array.isArray(raw)) {
+            return raw.map((v) => Number(v));
+        }
+        if (raw && typeof (raw as { toArray?: () => ArrayLike<number> }).toArray === 'function') {
+            return Array.from((raw as { toArray: () => ArrayLike<number> }).toArray(), Number);
+        }
+        if (raw && typeof (raw as Iterable<number>)[Symbol.iterator] === 'function') {
+            return Array.from(raw as Iterable<number>, Number);
+        }
+        if (raw && typeof (raw as { length?: number; get?: (i: number) => number }).get === 'function') {
+            const vec = raw as { length: number; get: (i: number) => number };
+            const out: number[] = new Array(vec.length);
+            for (let i = 0; i < vec.length; i++) {
+                out[i] = Number(vec.get(i));
+            }
+            return out;
+        }
+        return [];
     }
 
     private ensureInitialized(): void {

@@ -20,8 +20,7 @@ import {
 } from '../../shared/contracts';
 import { VectorStore } from './VectorStore';
 import { FileContentExtractor } from './FileContentExtractor';
-
-import * as path from 'path';
+import { LLMMetrics, MetricOperation } from './LLMMetrics';
 
 export class IndexingService implements IIndexingService {
     /** Chunk size in tokens */
@@ -55,7 +54,11 @@ export class IndexingService implements IIndexingService {
      * @param filePath - Absolute path to file
      * @returns Indexing result
      */
-    async indexFile(filePath: string): Promise<IndexingResult> {
+    async indexFile(
+        filePath: string,
+        flushImmediately: boolean = true
+    ): Promise<IndexingResult> {
+        const timer = LLMMetrics.getInstance().startTimer(MetricOperation.INDEX_FILE);
         try {
             // Extract content using specialized extractor
             const extraction = await this.contentExtractor.extract(filePath);
@@ -97,6 +100,14 @@ export class IndexingService implements IIndexingService {
             // Store in vector database
             await this.vectorStore.addChunks(chunks, embeddings, filePath);
 
+            // Flush immediately for single-file/small-batch writes unless batching
+            if (
+                flushImmediately &&
+                typeof this.vectorStore.flushPendingRecords === 'function'
+            ) {
+                await this.vectorStore.flushPendingRecords();
+            }
+
             // Calculate total tokens
             const totalTokens = chunks.reduce(
                 (sum, chunk) => sum + this.estimateTokens(chunk.text),
@@ -120,6 +131,8 @@ export class IndexingService implements IIndexingService {
                 success: false,
                 error: errorMessage,
             };
+        } finally {
+            timer.stop();
         }
     }
 
@@ -132,13 +145,19 @@ export class IndexingService implements IIndexingService {
     async indexFiles(filePaths: string[]): Promise<IndexingResult[]> {
         const results: IndexingResult[] = [];
 
-        // Process sequentially to avoid overwhelming system
-        for (const filePath of filePaths) {
-            const result = await this.indexFile(filePath);
-            results.push(result);
+        try {
+            // Process sequentially to avoid overwhelming system
+            for (const filePath of filePaths) {
+                const result = await this.indexFile(filePath, false);
+                results.push(result);
 
-            // Yield between files
-            await new Promise(resolve => setTimeout(resolve, 50));
+                // Yield between files
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+        } finally {
+            if (typeof this.vectorStore.flushPendingRecords === 'function') {
+                await this.vectorStore.flushPendingRecords();
+            }
         }
 
         return results;

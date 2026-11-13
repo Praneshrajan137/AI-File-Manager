@@ -14,20 +14,32 @@
  */
 
 import { ipcMain, IpcMainInvokeEvent } from 'electron';
+import fs from 'fs/promises';
 import { withContract, resolveAllowedRoots } from './securityMiddleware';
 import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
-import { IndexingStatus } from '../../shared/contracts';
+import { configureKernelHooks } from '@main/services/ReactiveWorkspaceKernel';
+import { ConfigManager } from '@shared/config';
+import { IndexingStatus, MAX_INDEXABLE_FILE_SIZE } from '../../shared/contracts';
 import { IPCChannel } from '@shared/ipc/contracts';
 import { IPCLogger, LLMLogger } from '../../shared/logging';
 import { VectorStore } from '../../llm/services/VectorStore';
 import { EmbeddingWorkerPool } from '../../llm/workers/EmbeddingWorkerPool';
 import { IndexingService } from '../../llm/services/IndexingService';
 import { RetrievalService } from '../../llm/services/RetrievalService';
+import { ContextManager } from '../../llm/services/ContextManager';
+import { LLMMetrics, MetricOperation } from '../../llm/services/LLMMetrics';
 import { LLMInterface } from '../../llm/services/LLMInterface';
 import { FileSystemService } from '../services/FileSystemService';
 import { DirectoryScanner } from '../services/DirectoryScanner';
 import path from 'path';
 import os from 'os';
+
+const INDEXABLE_WATCH_EXTENSIONS = new Set([
+  '.txt', '.md', '.markdown', '.rst',
+  '.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.c', '.cpp', '.h', '.hpp',
+  '.cs', '.go', '.rs', '.rb', '.php', '.json', '.yaml', '.yml', '.toml',
+  '.xml', '.html', '.htm', '.css', '.sh', '.sql', '.log', '.csv', '.pdf',
+]);
 
 /**
  * Calculate adaptive yield duration based on file type and indexing progress.
@@ -72,9 +84,15 @@ async function ensureServicesInitialized(): Promise<void> {
   LLMLogger.info('Initializing LLM services...');
 
   try {
-    // Initialize vector store
+    // Initialize vector store (allow explicit override only in test/E2E environments)
     vectorStore = new VectorStore();
-    const dbPath = path.join(os.homedir(), '.file-manager', 'vectordb');
+    const allowTestOverrides =
+      process.env.NODE_ENV === 'test' || process.env.E2E_TEST === 'true';
+    const overrideDbPath = allowTestOverrides ? process.env.FILE_MANAGER_VECTOR_DB_PATH : undefined;
+    const dbPath =
+      overrideDbPath && overrideDbPath.trim().length > 0
+        ? path.resolve(overrideDbPath.trim())
+        : path.join(os.homedir(), '.file-manager', 'vectordb');
     await vectorStore.initialize(dbPath);
     LLMLogger.info('VectorStore initialized', { dbPath });
 
@@ -86,18 +104,33 @@ async function ensureServicesInitialized(): Promise<void> {
     // Initialize file system service synced with ConfigManager allowed roots
     fileSystemService = new FileSystemService(resolveAllowedRoots());
 
-    // Initialize higher-level services
-    // Note: IndexingService no longer needs FileSystemService, uses FileContentExtractor internally
-    indexingService = new IndexingService(
-      embeddingModel,
-      vectorStore
-    );
+    // Resolve local Ollama endpoint (loopback-validated by LLMInterface)
+    let configuredOllamaUrl: string | undefined;
+    try {
+      configuredOllamaUrl = ConfigManager.getInstance().get('llm')?.ollamaUrl;
+    } catch {
+      configuredOllamaUrl = undefined;
+    }
+    const ollamaUrl =
+      process.env.OLLAMA_URL && process.env.OLLAMA_URL.trim().length > 0
+        ? process.env.OLLAMA_URL.trim()
+        : configuredOllamaUrl;
 
-    retrievalService = new RetrievalService(vectorStore, embeddingModel);
-    llmInterface = new LLMInterface();
+    llmInterface = new LLMInterface(ollamaUrl);
+    const contextManager = new ContextManager(llmInterface);
+
+    // Initialize higher-level services
+    indexingService = new IndexingService(embeddingModel, vectorStore);
+    retrievalService = new RetrievalService(vectorStore, embeddingModel, contextManager);
+    await vectorStore.getStats();
 
     LLMLogger.info('All LLM services initialized');
   } catch (error: unknown) {
+    vectorStore = null;
+    embeddingModel = null;
+    indexingService = null;
+    retrievalService = null;
+    llmInterface = null;
     const msg = error instanceof Error ? error.message : String(error);
     LLMLogger.error('Failed to initialize LLM services', { error: msg });
     throw error;
@@ -155,6 +188,7 @@ async function handleQuery(
       safeSend(channel, chunk);
     }
     generationMs = Date.now() - genStart;
+    LLMMetrics.getInstance().recordTiming(MetricOperation.LLM_QUERY, generationMs);
 
     safeSend(`${channel}:end`, { ok: true });
     RuntimeDiagnostics.getInstance().recordLlmQuery({
@@ -283,7 +317,7 @@ async function indexFilesBackground(
       const yieldDuration = calculateAdaptiveYield(filePath, indexedCount);
       await new Promise(resolve => setTimeout(resolve, yieldDuration));
 
-      await indexingService!.indexFile(filePath);
+      await indexingService!.indexFile(filePath, false);
       indexedCount++;
 
       if (!event.sender.isDestroyed()) {
@@ -306,9 +340,10 @@ async function indexFilesBackground(
     }
   }
 
-  // Flush any remaining pending records in VectorStore
+  // Flush any remaining pending records in VectorStore and refresh diagnostics
   try {
     await vectorStore!.flushPendingRecords();
+    await vectorStore!.getStats();
   } catch (flushError) {
     LLMLogger.warn('Failed to flush pending records', {
       error: flushError instanceof Error ? flushError.message : String(flushError)
@@ -357,7 +392,10 @@ async function handleIndexFile(
 ): Promise<{ success: boolean; chunksCreated?: number; error?: string }> {
   try {
     await ensureServicesInitialized();
-    const result = await indexingService!.indexFile(input.filePath);
+    const result = await indexingService!.indexFile(input.filePath, true);
+    if (result.success && vectorStore) {
+      await vectorStore.getStats();
+    }
 
     return {
       success: result.success,
@@ -367,6 +405,43 @@ async function handleIndexFile(
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     return { success: false, error: msg };
+  }
+}
+
+async function handleKernelIndexMutation(
+  eventType: 'create' | 'change' | 'unlink',
+  filePath: string
+): Promise<void> {
+  if (!vectorStore || !indexingService) {
+    return;
+  }
+
+  try {
+    if (eventType === 'unlink') {
+      await indexingService.removeFile(filePath);
+      await vectorStore.getStats();
+      return;
+    }
+
+    const ext = path.extname(filePath).toLowerCase();
+    if (!INDEXABLE_WATCH_EXTENSIONS.has(ext)) {
+      return;
+    }
+
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile() || stat.size === 0 || stat.size > MAX_INDEXABLE_FILE_SIZE) {
+      return;
+    }
+
+    await indexingService.indexFile(filePath, true);
+    await vectorStore.getStats();
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    LLMLogger.warn('Incremental kernel index sync skipped file', {
+      eventType,
+      filePath,
+      error: msg,
+    });
   }
 }
 
@@ -440,6 +515,8 @@ export function registerLLMHandlers(): IPCChannel[] {
   ipcMain.handle('LLM:CHECK_OLLAMA', withContract('LLM:CHECK_OLLAMA', handleCheckOllama));
   ipcMain.handle('LLM:CLEAR_INDEX', withContract('LLM:CLEAR_INDEX', handleClearIndex));
 
+  configureKernelHooks({ indexMutationHook: handleKernelIndexMutation });
+
   IPCLogger.info('LLM IPC handlers registered (7 handlers)');
   return [...LLM_CHANNELS];
 }
@@ -450,6 +527,7 @@ export function registerLLMHandlers(): IPCChannel[] {
  */
 export async function cleanupLLMServices(): Promise<void> {
   LLMLogger.info('Cleaning up LLM services...');
+  configureKernelHooks({ indexMutationHook: null });
 
   // Terminate embedding worker if active
   if (embeddingModel) {
@@ -474,6 +552,23 @@ export async function cleanupLLMServices(): Promise<void> {
   retrievalService = null;
   llmInterface = null;
   fileSystemService = null;
+  indexingInProgress = false;
+  indexedCount = 0;
+  totalToIndex = 0;
+  currentFile = '';
+  abortIndexing = false;
+
+  RuntimeDiagnostics.getInstance().setVectorStoreStats({
+    initialized: false,
+    totalChunks: 0,
+    indexedFiles: 0,
+    lexicalDocs: 0,
+    pendingBuffer: 0,
+  });
 
   LLMLogger.info('LLM services cleanup complete');
+}
+
+export async function resetLLMHandlersForTesting(): Promise<void> {
+  await cleanupLLMServices();
 }

@@ -11,6 +11,26 @@ import {
     LLMQueryOptions,
     RetrievalResult,
 } from '../../shared/contracts';
+import { LLMLogger } from '../../shared/logging';
+
+function assertLocalOllamaUrl(rawUrl: string): string {
+    const trimmed = rawUrl.replace(/\/+$/, '');
+    try {
+        const parsed = new URL(trimmed);
+        const host = parsed.hostname.toLowerCase();
+        const isLoopback =
+            host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+        if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || !isLoopback) {
+            throw new Error(`Non-local Ollama URL rejected for privacy: ${rawUrl}`);
+        }
+        return trimmed;
+    } catch (error: unknown) {
+        if (error instanceof Error && error.message.includes('Non-local Ollama URL')) {
+            throw error;
+        }
+        throw new Error(`Invalid Ollama URL: ${rawUrl}`);
+    }
+}
 
 export interface LLMInterfaceOptions {
     fetchImpl?: typeof fetch;
@@ -33,8 +53,11 @@ export class LLMInterface {
     private readonly defaultModel = 'llama3.2';
     private readonly customFetch?: typeof fetch;
 
-    constructor(ollamaUrl: string = 'http://localhost:11434', options: LLMInterfaceOptions = {}) {
-        this.ollamaUrl = ollamaUrl;
+    constructor(
+        ollamaUrl: string = process.env.OLLAMA_URL || 'http://localhost:11434',
+        options: LLMInterfaceOptions = {}
+    ) {
+        this.ollamaUrl = assertLocalOllamaUrl(ollamaUrl);
         this.customFetch = options.fetchImpl;
     }
 
@@ -223,38 +246,33 @@ Please provide a clear answer based on the context above. If the context doesn't
      */
     async checkConnection(): Promise<boolean> {
         try {
-            console.log('[LLMInterface] Checking Ollama connection at:', this.ollamaUrl);
+            LLMLogger.debug('Checking Ollama connection', { ollamaUrl: this.ollamaUrl });
 
-            // Try multiple endpoints
             const endpoints = ['/api/tags', '/api/version', '/'];
 
             for (const endpoint of endpoints) {
                 try {
                     const url = `${this.ollamaUrl}${endpoint}`;
-                    console.log('[LLMInterface] Trying endpoint:', url);
-
                     const response = await this.fetchRequest(url, {
                         method: 'GET',
                         signal: AbortSignal.timeout(5000),
                     });
 
-                    console.log('[LLMInterface] Response status:', response.status, 'for', endpoint);
-
                     if (response.ok) {
-                        console.log('[LLMInterface] Ollama is available!');
+                        LLMLogger.debug('Ollama is available', { endpoint });
                         return true;
                     }
                 } catch (e: unknown) {
                     const msg = e instanceof Error ? e.message : String(e);
-                    console.log('[LLMInterface] Endpoint failed:', endpoint, '-', msg);
+                    LLMLogger.debug('Ollama endpoint check failed', { endpoint, error: msg });
                 }
             }
 
-            console.log('[LLMInterface] All endpoints failed, Ollama not available');
+            LLMLogger.debug('All Ollama health endpoints failed');
             return false;
         } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);
-            console.log('[LLMInterface] checkConnection error:', msg);
+            LLMLogger.debug('checkConnection error', { error: msg });
             return false;
         }
     }

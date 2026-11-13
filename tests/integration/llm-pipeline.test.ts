@@ -8,6 +8,11 @@ import { IndexingService } from '../../src/llm/services/IndexingService';
 import { RetrievalService } from '../../src/llm/services/RetrievalService';
 import { LLMInterface } from '../../src/llm/services/LLMInterface';
 import { VectorStore } from '../../src/llm/services/VectorStore';
+import { ContextManager } from '../../src/llm/services/ContextManager';
+import { LLMMetrics, MetricOperation } from '../../src/llm/services/LLMMetrics';
+import { RuntimeDiagnostics } from '../../src/main/services/RuntimeDiagnostics';
+import { ReactiveWorkspaceKernel } from '../../src/main/services/ReactiveWorkspaceKernel';
+import http from 'http';
 import path from 'path';
 import os from 'os';
 import fs from 'fs/promises';
@@ -27,7 +32,9 @@ jest.mock('../../src/llm/models/EmbeddingModel', () => ({
     })),
 }));
 
-// Mock fetch for LLMInterface
+// Preserve native Node fetch for real localhost HTTP mock Ollama server tests
+const originalFetch = global.fetch;
+// Mock fetch for LLMInterface unit-style stream tests
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
@@ -282,5 +289,301 @@ Cook for 8-10 minutes until al dente.`;
             expect(stats).toHaveProperty('totalChunks');
             expect(stats).toHaveProperty('totalTokens');
         });
+    });
+
+    describe('M4 Frontier Guarantees (Dedup, Hybrid BM25+RRF, Loopback Ollama & Kernel Sync)', () => {
+        it('should delete prior chunks on re-index without duplicating rows and remove on delete', async () => {
+            const dedicatedDir = path.join(testDir, `dedup-${Date.now()}`);
+            await fs.mkdir(dedicatedDir, { recursive: true });
+            const dedicatedStore = new VectorStore();
+            await dedicatedStore.initialize(path.join(dedicatedDir, 'db'));
+            const dedicatedIndexer = new IndexingService(embeddingModel, dedicatedStore);
+
+            const targetFile = path.join(dedicatedDir, 'release-notes.txt');
+            await fs.writeFile(
+                targetFile,
+                'Version 1 introduces LEGACY_TOKEN_ALPHA_111 for diagnostics.',
+                'utf-8'
+            );
+
+            const firstRes = await dedicatedIndexer.indexFile(targetFile);
+            expect(firstRes.success).toBe(true);
+            const statsAfterFirst = await dedicatedStore.getStats();
+            expect(statsAfterFirst.totalFiles).toBe(1);
+            expect(statsAfterFirst.totalChunks).toBe(firstRes.chunksCreated);
+            expect(dedicatedStore.searchLexical('LEGACY_TOKEN_ALPHA_111', 5)).toHaveLength(1);
+
+            await fs.writeFile(
+                targetFile,
+                'Version 2 replaces old token with UPDATED_TOKEN_BETA_222 cleanly.',
+                'utf-8'
+            );
+            const secondRes = await dedicatedIndexer.indexFile(targetFile);
+            expect(secondRes.success).toBe(true);
+
+            const statsAfterUpdate = await dedicatedStore.getStats();
+            expect(statsAfterUpdate.totalFiles).toBe(1);
+            expect(statsAfterUpdate.totalChunks).toBe(secondRes.chunksCreated);
+            expect(dedicatedStore.searchLexical('LEGACY_TOKEN_ALPHA_111', 5)).toHaveLength(0);
+            expect(dedicatedStore.searchLexical('UPDATED_TOKEN_BETA_222', 5)).toHaveLength(1);
+
+            await dedicatedIndexer.removeFile(targetFile);
+            const statsAfterDelete = await dedicatedStore.getStats();
+            expect(statsAfterDelete.totalFiles).toBe(0);
+            expect(statsAfterDelete.totalChunks).toBe(0);
+        });
+
+        it('should rank exact technical identifier #1 via HybridLexicalIndex + RRF even on tied dense vectors', async () => {
+            const tiedVector = new Array(384).fill(0.05);
+            const hybridDir = path.join(testDir, `hybrid-${Date.now()}`);
+            await fs.mkdir(hybridDir, { recursive: true });
+
+            const distractorFile = path.join(hybridDir, 'general-notes.txt');
+            const exactFile = path.join(hybridDir, 'incident-report.txt');
+            await fs.writeFile(
+                distractorFile,
+                'General weekly workspace notes about UI responsiveness and caching.',
+                'utf-8'
+            );
+            await fs.writeFile(
+                exactFile,
+                'Critical incident ERR_KERNEL_9842_ZOD observed during IPC schema boundary check.',
+                'utf-8'
+            );
+
+            const hybridStore = new VectorStore();
+            await hybridStore.initialize(path.join(hybridDir, 'db'));
+            const hybridIndexer = new IndexingService(embeddingModel, hybridStore);
+            const hybridRetrieval = new RetrievalService(hybridStore, embeddingModel);
+
+            try {
+                mockEmbed.mockImplementation(() => Promise.resolve([...tiedVector]));
+                mockEmbedBatch.mockImplementation((texts: string[]) =>
+                    Promise.resolve(texts.map(() => [...tiedVector]))
+                );
+
+                await hybridIndexer.indexFile(distractorFile);
+                await hybridIndexer.indexFile(exactFile);
+
+                const result = await hybridRetrieval.retrieve('ERR_KERNEL_9842_ZOD');
+                expect(result.sources.length).toBeGreaterThanOrEqual(2);
+                expect(result.sources[0]).toBe(exactFile);
+                expect(result.context).toContain('ERR_KERNEL_9842_ZOD');
+            } finally {
+                mockEmbedBatch.mockImplementation((texts: string[]) =>
+                    Promise.resolve(texts.map((t) => generateMockEmbedding(t)))
+                );
+            }
+        });
+
+        it('should rebuild lexical index across reopen, enforce loopback URL, stream over real HTTP mock Ollama, and record metrics', async () => {
+            expect(() => new LLMInterface('https://remote.example.com:11434')).toThrow(
+                /Non-local Ollama URL rejected/i
+            );
+
+            const persistDir = path.join(testDir, `persist-${Date.now()}`);
+            const dbPath = path.join(persistDir, 'lancedb');
+            await fs.mkdir(persistDir, { recursive: true });
+
+            const persistFile = path.join(persistDir, 'architecture.txt');
+            const longFile = path.join(persistDir, 'verbose-log.txt');
+            await fs.writeFile(
+                persistFile,
+                'Causal kernel token TOKEN_PERSIST_ZETA coordinates telemetry watcher and index.',
+                'utf-8'
+            );
+            await fs.writeFile(
+                longFile,
+                Array.from(
+                    { length: 420 },
+                    (_, i) =>
+                        `Line ${i}: background diagnostic telemetry entry verifying payload stability check.`
+                ).join('\n'),
+                'utf-8'
+            );
+
+            LLMMetrics.getInstance().clear();
+            const firstStore = new VectorStore();
+            await firstStore.initialize(dbPath);
+            const firstIndexer = new IndexingService(embeddingModel, firstStore);
+            await firstIndexer.indexFiles([persistFile, longFile]);
+
+            // Reopen VectorStore from disk in a fresh instance to verify lexical rebuild
+            const reopenedStore = new VectorStore();
+            await reopenedStore.initialize(dbPath);
+            const lexicalHits = reopenedStore.searchLexical('TOKEN_PERSIST_ZETA', 5);
+            expect(lexicalHits.length).toBe(1);
+            expect(lexicalHits[0].record.file_path).toBe(persistFile);
+
+            const diagSnapshot = RuntimeDiagnostics.getInstance().getSnapshot();
+            expect(diagSnapshot.vectorStore.initialized).toBe(true);
+            expect(diagSnapshot.vectorStore.indexedFiles).toBe(2);
+            expect(diagSnapshot.vectorStore.lexicalDocs).toBeGreaterThanOrEqual(2);
+
+            let chatCalls = 0;
+            const server = http.createServer((req, res) => {
+                if (req.method === 'GET' && req.url === '/api/tags') {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ models: [{ name: 'llama3.2' }, { name: 'codellama' }] }));
+                    return;
+                }
+                if (req.method === 'POST' && req.url === '/api/chat') {
+                    chatCalls += 1;
+                    let body = '';
+                    req.on('data', (chunk) => {
+                        body += chunk.toString();
+                    });
+                    req.on('end', () => {
+                        const parsed = JSON.parse(body);
+                        res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+                        const userContent = parsed.messages?.[1]?.content ?? '';
+                        if (userContent.includes('Summarize these file contents concisely')) {
+                            res.write(
+                                JSON.stringify({
+                                    model: parsed.model,
+                                    message: { role: 'assistant', content: 'Concise telemetry summary.' },
+                                    done: true,
+                                }) + '\n'
+                            );
+                            res.end();
+                            return;
+                        }
+                        const hasContext = userContent.includes('TOKEN_PERSIST_ZETA');
+                        res.write(
+                            JSON.stringify({
+                                model: parsed.model,
+                                message: { role: 'assistant', content: hasContext ? 'Verified ' : 'Missing ' },
+                                done: false,
+                            }) + '\n'
+                        );
+                        res.write(
+                            JSON.stringify({
+                                model: parsed.model,
+                                message: { role: 'assistant', content: 'stream!' },
+                                done: true,
+                            }) + '\n'
+                        );
+                        res.end();
+                    });
+                    return;
+                }
+                res.writeHead(404);
+                res.end();
+            });
+
+            await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+            const address = server.address();
+            if (!address || typeof address === 'string') {
+                server.close();
+                throw new Error('Failed to bind ephemeral localhost server');
+            }
+
+            try {
+                const ollamaUrl = `http://127.0.0.1:${address.port}`;
+                const localLlm = new LLMInterface(ollamaUrl, { fetchImpl: originalFetch });
+                expect(await localLlm.checkConnection()).toBe(true);
+                expect(await localLlm.getAvailableModels()).toEqual(['llama3.2', 'codellama']);
+
+                const contextManager = new ContextManager(localLlm);
+                const retrievalWithCompression = new RetrievalService(
+                    reopenedStore,
+                    embeddingModel,
+                    contextManager
+                );
+
+                const retrievalResult = await retrievalWithCompression.retrieve(
+                    'TOKEN_PERSIST_ZETA telemetry'
+                );
+                expect(retrievalResult.sources[0]).toBe(persistFile);
+                expect(retrievalResult.context).toContain('TOKEN_PERSIST_ZETA');
+                expect(retrievalResult.tokenCount).toBeLessThanOrEqual(4000);
+
+                let streamed = '';
+                for await (const chunk of localLlm.query('What coordinates watcher?', retrievalResult)) {
+                    streamed += chunk;
+                }
+                expect(streamed).toBe('Verified stream!');
+                expect(chatCalls).toBeGreaterThanOrEqual(1);
+
+                const metrics = LLMMetrics.getInstance();
+                expect(metrics.getStats(MetricOperation.INDEX_FILE).count).toBeGreaterThanOrEqual(2);
+                expect(metrics.getStats(MetricOperation.RETRIEVAL).count).toBeGreaterThanOrEqual(1);
+            } finally {
+                await new Promise<void>((resolve) => server.close(() => resolve()));
+            }
+        }, 30000);
+
+        it('should synchronize RAG index incrementally when ReactiveWorkspaceKernel detects create and unlink', async () => {
+            const watchWorkspace = path.join(testDir, `kernel-rag-${Date.now()}`);
+            const dbPath = path.join(testDir, `kernel-rag-db-${Date.now()}`);
+            await fs.mkdir(watchWorkspace, { recursive: true });
+
+            const kernelStore = new VectorStore();
+            await kernelStore.initialize(dbPath);
+            const kernelIndexer = new IndexingService(embeddingModel, kernelStore);
+
+            const kernel = new ReactiveWorkspaceKernel({
+                allowedRoots: [testDir],
+                coalesceMs: 30,
+                watchOptions: {
+                    ignoreInitial: true,
+                    awaitWriteFinish: false,
+                    depth: 0,
+                },
+                indexMutationHook: async (eventType, changedPath) => {
+                    if (eventType === 'unlink') {
+                        await kernelIndexer.removeFile(changedPath);
+                    } else if (changedPath.endsWith('.txt')) {
+                        await kernelIndexer.indexFile(changedPath, true);
+                    }
+                },
+            });
+
+            try {
+                await kernel.activateDirectory(watchWorkspace);
+                await new Promise((r) => setTimeout(r, 150));
+
+                const liveFile = path.join(watchWorkspace, 'live-sync.txt');
+                await fs.writeFile(liveFile, 'KERNEL_LIVE_TOKEN_5512 verified on create', 'utf-8');
+
+                await new Promise<void>((resolve, reject) => {
+                    const deadline = Date.now() + 5000;
+                    const poll = () => {
+                        if (kernelStore.searchLexical('KERNEL_LIVE_TOKEN_5512', 5).length === 1) {
+                            resolve();
+                            return;
+                        }
+                        if (Date.now() > deadline) {
+                            reject(new Error('Timed out waiting for kernel incremental index on create'));
+                            return;
+                        }
+                        setTimeout(poll, 50);
+                    };
+                    poll();
+                });
+
+                await fs.unlink(liveFile);
+                await new Promise<void>((resolve, reject) => {
+                    const deadline = Date.now() + 5000;
+                    const poll = () => {
+                        if (kernelStore.searchLexical('KERNEL_LIVE_TOKEN_5512', 5).length === 0) {
+                            resolve();
+                            return;
+                        }
+                        if (Date.now() > deadline) {
+                            reject(new Error('Timed out waiting for kernel incremental removal on unlink'));
+                            return;
+                        }
+                        setTimeout(poll, 50);
+                    };
+                    poll();
+                });
+
+                const stats = await kernelStore.getStats();
+                expect(stats.totalChunks).toBe(0);
+            } finally {
+                await kernel.shutdown();
+            }
+        }, 15000);
     });
 });
