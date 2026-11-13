@@ -4,6 +4,8 @@ import { FileNode, FileSystemError } from '@shared/contracts';
 import { FileListItem } from './FileListItem';
 import { EmptyState } from './EmptyState';
 import { Spinner } from '@renderer/components/common/Spinner';
+import { getFileIconWithColor } from '@renderer/utils/fileIcons';
+import { formatFileSize } from '@renderer/utils/formatters';
 
 interface FileGridProps {
   files: FileNode[];
@@ -98,6 +100,55 @@ export const FileGrid: React.FC<FileGridProps> = ({
     return <EmptyState />;
   }
 
+  if (viewMode === 'grid') {
+    return (
+      <div
+        ref={containerRef}
+        className="h-full overflow-y-auto scrollbar-thin pr-1"
+        role="listbox"
+        aria-label="File grid"
+        aria-multiselectable="true"
+        data-testid="file-grid"
+      >
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+          {sortedFiles.map((file) => {
+            const selected = selectedFiles.includes(file.path);
+            const { icon: Icon, colorClass } = getFileIconWithColor(file);
+            return (
+              <div
+                key={file.path}
+                role="button"
+                tabIndex={0}
+                aria-selected={selected}
+                onClick={(): void => onFileClick(file)}
+                onDoubleClick={(): void => onFileDoubleClick(file)}
+                onContextMenu={(e): void => onFileContextMenu(file, e)}
+                onKeyDown={(e): void => {
+                  if (e.key === 'Enter') {
+                    onFileDoubleClick(file);
+                  }
+                }}
+                className={`flex flex-col items-center p-3 rounded-xl border cursor-pointer transition-all text-center ${
+                  selected
+                    ? 'bg-primary-100 border-primary-300 ring-1 ring-primary-300'
+                    : 'bg-white border-gray-200 hover:bg-primary-50 hover:border-primary-200'
+                } ${file.isHidden === true ? 'opacity-50' : ''}`}
+              >
+                <Icon className={`w-9 h-9 mb-2 ${colorClass}`} />
+                <span className="text-xs font-medium text-gray-800 w-full truncate" title={file.name}>
+                  {file.name}
+                </span>
+                <span className="text-[11px] text-gray-400 mt-0.5 tabular-nums">
+                  {file.isDirectory ? 'Folder' : formatFileSize(file.size)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       ref={containerRef}
@@ -114,14 +165,14 @@ export const FileGrid: React.FC<FileGridProps> = ({
         width="100%"
         className="scrollbar-thin"
       >
-        {({ index, style }) => (
+        {({ index, style }): React.ReactElement => (
           <div style={style}>
             <FileListItem
               file={sortedFiles[index]}
               selected={selectedFiles.includes(sortedFiles[index].path)}
-              onClick={() => onFileClick(sortedFiles[index])}
-              onDoubleClick={() => onFileDoubleClick(sortedFiles[index])}
-              onContextMenu={(e) => onFileContextMenu(sortedFiles[index], e)}
+              onClick={(): void => onFileClick(sortedFiles[index])}
+              onDoubleClick={(): void => onFileDoubleClick(sortedFiles[index])}
+              onContextMenu={(e): void => onFileContextMenu(sortedFiles[index], e)}
             />
           </div>
         )}

@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Copy, Trash2, Edit, FolderOpen } from 'lucide-react';
+import { Copy, Trash2, Edit, FolderOpen, Eye } from 'lucide-react';
 import { FileNode } from '@shared/contracts';
 
 interface FileContextMenuProps {
@@ -7,6 +7,7 @@ interface FileContextMenuProps {
   position: { x: number; y: number };
   onClose: () => void;
   onOpen: () => void;
+  onPreview?: () => void;
   onRename: () => void;
   onDelete: () => void;
   onCopyPath: () => void;
@@ -17,13 +18,14 @@ export const FileContextMenu: React.FC<FileContextMenuProps> = ({
   position,
   onClose,
   onOpen,
+  onPreview,
   onRename,
   onDelete,
   onCopyPath
 }) => {
   useEffect(() => {
-    const handleClickOutside = () => onClose();
-    const handleEscape = (e: KeyboardEvent) => {
+    const handleClickOutside = (): void => onClose();
+    const handleEscape = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose();
     };
 
@@ -45,6 +47,9 @@ export const FileContextMenu: React.FC<FileContextMenuProps> = ({
 
   const menuItems = [
     { label: 'Open', icon: FolderOpen, action: onOpen },
+    ...(!file.isDirectory && onPreview
+      ? [{ label: 'Quick Preview', icon: Eye, action: onPreview }]
+      : []),
     { label: 'Rename', icon: Edit, action: onRename },
     { label: 'Delete', icon: Trash2, action: onDelete, danger: true },
     { label: 'Copy Path', icon: Copy, action: onCopyPath },

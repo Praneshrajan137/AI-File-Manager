@@ -2,15 +2,25 @@ import React, { useState, useRef, useEffect } from 'react';
 import { MessageBubble } from './MessageBubble';
 import { ChatInput } from './ChatInput';
 import { IndexingPanel } from './IndexingPanel';
-import { useLLM } from '@renderer/hooks/useLLM';
+import { useLLM, UseLLMReturn } from '@renderer/hooks/useLLM';
 import { Bot, Sparkles } from 'lucide-react';
 
 interface ChatInterfaceProps {
   currentPath?: string;
+  llm?: UseLLMReturn;
 }
 
-export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentPath = '' }) => {
-  const { messages, loading, indexingStatus, sendQuery, startIndexing, stopIndexing, clearIndex } = useLLM();
+export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentPath = '', llm }) => {
+  const internalLlm = useLLM();
+  const {
+    messages,
+    loading,
+    indexingStatus,
+    sendQuery,
+    startIndexing,
+    stopIndexing,
+    clearIndex,
+  } = llm ?? internalLlm;
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 

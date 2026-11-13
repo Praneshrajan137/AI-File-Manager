@@ -13,7 +13,9 @@ interface ButtonProps {
   children?: React.ReactNode;
   className?: string;
   type?: 'button' | 'submit' | 'reset';
+  title?: string;
   'aria-label'?: string;
+  'data-testid'?: string;
 }
 
 export const Button: React.FC<ButtonProps> = ({
@@ -28,7 +30,9 @@ export const Button: React.FC<ButtonProps> = ({
   children,
   className = '',
   type = 'button',
+  title,
   'aria-label': ariaLabel,
+  'data-testid': dataTestId,
 }) => {
   const baseClasses = 'inline-flex items-center justify-center gap-2 font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed';
 
@@ -49,13 +53,13 @@ export const Button: React.FC<ButtonProps> = ({
 
   const isDisabled = disabled || loading;
 
-  const handleClick = () => {
+  const handleClick = (): void => {
     if (!isDisabled && onClick) {
       onClick();
     }
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  const handleKeyPress = (e: React.KeyboardEvent): void => {
     if ((e.key === 'Enter' || e.key === ' ') && !isDisabled && onClick) {
       e.preventDefault();
       onClick();
@@ -75,8 +79,10 @@ export const Button: React.FC<ButtonProps> = ({
       onClick={handleClick}
       onKeyPress={handleKeyPress}
       disabled={isDisabled}
+      title={title}
       aria-label={ariaLabel || (typeof children === 'string' ? children : undefined)}
       aria-busy={loading}
+      data-testid={dataTestId}
     >
       {loading ? (
         <>

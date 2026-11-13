@@ -21,15 +21,28 @@ import { Toolbar } from './components/Toolbar/Toolbar';
 import { FileGrid } from './components/FileExplorer/FileGrid';
 import { ChatInterface } from './components/ChatPanel/ChatInterface';
 import { FileContextMenu } from './components/ContextMenu/FileContextMenu';
+import { DiagnosticsModal } from './components/Diagnostics/DiagnosticsModal';
+import { FilePreviewDrawer } from './components/Preview/FilePreviewDrawer';
 import { Toast } from './components/common/Toast';
 import { RenameDialog } from './components/common/RenameDialog';
+import { CreateEntryDialog } from './components/common/CreateEntryDialog';
 import { useFileSystem } from './hooks/useFileSystem';
 import { useNavigation } from './hooks/useNavigation';
 import { useToast } from './hooks/useToast';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useFileWatcher } from './hooks/useFileWatcher';
+import { useLLM } from './hooks/useLLM';
 import { UI_CONSTANTS } from './utils/constants';
-import { FileNode } from '@shared/contracts';
+import {
+  extractBasename,
+  isPathInsideDirectory,
+  normalizeComparablePath,
+} from './utils/pathHelpers';
+import { FileEvent, FileNode, FilePreviewResult } from '@shared/contracts';
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
 
 // Browser compatibility warning component
 const BrowserWarning: React.FC = () => (
@@ -67,7 +80,6 @@ const FileManagerApp: React.FC = () => {
     readDirectory,
     currentPath,
     deleteFile,
-    moveFile,
     setSearchResults,
   } = useFileSystem({
     onError: (message) => showToast({ type: 'error', message }),
@@ -83,8 +95,12 @@ const FileManagerApp: React.FC = () => {
     navigateTo,
   } = useNavigation();
 
+  // Persistent LLM state lifted above chat panel toggle
+  const llmState = useLLM();
+
   // UI state
   const [chatOpen, setChatOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState<'name' | 'size' | 'modified' | 'type'>('name');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
@@ -92,9 +108,36 @@ const FileManagerApp: React.FC = () => {
   const [sidebarWidth, setSidebarWidth] = useState<number>(UI_CONSTANTS.SIDEBAR_DEFAULT_WIDTH);
   const [contextMenu, setContextMenu] = useState<{ file: FileNode; x: number; y: number } | null>(null);
   const [renameFile, setRenameFile] = useState<FileNode | null>(null);
+  const [createEntryMode, setCreateEntryMode] = useState<'file' | 'directory' | null>(null);
+  const [previewFileNode, setPreviewFileNode] = useState<FileNode | null>(null);
+  const [previewResult, setPreviewResult] = useState<FilePreviewResult | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  const selectedSingleFile = useMemo((): FileNode | null => {
+    if (selectedFiles.length !== 1) return null;
+    const match = files.find((f) => f.path === selectedFiles[0]);
+    return match && !match.isDirectory ? match : null;
+  }, [selectedFiles, files]);
+
+  const loadFilePreview = useCallback(async (file: FileNode): Promise<void> => {
+    if (file.isDirectory) return;
+    setPreviewFileNode(file);
+    setPreviewLoading(true);
+    setPreviewError(null);
+    try {
+      const result = await window.electronAPI.fs.previewFile(file.path, 100);
+      setPreviewResult(result);
+    } catch (err: unknown) {
+      setPreviewResult(null);
+      setPreviewError(getErrorMessage(err, 'Failed to preview file'));
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, []);
 
   // Event handlers - wrapped in useCallback to create stable references
-  const handleDelete = useCallback(async () => {
+  const handleDelete = useCallback(async (): Promise<void> => {
     if (selectedFiles.length === 0) return;
 
     try {
@@ -107,53 +150,74 @@ const FileManagerApp: React.FC = () => {
       });
       setSelectedFiles([]);
       await readDirectory(currentPath);
-    } catch (error: any) {
+    } catch (err: unknown) {
       showToast({
         type: 'error',
-        message: error.message || 'Delete failed'
+        message: getErrorMessage(err, 'Delete failed')
       });
     }
   }, [selectedFiles, deleteFile, showToast, readDirectory, currentPath]);
 
-  const handleBack = useCallback(async () => {
+  const handleBack = useCallback(async (): Promise<void> => {
     const prevPath = await goBack();
     if (prevPath) {
       await readDirectory(prevPath);
     }
   }, [goBack, readDirectory]);
 
-  const handleForward = useCallback(async () => {
+  const handleForward = useCallback(async (): Promise<void> => {
     const nextPath = await goForward();
     if (nextPath) {
       await readDirectory(nextPath);
     }
   }, [goForward, readDirectory]);
 
-  const handleToggleChat = useCallback(() => {
+  const handleToggleChat = useCallback((): void => {
     setChatOpen(prev => !prev);
   }, []);
 
-  const handleCloseContextMenu = useCallback(() => {
+  const handleSortDirectionToggle = useCallback((): void => {
+    setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+  }, []);
+
+  const handleCloseContextMenu = useCallback((): void => {
     setContextMenu(null);
   }, []);
 
-  const handleDeleteShortcut = useCallback(() => {
+  const handleDeleteShortcut = useCallback((): void => {
     if (selectedFiles.length > 0) {
-      handleDelete();
+      void handleDelete();
     }
   }, [selectedFiles.length, handleDelete]);
 
+  const handlePreviewShortcut = useCallback((): void => {
+    if (selectedSingleFile) {
+      void loadFilePreview(selectedSingleFile);
+    }
+  }, [selectedSingleFile, loadFilePreview]);
+
   // File watcher updates - memoized callback to prevent listener churn
-  const handleFileWatcherEvent = useCallback((event: any) => {
-    if (currentPath && event.path.startsWith(currentPath)) {
-      readDirectory(currentPath); // Auto-refresh
+  const handleFileWatcherEvent = useCallback((event: FileEvent): void => {
+    if (currentPath && isPathInsideDirectory(event.path, currentPath)) {
+      void readDirectory(currentPath); // Auto-refresh
       showToast({
         type: 'info',
-        message: `File ${event.type}: ${event.path.split('/').pop()}`,
+        message: `File ${event.type}: ${extractBasename(event.path)}`,
         duration: 2000
       });
     }
-  }, [currentPath, readDirectory, showToast]);
+
+    if (
+      previewFileNode &&
+      normalizeComparablePath(previewFileNode.path) === normalizeComparablePath(event.path)
+    ) {
+      if (event.type === 'unlink') {
+        setPreviewError('File was removed on disk');
+      } else {
+        void loadFilePreview(previewFileNode);
+      }
+    }
+  }, [currentPath, readDirectory, showToast, previewFileNode, loadFilePreview]);
 
   useFileWatcher(handleFileWatcherEvent);
 
@@ -162,35 +226,34 @@ const FileManagerApp: React.FC = () => {
     'Ctrl+Shift+L': handleToggleChat,
     'Alt+Left': handleBack,
     'Alt+Right': handleForward,
+    'Alt+P': handlePreviewShortcut,
     'Delete': handleDeleteShortcut,
-  }), [handleToggleChat, handleBack, handleForward, handleDeleteShortcut]);
+  }), [handleToggleChat, handleBack, handleForward, handlePreviewShortcut, handleDeleteShortcut]);
 
   useKeyboardShortcuts(shortcuts);
 
   // Load home directory on mount (ONCE only)
-  // Using empty dependency array because we only want this to run on initial mount
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     // Async IIFE to handle the initial navigation
-    (async () => {
+    (async (): Promise<void> => {
       try {
         // Fetch home directory from main process via IPC (not os-browserify polyfill)
         const systemPaths = await window.electronAPI.fs.getSystemPaths();
         const homeDir = systemPaths.home;
         await navigateTo(homeDir);
         await readDirectory(homeDir);
-      } catch (error) {
-        console.error('Failed to load home directory:', error);
+      } catch (err: unknown) {
+        console.error('Failed to load home directory:', err);
       }
     })();
   }, []); // Empty deps - run only on mount
 
   // Additional event handlers (after keyboard shortcut handlers)
-  const handleFileClick = (file: FileNode) => {
+  const handleFileClick = (file: FileNode): void => {
     setSelectedFiles([file.path]);
   };
 
-  const handleFileDoubleClick = async (file: FileNode) => {
+  const handleFileDoubleClick = async (file: FileNode): Promise<void> => {
     if (file.isDirectory) {
       await navigateTo(file.path);
       await readDirectory(file.path);
@@ -204,21 +267,21 @@ const FileManagerApp: React.FC = () => {
             message: result.error || 'Failed to open file'
           });
         }
-      } catch (error: any) {
+      } catch (err: unknown) {
         showToast({
           type: 'error',
-          message: error.message || 'Failed to open file'
+          message: getErrorMessage(err, 'Failed to open file')
         });
       }
     }
   };
 
-  const handleFileContextMenu = (file: FileNode, e: React.MouseEvent) => {
+  const handleFileContextMenu = (file: FileNode, e: React.MouseEvent): void => {
     e.preventDefault();
     setContextMenu({ file, x: e.clientX, y: e.clientY });
   };
 
-  const handleNavigate = async (path: string) => {
+  const handleNavigate = async (path: string): Promise<void> => {
     await navigateTo(path);
     await readDirectory(path);
   };
@@ -242,7 +305,7 @@ const FileManagerApp: React.FC = () => {
           onForward={handleForward}
           currentPath={currentPath}
           onNavigate={handleNavigate}
-          onSearch={async (query) => {
+          onSearch={async (query): Promise<void> => {
             // Empty query = clear search and show current directory
             if (!query || query.trim() === '') {
               await readDirectory(currentPath);
@@ -261,17 +324,28 @@ const FileManagerApp: React.FC = () => {
                 setSearchResults([]);
                 showToast({ type: 'info', message: `No results found for "${query}"` });
               }
-            } catch (error: any) {
-              console.error('Search error:', error);
-              showToast({ type: 'error', message: 'Search failed' });
+            } catch (err: unknown) {
+              console.error('Search error:', err);
+              showToast({ type: 'error', message: getErrorMessage(err, 'Search failed') });
             }
           }}
           viewMode={viewMode}
           onViewModeChange={setViewMode}
           sortBy={sortBy}
           onSortChange={setSortBy}
+          sortDirection={sortDirection}
+          onSortDirectionToggle={handleSortDirectionToggle}
+          onNewFile={(): void => setCreateEntryMode('file')}
+          onNewFolder={(): void => setCreateEntryMode('directory')}
+          canPreviewSelected={selectedSingleFile !== null}
+          onPreviewSelected={(): void => {
+            if (selectedSingleFile) {
+              void loadFilePreview(selectedSingleFile);
+            }
+          }}
+          onOpenDiagnostics={(): void => setDiagnosticsOpen(true)}
           chatOpen={chatOpen}
-          onToggleChat={() => setChatOpen(!chatOpen)}
+          onToggleChat={handleToggleChat}
         />
 
         {/* File Explorer */}
@@ -291,10 +365,43 @@ const FileManagerApp: React.FC = () => {
         </div>
       </div>
 
+      {/* Quick Preview Drawer (RingBuffer + LRUCache) */}
+      <FilePreviewDrawer
+        isOpen={previewFileNode !== null}
+        file={previewFileNode}
+        preview={previewResult}
+        loading={previewLoading}
+        error={previewError}
+        onClose={(): void => {
+          setPreviewFileNode(null);
+          setPreviewResult(null);
+          setPreviewError(null);
+        }}
+        onRefresh={(): void => {
+          if (previewFileNode) {
+            void loadFilePreview(previewFileNode);
+          }
+        }}
+        onOpenExternal={(): void => {
+          if (previewFileNode) {
+            void handleFileDoubleClick(previewFileNode);
+          }
+        }}
+        onCopyPath={async (): Promise<void> => {
+          if (!previewFileNode) return;
+          try {
+            await window.electronAPI.clipboard.writeText(previewFileNode.path);
+            showToast({ type: 'success', message: 'Path copied to clipboard' });
+          } catch (err: unknown) {
+            showToast({ type: 'error', message: getErrorMessage(err, 'Failed to copy path') });
+          }
+        }}
+      />
+
       {/* Chat Panel */}
       {chatOpen && (
         <div className="w-96 bg-white border-l border-gray-200 shadow-lg" data-testid="chat-panel-container">
-          <ChatInterface currentPath={currentPath} />
+          <ChatInterface currentPath={currentPath} llm={llmState} />
         </div>
       )}
 
@@ -304,22 +411,25 @@ const FileManagerApp: React.FC = () => {
           file={contextMenu.file}
           position={{ x: contextMenu.x, y: contextMenu.y }}
           onClose={handleCloseContextMenu}
-          onOpen={() => handleFileDoubleClick(contextMenu.file)}
-          onRename={() => {
+          onOpen={(): Promise<void> => handleFileDoubleClick(contextMenu.file)}
+          onPreview={(): void => {
+            void loadFilePreview(contextMenu.file);
+          }}
+          onRename={(): void => {
             setRenameFile(contextMenu.file);
             handleCloseContextMenu();
           }}
-          onDelete={async () => {
+          onDelete={async (): Promise<void> => {
             await deleteFile(contextMenu.file.path);
             await readDirectory(currentPath);
             handleCloseContextMenu();
           }}
-          onCopyPath={async () => {
+          onCopyPath={async (): Promise<void> => {
             try {
               await window.electronAPI.clipboard.writeText(contextMenu.file.path);
               showToast({ type: 'success', message: 'Path copied to clipboard' });
-            } catch (error: any) {
-              showToast({ type: 'error', message: 'Failed to copy path' });
+            } catch (err: unknown) {
+              showToast({ type: 'error', message: getErrorMessage(err, 'Failed to copy path') });
             }
             handleCloseContextMenu();
           }}
@@ -332,7 +442,7 @@ const FileManagerApp: React.FC = () => {
           <Toast
             key={toast.id}
             {...toast}
-            onClose={() => removeToast(toast.id)}
+            onClose={(): void => removeToast(toast.id)}
           />
         ))}
       </div>
@@ -341,7 +451,7 @@ const FileManagerApp: React.FC = () => {
       <RenameDialog
         isOpen={renameFile !== null}
         currentName={renameFile?.name || ''}
-        onConfirm={async (newName) => {
+        onConfirm={async (newName): Promise<void> => {
           if (!renameFile) return;
           try {
             const result = await window.electronAPI.fs.rename(renameFile.path, newName);
@@ -351,12 +461,44 @@ const FileManagerApp: React.FC = () => {
             } else {
               showToast({ type: 'error', message: 'Failed to rename file' });
             }
-          } catch (error: any) {
-            showToast({ type: 'error', message: error.message || 'Failed to rename file' });
+          } catch (err: unknown) {
+            showToast({ type: 'error', message: getErrorMessage(err, 'Failed to rename file') });
           }
           setRenameFile(null);
         }}
-        onCancel={() => setRenameFile(null)}
+        onCancel={(): void => setRenameFile(null)}
+      />
+
+      {/* New File / New Folder Dialog */}
+      <CreateEntryDialog
+        isOpen={createEntryMode !== null}
+        mode={createEntryMode ?? 'file'}
+        onConfirm={async (entryName): Promise<void> => {
+          if (!createEntryMode || !currentPath) return;
+          try {
+            if (createEntryMode === 'file') {
+              await window.electronAPI.fs.createFile(currentPath, entryName, '');
+              showToast({ type: 'success', message: `Created file ${entryName}` });
+            } else {
+              await window.electronAPI.fs.createDirectory(currentPath, entryName);
+              showToast({ type: 'success', message: `Created folder ${entryName}` });
+            }
+            await readDirectory(currentPath);
+            setCreateEntryMode(null);
+          } catch (err: unknown) {
+            showToast({
+              type: 'error',
+              message: getErrorMessage(err, `Failed to create ${createEntryMode}`),
+            });
+          }
+        }}
+        onCancel={(): void => setCreateEntryMode(null)}
+      />
+
+      {/* Kernel Runtime Diagnostics Modal */}
+      <DiagnosticsModal
+        isOpen={diagnosticsOpen}
+        onClose={(): void => setDiagnosticsOpen(false)}
       />
     </div>
   );

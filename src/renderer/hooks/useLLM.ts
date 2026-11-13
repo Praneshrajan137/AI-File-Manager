@@ -18,7 +18,7 @@ export interface IndexingStatus {
   currentFile?: string;
 }
 
-interface UseLLMReturn {
+export interface UseLLMReturn {
   messages: Message[];
   loading: boolean;
   indexingStatus: IndexingStatus;
@@ -66,13 +66,15 @@ export function useLLM(): UseLLMReturn {
 
         setMessages(prev => {
           const newMessages = [...prev];
-          const lastMsg = newMessages[newMessages.length - 1];
+          const lastIndex = newMessages.length - 1;
+          const lastMsg = newMessages[lastIndex];
 
           if (lastMsg?.role === 'assistant') {
-            // Update existing assistant message
-            lastMsg.content = responseContent;
+            newMessages[lastIndex] = {
+              ...lastMsg,
+              content: responseContent,
+            };
           } else {
-            // Add new assistant message with unique ID
             newMessages.push({
               id: messageIdCounter++,
               role: 'assistant',

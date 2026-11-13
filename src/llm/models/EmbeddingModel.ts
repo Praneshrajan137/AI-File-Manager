@@ -23,7 +23,10 @@ const dynamicImport = new Function('modulePath', 'return import(modulePath)');
 import { IEmbeddingModel, Embedding } from '../../shared/contracts';
 
 // Type for the feature extraction pipeline
-type FeatureExtractionPipeline = any; // Dynamic import loses type inference
+type FeatureExtractionPipeline = (
+    text: string,
+    options?: Record<string, unknown>
+) => Promise<{ data: ArrayLike<number> }>;
 
 export class EmbeddingModel implements IEmbeddingModel {
     private extractor: FeatureExtractionPipeline | null = null;

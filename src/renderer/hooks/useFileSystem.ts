@@ -20,6 +20,20 @@ interface UseFileSystemOptions {
   onSuccess?: (message: string) => void;
 }
 
+function toFileSystemErrorCode(code?: string): FileSystemError['code'] {
+  switch (code) {
+    case 'PATH_TRAVERSAL':
+    case 'UNAUTHORIZED_ACCESS':
+    case 'FILE_NOT_FOUND':
+    case 'PERMISSION_DENIED':
+    case 'DISK_FULL':
+    case 'UNKNOWN':
+      return code;
+    default:
+      return 'UNKNOWN';
+  }
+}
+
 export function useFileSystem(options: UseFileSystemOptions = {}): UseFileSystemReturn {
   const [files, setFiles] = useState<FileNode[]>([]);
   const [currentPath, setCurrentPath] = useState<string>('');
@@ -35,11 +49,12 @@ export function useFileSystem(options: UseFileSystemOptions = {}): UseFileSystem
       const result = await window.electronAPI.fs.readDirectory(path);
       setFiles(result);
       setCurrentPath(path);
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Handle both Error objects and serialized error objects from IPC
-      const message = err?.message || err?.details || (typeof err === 'object' ? JSON.stringify(err) : String(err));
+      const errObj = err && typeof err === 'object' ? (err as { message?: string; details?: string; code?: string }) : undefined;
+      const message = errObj?.message || errObj?.details || (typeof err === 'object' && err !== null ? JSON.stringify(err) : String(err));
       const fsError: FileSystemError = {
-        code: err?.code || 'UNKNOWN_ERROR',
+        code: toFileSystemErrorCode(errObj?.code),
         message: message,
         path: path,
       };
@@ -58,8 +73,9 @@ export function useFileSystem(options: UseFileSystemOptions = {}): UseFileSystem
       if (currentPath) {
         await readDirectory(currentPath);
       }
-    } catch (err: any) {
-      onError?.(`Failed to delete: ${err.message}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      onError?.(`Failed to delete: ${msg}`);
       throw err;
     }
   }, [currentPath, readDirectory, onSuccess, onError]);
@@ -72,8 +88,9 @@ export function useFileSystem(options: UseFileSystemOptions = {}): UseFileSystem
       if (currentPath) {
         await readDirectory(currentPath);
       }
-    } catch (err: any) {
-      onError?.(`Failed to move file: ${err.message}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      onError?.(`Failed to move file: ${msg}`);
       throw err;
     }
   }, [currentPath, readDirectory, onSuccess, onError]);

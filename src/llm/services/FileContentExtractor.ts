@@ -95,7 +95,9 @@ const DEFAULT_CONFIG: Required<ExtractionConfig> = {
 
 export class FileContentExtractor {
     private config: Required<ExtractionConfig>;
-    private pdfParser: any = null;
+    private pdfParser:
+        | ((buffer: Buffer, options?: Record<string, unknown>) => Promise<{ text: string; numpages: number }>)
+        | null = null;
     private pdfParserLoaded = false;
 
     constructor(config?: ExtractionConfig) {
@@ -140,7 +142,6 @@ export class FileContentExtractor {
      */
     async extract(filePath: string): Promise<ExtractionResult> {
         const ext = this.getExtension(filePath);
-        const fileName = path.basename(filePath);
 
         try {
             // Check file size first
@@ -240,6 +241,12 @@ export class FileContentExtractor {
             }
 
             // Parse PDF
+            if (!this.pdfParser) {
+                return this.createMetadataResult(
+                    filePath,
+                    'PDF parsing not available (pdf-parse not installed)'
+                );
+            }
             const data = await this.pdfParser(buffer, {
                 // Limit pages for performance
                 max: 100,

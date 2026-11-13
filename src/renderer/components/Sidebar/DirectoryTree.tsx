@@ -29,15 +29,15 @@ export const DirectoryTree: React.FC<DirectoryTreeProps> = ({
   useEffect(() => {
     if (!effectiveRootPath) return;
 
-    const loadRoot = async () => {
+    const loadRoot = async (): Promise<void> => {
       try {
         const stats = await window.electronAPI.fs.getStats(effectiveRootPath);
         setRoot({
           path: effectiveRootPath,
           name: 'Home',
           isDirectory: true,
-          size: 0,
-          modified: Date.now(),
+          size: stats.size ?? 0,
+          modified: stats.modified ?? Date.now(),
           extension: '',
           mimeType: '',
         });

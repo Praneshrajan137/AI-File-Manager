@@ -6,7 +6,7 @@ import { useRef, useCallback, useEffect } from 'react';
  * @param delay - Delay in milliseconds (default: 300ms)
  * @returns Debounced function
  */
-export function useDebouncedSearch<T extends (...args: any[]) => any>(
+export function useDebouncedSearch<T extends (...args: never[]) => unknown>(
   callback: T,
   delay: number = 300
 ): (...args: Parameters<T>) => void {

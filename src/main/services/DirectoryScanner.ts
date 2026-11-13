@@ -146,7 +146,7 @@ export class DirectoryScanner {
             results,
             options,
             0,
-            (file) => {
+            (_file) => {
                 processed++;
                 onProgress(processed);
             }
@@ -224,22 +224,34 @@ export class DirectoryScanner {
                             currentDepth + 1,
                             onFile
                         );
-                    } catch (error: any) {
+                    } catch (error: unknown) {
                         // Skip errors if requested
                         if (!options.skipErrors) {
                             throw error;
                         }
                         // Otherwise, log and continue
-                        console.warn(`Skipping directory ${entry.path}:`, error.message);
+                        const msg =
+                            error instanceof Error
+                                ? error.message
+                                : error && typeof error === 'object' && 'message' in error
+                                  ? String((error as { message: unknown }).message)
+                                  : String(error);
+                        console.warn(`Skipping directory ${entry.path}:`, msg);
                     }
                 }
             }
-        } catch (error: any) {
+        } catch (error: unknown) {
             if (!options.skipErrors) {
                 throw error;
             }
             // Log and continue
-            console.warn(`Error reading ${dirPath}:`, error.message);
+            const msg =
+                error instanceof Error
+                    ? error.message
+                    : error && typeof error === 'object' && 'message' in error
+                      ? String((error as { message: unknown }).message)
+                      : String(error);
+            console.warn(`Error reading ${dirPath}:`, msg);
         }
     }
 

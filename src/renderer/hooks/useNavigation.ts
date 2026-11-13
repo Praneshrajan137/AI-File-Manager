@@ -69,9 +69,8 @@ export function useNavigation(): UseNavigationReturn {
 
   // Initialize navigation state on mount
   useEffect(() => {
-    updateNavigationState();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    void updateNavigationState();
+  }, [updateNavigationState]);
 
   return {
     canGoBack,
