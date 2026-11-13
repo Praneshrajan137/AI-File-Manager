@@ -246,20 +246,29 @@ export class ErrorSerializer {
    * @param filePath - Original file path
    * @returns Sanitized path
    */
-  private static sanitizePath(filePath: string): string {
-    // Replace user home directory with ~
+  /**
+   * Sanitize arbitrary message or detail text by redacting OS home directories and user paths.
+   */
+  static sanitizeText(text: string): string {
+    let result = text;
     const homeDir = process.env.HOME || process.env.USERPROFILE || '';
-    if (homeDir && filePath.startsWith(homeDir)) {
-      return filePath.replace(homeDir, '~');
+    if (homeDir.length > 0) {
+      const escapedHome = homeDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const flags = process.platform === 'win32' ? 'gi' : 'g';
+      result = result.replace(new RegExp(escapedHome, flags), '~');
     }
-
-    // Replace Windows user paths
     if (process.platform === 'win32') {
-      return filePath.replace(/C:\\Users\\[^\\]+/, 'C:\\Users\\[user]');
+      result = result.replace(/C:\\Users\\[^\\/"\s]+/gi, 'C:\\Users\\[user]');
+    } else {
+      result = result
+        .replace(/\/home\/[^/\s"']+/g, '/home/[user]')
+        .replace(/\/Users\/[^/\s"']+/g, '/Users/[user]');
     }
+    return result;
+  }
 
-    // Replace Unix user paths
-    return filePath.replace(/\/home\/[^/]+/, '/home/[user]');
+  private static sanitizePath(filePath: string): string {
+    return this.sanitizeText(filePath);
   }
 
   /**

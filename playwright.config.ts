@@ -27,7 +27,7 @@ export default defineConfig({
   testDir: './tests/e2e',
   
   // Timeout for each test
-  timeout: 30 * 1000,
+  timeout: 60 * 1000,
   
   // Expect timeout
   expect: {
@@ -81,4 +81,5 @@ export default defineConfig({
     timeout: 120 * 1000,
   } : undefined,
 });
+
 

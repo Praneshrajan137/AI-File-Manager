@@ -47,7 +47,17 @@ export class VectorStore implements IVectorStore {
     private pendingRecords: LanceRecord[] = [];
     private filesPendingReplace = new Set<string>();
     private lexicalIndex = new HybridLexicalIndex();
+    private opChain: Promise<void> = Promise.resolve();
     private readonly BATCH_WRITE_SIZE = 50;
+
+    private withLock<T>(operation: () => Promise<T>): Promise<T> {
+        const run = this.opChain.then(operation, operation);
+        this.opChain = run.then(
+            () => undefined,
+            () => undefined
+        );
+        return run;
+    }
 
     /**
      * Initialize vector database.
@@ -150,72 +160,86 @@ export class VectorStore implements IVectorStore {
             return;
         }
 
-        const now = Date.now();
-        const records: LanceRecord[] = chunks.map((chunk, i) => ({
-            id: `${filePath}:${chunk.chunkIndex}`,
-            chunk_text: chunk.text,
-            vector: embeddings[i],
-            file_path: filePath,
-            chunk_index: chunk.chunkIndex,
-            indexed_at: now,
-        }));
+        return this.withLock(async () => {
+            const now = Date.now();
+            const records: LanceRecord[] = chunks.map((chunk, i) => ({
+                id: `${filePath}:${chunk.chunkIndex}`,
+                chunk_text: chunk.text,
+                vector: embeddings[i],
+                file_path: filePath,
+                chunk_index: chunk.chunkIndex,
+                indexed_at: now,
+            }));
 
-        // Eliminate any older pending records & schedule persisted delete-before-upsert
-        this.pendingRecords = this.pendingRecords.filter((rec) => rec.file_path !== filePath);
-        this.filesPendingReplace.add(filePath);
+            // Eliminate any older pending records & schedule persisted delete-before-upsert
+            this.pendingRecords = this.pendingRecords.filter((rec) => rec.file_path !== filePath);
+            this.filesPendingReplace.add(filePath);
 
-        // Keep hybrid lexical BM25 index immediately synchronized
-        this.lexicalIndex.removeByFilePath(filePath);
-        this.lexicalIndex.upsertBatch(
-            records.map((r) => ({
-                id: r.id,
-                chunk_text: r.chunk_text,
-                embedding: r.vector,
-                file_path: r.file_path,
-                chunk_index: r.chunk_index,
-                indexed_at: r.indexed_at,
-            }))
-        );
+            // Keep hybrid lexical BM25 index immediately synchronized
+            this.lexicalIndex.removeByFilePath(filePath);
+            this.lexicalIndex.upsertBatch(
+                records.map((r) => ({
+                    id: r.id,
+                    chunk_text: r.chunk_text,
+                    embedding: r.vector,
+                    file_path: r.file_path,
+                    chunk_index: r.chunk_index,
+                    indexed_at: r.indexed_at,
+                }))
+            );
 
-        // Add to pending batch for optimized writes
-        this.pendingRecords.push(...records);
+            // Add to pending batch for optimized writes
+            this.pendingRecords.push(...records);
 
-        RuntimeDiagnostics.getInstance().setVectorStoreStats({
-            initialized: true,
-            lexicalDocs: this.lexicalIndex.size(),
-            pendingBuffer: this.pendingRecords.length,
+            RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                initialized: true,
+                lexicalDocs: this.lexicalIndex.size(),
+                pendingBuffer: this.pendingRecords.length,
+            });
+
+            // Flush when batch size reached
+            if (this.pendingRecords.length >= this.BATCH_WRITE_SIZE) {
+                await this.flushPendingRecordsUnlocked();
+            }
         });
-
-        // Flush when batch size reached
-        if (this.pendingRecords.length >= this.BATCH_WRITE_SIZE) {
-            await this.flushPendingRecords();
-        }
     }
 
     /**
-     * Flush pending records to database (delete-before-upsert guarantees zero duplicates on re-index).
+     * Flush pending records to database (serialized + delete-before-upsert prevents duplicates).
      */
     async flushPendingRecords(): Promise<void> {
+        return this.withLock(async () => {
+            await this.flushPendingRecordsUnlocked();
+        });
+    }
+
+    private async flushPendingRecordsUnlocked(): Promise<void> {
         if (this.pendingRecords.length === 0 && this.filesPendingReplace.size === 0) return;
 
         this.ensureInitialized();
 
+        const filesToDelete = Array.from(this.filesPendingReplace);
+        const recordsToAdd = [...this.pendingRecords];
+
         try {
             // Delete existing LanceDB chunks for re-indexed files first
-            const filesToDelete = Array.from(this.filesPendingReplace);
             for (const filePath of filesToDelete) {
                 try {
                     await this.table!.delete(`file_path = '${this.escapeSql(filePath)}'`);
-                } catch {
-                    // Ignore when table is empty or filter finds 0 rows
+                } catch (deleteError: unknown) {
+                    const msg = deleteError instanceof Error ? deleteError.message : String(deleteError);
+                    if (!msg.includes('not found') && !msg.includes('empty')) {
+                        throw deleteError;
+                    }
                 }
             }
-            this.filesPendingReplace.clear();
 
-            if (this.pendingRecords.length > 0) {
-                await this.table!.add(this.pendingRecords);
-                this.pendingRecords = [];
+            if (recordsToAdd.length > 0) {
+                await this.table!.add(recordsToAdd);
             }
+
+            this.filesPendingReplace.clear();
+            this.pendingRecords = [];
 
             RuntimeDiagnostics.getInstance().setVectorStoreStats({
                 initialized: true,
@@ -237,40 +261,38 @@ export class VectorStore implements IVectorStore {
         queryEmbedding: Embedding,
         topK: number = 10
     ): Promise<VectorRecord[]> {
-        this.ensureInitialized();
+        return this.withLock(async () => {
+            this.ensureInitialized();
 
-        if (this.pendingRecords.length > 0 || this.filesPendingReplace.size > 0) {
-            await this.flushPendingRecords();
-        }
-
-        try {
-            const count = await this.table!.countRows();
-            if (count === 0) {
-                return [];
+            if (this.pendingRecords.length > 0 || this.filesPendingReplace.size > 0) {
+                await this.flushPendingRecordsUnlocked();
             }
 
-            // LanceDB v0.4.20: Use vectorSearch() method
-            // The table.vectorSearch(vector) returns a VectorQuery builder
-            // Chain: .limit(n).toArray() to get results
-            const results = await this.table!.vectorSearch(queryEmbedding).limit(topK).toArray() as LanceRecord[];
+            try {
+                const count = await this.table!.countRows();
+                if (count === 0) {
+                    return [];
+                }
 
-            // Map LanceDB results to VectorRecord (converting Arrow Vector -> plain number[])
-            // Results include: id, chunk_text, vector, file_path, chunk_index, indexed_at, _distance
-            return results.map((row) => ({
-                id: row.id,
-                chunk_text: row.chunk_text,
-                embedding: this.toPlainVector(row.vector),
-                file_path: row.file_path,
-                chunk_index: row.chunk_index,
-                indexed_at: row.indexed_at,
-            }));
-        } catch (error: unknown) {
-            const msg = error instanceof Error ? error.message : String(error);
-            if (msg.includes('empty') || msg.includes('not found')) {
-                return [];
+                // LanceDB v0.4.20: Use vectorSearch() method
+                const results = await this.table!.vectorSearch(queryEmbedding).limit(topK).toArray() as LanceRecord[];
+
+                return results.map((row) => ({
+                    id: row.id,
+                    chunk_text: row.chunk_text,
+                    embedding: this.toPlainVector(row.vector),
+                    file_path: row.file_path,
+                    chunk_index: row.chunk_index,
+                    indexed_at: row.indexed_at,
+                }));
+            } catch (error: unknown) {
+                const msg = error instanceof Error ? error.message : String(error);
+                if (msg.includes('empty') || msg.includes('not found')) {
+                    return [];
+                }
+                throw new Error(`Search failed: ${msg}`);
             }
-            throw new Error(`Search failed: ${msg}`);
-        }
+        });
     }
 
     /**
@@ -307,62 +329,101 @@ export class VectorStore implements IVectorStore {
     }
 
     async deleteFile(filePath: string): Promise<number> {
-        this.ensureInitialized();
+        return this.withLock(async () => {
+            this.ensureInitialized();
 
-        const beforePendingCount = this.pendingRecords.length;
-        this.pendingRecords = this.pendingRecords.filter((rec) => rec.file_path !== filePath);
-        const removedPending = beforePendingCount - this.pendingRecords.length;
-        this.filesPendingReplace.delete(filePath);
-        this.lexicalIndex.removeByFilePath(filePath);
+            const beforePendingCount = this.pendingRecords.length;
+            this.pendingRecords = this.pendingRecords.filter((rec) => rec.file_path !== filePath);
+            const removedPending = beforePendingCount - this.pendingRecords.length;
+            this.filesPendingReplace.delete(filePath);
+            this.lexicalIndex.removeByFilePath(filePath);
 
-        try {
-            // Get all rows first to count persisted records
-            const allRows = await this.table!.query().toArray() as LanceRecord[];
-            const matchingRows = allRows.filter(
-                (r) => r.file_path === filePath
-            );
-            const persistedCount = matchingRows.length;
+            try {
+                const filterExpr = `file_path = '${this.escapeSql(filePath)}'`;
+                const persistedCount = await this.table!.countRows(filterExpr);
 
-            if (persistedCount > 0) {
-                await this.table!.delete(`file_path = '${this.escapeSql(filePath)}'`);
-            }
+                if (persistedCount > 0) {
+                    await this.table!.delete(filterExpr);
+                }
 
-            RuntimeDiagnostics.getInstance().setVectorStoreStats({
-                initialized: true,
-                totalChunks: this.lexicalIndex.size(),
-                indexedFiles: this.lexicalIndex.fileCount(),
-                lexicalDocs: this.lexicalIndex.size(),
-                pendingBuffer: this.pendingRecords.length,
-            });
-
-            return persistedCount + removedPending;
-        } catch (error: unknown) {
-            const msg = error instanceof Error ? error.message : String(error);
-            if (msg.includes('not found') || msg.includes('empty')) {
-                return removedPending;
-            }
-            throw new Error(`Delete failed: ${msg}`);
-        }
-    }
-
-    async getStats(): Promise<IndexStats> {
-        this.ensureInitialized();
-
-        if (this.pendingRecords.length > 0 || this.filesPendingReplace.size > 0) {
-            await this.flushPendingRecords();
-        }
-
-        try {
-            const count = await this.table!.countRows();
-
-            if (count === 0) {
                 RuntimeDiagnostics.getInstance().setVectorStoreStats({
                     initialized: true,
-                    totalChunks: 0,
-                    indexedFiles: 0,
+                    totalChunks: this.lexicalIndex.size(),
+                    indexedFiles: this.lexicalIndex.fileCount(),
                     lexicalDocs: this.lexicalIndex.size(),
                     pendingBuffer: this.pendingRecords.length,
                 });
+
+                return persistedCount + removedPending;
+            } catch (error: unknown) {
+                const msg = error instanceof Error ? error.message : String(error);
+                if (msg.includes('not found') || msg.includes('empty')) {
+                    return removedPending;
+                }
+                throw new Error(`Delete failed: ${msg}`);
+            }
+        });
+    }
+
+    async getStats(): Promise<IndexStats> {
+        return this.withLock(async () => {
+            this.ensureInitialized();
+
+            if (this.pendingRecords.length > 0 || this.filesPendingReplace.size > 0) {
+                await this.flushPendingRecordsUnlocked();
+            }
+
+            try {
+                const count = await this.table!.countRows();
+
+                if (count === 0) {
+                    RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                        initialized: true,
+                        totalChunks: 0,
+                        indexedFiles: 0,
+                        lexicalDocs: this.lexicalIndex.size(),
+                        pendingBuffer: this.pendingRecords.length,
+                    });
+                    return {
+                        totalFiles: 0,
+                        totalChunks: 0,
+                        totalTokens: 0,
+                        indexSize: 0,
+                        lastIndexed: 0,
+                    };
+                }
+
+                const allRows = (await this.table!
+                    .query()
+                    .select(['file_path', 'chunk_text', 'indexed_at'])
+                    .toArray()) as Array<Pick<LanceRecord, 'file_path' | 'chunk_text' | 'indexed_at'>>;
+
+                const uniqueFiles = new Set(allRows.map((r) => r.file_path));
+                const totalTokens = allRows.reduce(
+                    (sum, r) => sum + Math.ceil((r.chunk_text?.length ?? 0) / 4),
+                    0
+                );
+                const indexSize = allRows.length * (this.EMBEDDING_DIM * 4 + 200);
+                const lastIndexed = allRows.length > 0
+                    ? Math.max(...allRows.map((r) => Number(r.indexed_at) || 0))
+                    : 0;
+
+                RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                    initialized: true,
+                    totalChunks: allRows.length,
+                    indexedFiles: uniqueFiles.size,
+                    lexicalDocs: this.lexicalIndex.size(),
+                    pendingBuffer: this.pendingRecords.length,
+                });
+
+                return {
+                    totalFiles: uniqueFiles.size,
+                    totalChunks: allRows.length,
+                    totalTokens,
+                    indexSize,
+                    lastIndexed,
+                };
+            } catch {
                 return {
                     totalFiles: 0,
                     totalChunks: 0,
@@ -371,68 +432,34 @@ export class VectorStore implements IVectorStore {
                     lastIndexed: 0,
                 };
             }
-
-            const allRows = await this.table!.query().toArray() as LanceRecord[];
-
-            const uniqueFiles = new Set(allRows.map((r) => r.file_path));
-            const totalTokens = allRows.reduce(
-                (sum, r) => sum + Math.ceil(r.chunk_text.length / 4),
-                0
-            );
-            const indexSize = allRows.length * (this.EMBEDDING_DIM * 4 + 200);
-            const lastIndexed = allRows.length > 0
-                ? Math.max(...allRows.map((r) => r.indexed_at))
-                : 0;
-
-            RuntimeDiagnostics.getInstance().setVectorStoreStats({
-                initialized: true,
-                totalChunks: allRows.length,
-                indexedFiles: uniqueFiles.size,
-                lexicalDocs: this.lexicalIndex.size(),
-                pendingBuffer: this.pendingRecords.length,
-            });
-
-            return {
-                totalFiles: uniqueFiles.size,
-                totalChunks: allRows.length,
-                totalTokens,
-                indexSize,
-                lastIndexed,
-            };
-        } catch {
-            return {
-                totalFiles: 0,
-                totalChunks: 0,
-                totalTokens: 0,
-                indexSize: 0,
-                lastIndexed: 0,
-            };
-        }
+        });
     }
 
     async clear(): Promise<{ success: boolean }> {
-        this.ensureInitialized();
+        return this.withLock(async () => {
+            this.ensureInitialized();
 
-        try {
-            this.pendingRecords = [];
-            this.filesPendingReplace.clear();
-            this.lexicalIndex.clear();
-            await this.db!.dropTable(this.TABLE_NAME);
-            await this.createTable();
+            try {
+                this.pendingRecords = [];
+                this.filesPendingReplace.clear();
+                this.lexicalIndex.clear();
+                await this.db!.dropTable(this.TABLE_NAME);
+                await this.createTable();
 
-            RuntimeDiagnostics.getInstance().setVectorStoreStats({
-                initialized: true,
-                totalChunks: 0,
-                indexedFiles: 0,
-                lexicalDocs: 0,
-                pendingBuffer: 0,
-            });
+                RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                    initialized: true,
+                    totalChunks: 0,
+                    indexedFiles: 0,
+                    lexicalDocs: 0,
+                    pendingBuffer: 0,
+                });
 
-            return { success: true };
-        } catch (error: unknown) {
-            const msg = error instanceof Error ? error.message : String(error);
-            throw new Error(`Clear failed: ${msg}`);
-        }
+                return { success: true };
+            } catch (error: unknown) {
+                const msg = error instanceof Error ? error.message : String(error);
+                throw new Error(`Clear failed: ${msg}`);
+            }
+        });
     }
 
     private toPlainVector(raw: unknown): number[] {

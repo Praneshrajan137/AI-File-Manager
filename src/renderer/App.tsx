@@ -15,7 +15,7 @@
  * - Context menus and Toast notifications
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Sidebar } from './components/Sidebar/Sidebar';
 import { Toolbar } from './components/Toolbar/Toolbar';
 import { FileGrid } from './components/FileExplorer/FileGrid';
@@ -35,6 +35,7 @@ import { useLLM } from './hooks/useLLM';
 import { UI_CONSTANTS } from './utils/constants';
 import {
   extractBasename,
+  extractParentDirectory,
   isPathInsideDirectory,
   normalizeComparablePath,
 } from './utils/pathHelpers';
@@ -113,6 +114,8 @@ const FileManagerApp: React.FC = () => {
   const [previewResult, setPreviewResult] = useState<FilePreviewResult | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const previewSeqRef = useRef(0);
+  const previewOpenRef = useRef(false);
 
   const selectedSingleFile = useMemo((): FileNode | null => {
     if (selectedFiles.length !== 1) return null;
@@ -122,31 +125,42 @@ const FileManagerApp: React.FC = () => {
 
   const loadFilePreview = useCallback(async (file: FileNode): Promise<void> => {
     if (file.isDirectory) return;
+    const seq = ++previewSeqRef.current;
+    previewOpenRef.current = true;
     setPreviewFileNode(file);
     setPreviewLoading(true);
     setPreviewError(null);
     try {
       const result = await window.electronAPI.fs.previewFile(file.path, 100);
+      if (!previewOpenRef.current || seq !== previewSeqRef.current) {
+        return;
+      }
       setPreviewResult(result);
     } catch (err: unknown) {
+      if (!previewOpenRef.current || seq !== previewSeqRef.current) {
+        return;
+      }
       setPreviewResult(null);
       setPreviewError(getErrorMessage(err, 'Failed to preview file'));
     } finally {
-      setPreviewLoading(false);
+      if (previewOpenRef.current && seq === previewSeqRef.current) {
+        setPreviewLoading(false);
+      }
     }
   }, []);
 
   // Event handlers - wrapped in useCallback to create stable references
   const handleDelete = useCallback(async (): Promise<void> => {
     if (selectedFiles.length === 0) return;
+    const targets = [...selectedFiles];
 
     try {
-      for (const filePath of selectedFiles) {
-        await deleteFile(filePath);
+      for (const filePath of targets) {
+        await deleteFile(filePath, true, true);
       }
       showToast({
         type: 'success',
-        message: `Deleted ${selectedFiles.length} file(s)`
+        message: `Deleted ${targets.length} file(s)`
       });
       setSelectedFiles([]);
       await readDirectory(currentPath);
@@ -161,6 +175,7 @@ const FileManagerApp: React.FC = () => {
   const handleBack = useCallback(async (): Promise<void> => {
     const prevPath = await goBack();
     if (prevPath) {
+      setSelectedFiles([]);
       await readDirectory(prevPath);
     }
   }, [goBack, readDirectory]);
@@ -168,6 +183,7 @@ const FileManagerApp: React.FC = () => {
   const handleForward = useCallback(async (): Promise<void> => {
     const nextPath = await goForward();
     if (nextPath) {
+      setSelectedFiles([]);
       await readDirectory(nextPath);
     }
   }, [goForward, readDirectory]);
@@ -212,6 +228,9 @@ const FileManagerApp: React.FC = () => {
       normalizeComparablePath(previewFileNode.path) === normalizeComparablePath(event.path)
     ) {
       if (event.type === 'unlink') {
+        previewSeqRef.current += 1;
+        setPreviewResult(null);
+        setPreviewLoading(false);
         setPreviewError('File was removed on disk');
       } else {
         void loadFilePreview(previewFileNode);
@@ -240,8 +259,10 @@ const FileManagerApp: React.FC = () => {
         // Fetch home directory from main process via IPC (not os-browserify polyfill)
         const systemPaths = await window.electronAPI.fs.getSystemPaths();
         const homeDir = systemPaths.home;
-        await navigateTo(homeDir);
-        await readDirectory(homeDir);
+        const ok = await readDirectory(homeDir);
+        if (ok) {
+          await navigateTo(homeDir);
+        }
       } catch (err: unknown) {
         console.error('Failed to load home directory:', err);
       }
@@ -255,8 +276,11 @@ const FileManagerApp: React.FC = () => {
 
   const handleFileDoubleClick = async (file: FileNode): Promise<void> => {
     if (file.isDirectory) {
-      await navigateTo(file.path);
-      await readDirectory(file.path);
+      setSelectedFiles([]);
+      const ok = await readDirectory(file.path);
+      if (ok) {
+        await navigateTo(file.path);
+      }
     } else {
       // Open file with default OS application
       try {
@@ -282,8 +306,48 @@ const FileManagerApp: React.FC = () => {
   };
 
   const handleNavigate = async (path: string): Promise<void> => {
-    await navigateTo(path);
-    await readDirectory(path);
+    setSelectedFiles([]);
+    const ok = await readDirectory(path);
+    if (ok) {
+      await navigateTo(path);
+    }
+  };
+
+  const handleSearchSelect = async (selectedPath: string): Promise<void> => {
+    try {
+      const stats = await window.electronAPI.fs.getStats(selectedPath);
+      if (stats.isDirectory) {
+        await handleNavigate(selectedPath);
+        return;
+      }
+
+      const parentDir = extractParentDirectory(selectedPath);
+      const ok = await readDirectory(parentDir);
+      if (ok) {
+        await navigateTo(parentDir);
+      }
+      setSelectedFiles([selectedPath]);
+
+      const name = extractBasename(selectedPath);
+      const dotIdx = name.lastIndexOf('.');
+      const extension = dotIdx > 0 ? name.slice(dotIdx + 1).toLowerCase() : '';
+      const previewNode: FileNode = {
+        path: selectedPath,
+        name,
+        isDirectory: false,
+        size: stats.size,
+        modified: stats.modified,
+        extension,
+        mimeType: extension ? `application/${extension}` : 'application/octet-stream',
+        isHidden: name.startsWith('.'),
+      };
+      await loadFilePreview(previewNode);
+    } catch (err: unknown) {
+      showToast({
+        type: 'error',
+        message: getErrorMessage(err, 'Failed to open search suggestion'),
+      });
+    }
   };
 
   return (
@@ -296,7 +360,7 @@ const FileManagerApp: React.FC = () => {
       />
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col overflow-hidden" data-testid="main-content">
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden" data-testid="main-content">
         {/* Toolbar */}
         <Toolbar
           canGoBack={canGoBack}
@@ -305,6 +369,7 @@ const FileManagerApp: React.FC = () => {
           onForward={handleForward}
           currentPath={currentPath}
           onNavigate={handleNavigate}
+          onSearchSelect={handleSearchSelect}
           onSearch={async (query): Promise<void> => {
             // Empty query = clear search and show current directory
             if (!query || query.trim() === '') {
@@ -348,62 +413,71 @@ const FileManagerApp: React.FC = () => {
           onToggleChat={handleToggleChat}
         />
 
-        {/* File Explorer */}
-        <div className="flex-1 overflow-hidden p-4" data-testid="file-explorer">
-          <FileGrid
-            files={files}
-            selectedFiles={selectedFiles}
-            onFileClick={handleFileClick}
-            onFileDoubleClick={handleFileDoubleClick}
-            onFileContextMenu={handleFileContextMenu}
-            sortBy={sortBy}
-            sortDirection={sortDirection}
-            viewMode={viewMode}
-            loading={loading}
-            error={error}
+        {/* Explorer + Inspector Drawers Row */}
+        <div className="flex-1 flex min-h-0 overflow-hidden">
+          {/* File Explorer */}
+          <div className="flex-1 min-w-0 overflow-hidden p-4" data-testid="file-explorer">
+            <FileGrid
+              files={files}
+              selectedFiles={selectedFiles}
+              onFileClick={handleFileClick}
+              onFileDoubleClick={handleFileDoubleClick}
+              onFileContextMenu={handleFileContextMenu}
+              sortBy={sortBy}
+              sortDirection={sortDirection}
+              viewMode={viewMode}
+              loading={loading}
+              error={error}
+            />
+          </div>
+
+          {/* Quick Preview Drawer (RingBuffer + LRUCache) */}
+          <FilePreviewDrawer
+            isOpen={previewFileNode !== null}
+            file={previewFileNode}
+            preview={previewResult}
+            loading={previewLoading}
+            error={previewError}
+            onClose={(): void => {
+              previewOpenRef.current = false;
+              previewSeqRef.current += 1;
+              setPreviewFileNode(null);
+              setPreviewResult(null);
+              setPreviewError(null);
+              setPreviewLoading(false);
+            }}
+            onRefresh={(): void => {
+              if (previewFileNode) {
+                void loadFilePreview(previewFileNode);
+              }
+            }}
+            onOpenExternal={(): void => {
+              if (previewFileNode) {
+                void handleFileDoubleClick(previewFileNode);
+              }
+            }}
+            onCopyPath={async (): Promise<void> => {
+              if (!previewFileNode) return;
+              try {
+                await window.electronAPI.clipboard.writeText(previewFileNode.path);
+                showToast({ type: 'success', message: 'Path copied to clipboard' });
+              } catch (err: unknown) {
+                showToast({ type: 'error', message: getErrorMessage(err, 'Failed to copy path') });
+              }
+            }}
           />
+
+          {/* Chat Panel */}
+          {chatOpen && (
+            <div
+              className="w-96 h-full flex-shrink-0 bg-white border-l border-gray-200 shadow-lg"
+              data-testid="chat-panel-container"
+            >
+              <ChatInterface currentPath={currentPath} llm={llmState} />
+            </div>
+          )}
         </div>
       </div>
-
-      {/* Quick Preview Drawer (RingBuffer + LRUCache) */}
-      <FilePreviewDrawer
-        isOpen={previewFileNode !== null}
-        file={previewFileNode}
-        preview={previewResult}
-        loading={previewLoading}
-        error={previewError}
-        onClose={(): void => {
-          setPreviewFileNode(null);
-          setPreviewResult(null);
-          setPreviewError(null);
-        }}
-        onRefresh={(): void => {
-          if (previewFileNode) {
-            void loadFilePreview(previewFileNode);
-          }
-        }}
-        onOpenExternal={(): void => {
-          if (previewFileNode) {
-            void handleFileDoubleClick(previewFileNode);
-          }
-        }}
-        onCopyPath={async (): Promise<void> => {
-          if (!previewFileNode) return;
-          try {
-            await window.electronAPI.clipboard.writeText(previewFileNode.path);
-            showToast({ type: 'success', message: 'Path copied to clipboard' });
-          } catch (err: unknown) {
-            showToast({ type: 'error', message: getErrorMessage(err, 'Failed to copy path') });
-          }
-        }}
-      />
-
-      {/* Chat Panel */}
-      {chatOpen && (
-        <div className="w-96 bg-white border-l border-gray-200 shadow-lg" data-testid="chat-panel-container">
-          <ChatInterface currentPath={currentPath} llm={llmState} />
-        </div>
-      )}
 
       {/* Context Menu */}
       {contextMenu && (
@@ -420,9 +494,20 @@ const FileManagerApp: React.FC = () => {
             handleCloseContextMenu();
           }}
           onDelete={async (): Promise<void> => {
-            await deleteFile(contextMenu.file.path);
-            await readDirectory(currentPath);
-            handleCloseContextMenu();
+            try {
+              await deleteFile(contextMenu.file.path, true, true);
+              setSelectedFiles((prev) => prev.filter((p) => p !== contextMenu.file.path));
+              if (currentPath) {
+                await readDirectory(currentPath);
+              }
+            } catch (err: unknown) {
+              showToast({
+                type: 'error',
+                message: getErrorMessage(err, 'Delete failed'),
+              });
+            } finally {
+              handleCloseContextMenu();
+            }
           }}
           onCopyPath={async (): Promise<void> => {
             try {

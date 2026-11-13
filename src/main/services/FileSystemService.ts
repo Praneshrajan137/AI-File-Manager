@@ -15,7 +15,7 @@ import { LRUCache } from '@main/dsa/LRUCache';
 import { RingBuffer } from '@main/dsa/RingBuffer';
 import { RuntimeDiagnostics } from './RuntimeDiagnostics';
 import { ErrorFactory, FileSystemError } from '@shared/errors';
-import { FileSystemLogger } from '@shared/logging';
+import { FileSystemLogger, SecurityLogger } from '@shared/logging';
 
 const MAX_PREVIEW_BYTES = 256 * 1024;
 const READ_DIR_CONCURRENCY = 16;
@@ -71,8 +71,8 @@ export class FileSystemService implements IFileSystemService {
      * @throws FileSystemError if validation fails or directory inaccessible
      */
     async readDirectory(dirPath: string): Promise<FileNode[]> {
-        // SECURITY: Validate path first
-        this.validatePathOrThrow(dirPath);
+        // SECURITY: Validate path lexically and canonically first (guards symlinks & traversal)
+        await this.validateCanonicalPathOrThrow(dirPath);
 
         const cacheKey = this.normalizeCacheKey(dirPath);
         const cached = this.dirCache.get(cacheKey);
@@ -92,11 +92,22 @@ export class FileSystemService implements IFileSystemService {
                     batch.map(async (entry): Promise<FileNode | null> => {
                         const fullPath = path.join(dirPath, entry.name);
                         try {
+                            if (typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink()) {
+                                const canonicalCheck = await this.validator.validateCanonical(fullPath);
+                                if (!canonicalCheck.valid) {
+                                    SecurityLogger.warn('Skipping directory entry with symlink escape', {
+                                        path: fullPath,
+                                        reason: canonicalCheck.error,
+                                    });
+                                    return null;
+                                }
+                            }
                             const stats = await fs.stat(fullPath);
+                            const isDir = entry.isDirectory() || (typeof stats.isDirectory === 'function' && stats.isDirectory());
                             return {
                                 path: fullPath,
                                 name: entry.name,
-                                isDirectory: entry.isDirectory(),
+                                isDirectory: isDir,
                                 size: stats.size,
                                 modified: stats.mtimeMs,
                                 extension: this.getExtension(entry.name),
@@ -159,6 +170,13 @@ export class FileSystemService implements IFileSystemService {
             stats = await fs.stat(filePath);
         } catch (error: unknown) {
             throw this.wrapError(error, filePath);
+        }
+
+        if (typeof stats.isDirectory === 'function' && stats.isDirectory()) {
+            throw new FileSystemError('INVALID_PATH', 'Cannot preview a directory', {
+                path: filePath,
+                operation: 'previewFile',
+            });
         }
 
         const cached = this.previewCache.get(previewKey);
@@ -295,10 +313,15 @@ export class FileSystemService implements IFileSystemService {
             this.invalidatePath(destination);
             return { success: true, newPath: destination };
         } catch (error: unknown) {
-            // If rename fails with EXDEV (cross-device), do copy + delete
+            // If rename fails with EXDEV (cross-device), do copy + delete (supports files and directories)
             if (getFsErrorCode(error) === 'EXDEV') {
                 try {
-                    await fs.copyFile(source, destination);
+                    const sourceStats = await fs.stat(source);
+                    if (typeof sourceStats.isDirectory === 'function' && sourceStats.isDirectory()) {
+                        await fs.cp(source, destination, { recursive: true });
+                    } else {
+                        await fs.copyFile(source, destination);
+                    }
                     await fs.rm(source, { recursive: true, force: true });
                     this.invalidatePath(source);
                     this.invalidatePath(destination);
@@ -355,10 +378,15 @@ export class FileSystemService implements IFileSystemService {
     invalidatePath(targetPath: string): void {
         const normalizedTarget = this.normalizeCacheKey(targetPath);
         const parentDir = this.normalizeCacheKey(path.dirname(targetPath));
+        const descendantPrefix = normalizedTarget.endsWith(path.sep)
+            ? normalizedTarget
+            : `${normalizedTarget}${path.sep}`;
 
         this.dirCache.invalidate(normalizedTarget);
         this.dirCache.invalidate(parentDir);
+        this.dirCache.invalidatePrefix(descendantPrefix);
         this.previewCache.invalidatePrefix(`${normalizedTarget}:`);
+        this.previewCache.invalidatePrefix(descendantPrefix);
         this.syncCacheTelemetry();
     }
 
@@ -398,6 +426,10 @@ export class FileSystemService implements IFileSystemService {
         return this.validator.validate(filePath);
     }
 
+    async validateCanonicalPath(filePath: string): Promise<ValidationResult> {
+        return this.validator.validateCanonical(filePath);
+    }
+
     /**
      * Get allowed root directory.
      * 
@@ -405,6 +437,25 @@ export class FileSystemService implements IFileSystemService {
      */
     getAllowedRoot(): string {
         return this.validator.getAllowedRoot();
+    }
+
+    private async validateCanonicalPathOrThrow(filePath: string): Promise<string> {
+        const result = await this.validator.validateCanonical(filePath);
+
+        if (!result.valid) {
+            const errorCode =
+                result.error === 'SYMLINK_ESCAPE'
+                    ? 'UNAUTHORIZED_ACCESS'
+                    : (result.error as 'PATH_TRAVERSAL' | 'UNAUTHORIZED_ACCESS' | 'INVALID_PATH');
+            throw ErrorFactory.createFileSystemError(
+                errorCode,
+                filePath,
+                undefined,
+                { details: result.details }
+            );
+        }
+
+        return result.canonicalPath ?? filePath;
     }
 
     /**
@@ -454,7 +505,12 @@ export class FileSystemService implements IFileSystemService {
 
     private normalizeCacheKey(targetPath: string): string {
         const resolved = path.resolve(targetPath);
-        return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+        const root = path.parse(resolved).root;
+        const stripped =
+            resolved.length > root.length && (resolved.endsWith('/') || resolved.endsWith('\\'))
+                ? resolved.slice(0, -1)
+                : resolved;
+        return process.platform === 'win32' ? stripped.toLowerCase() : stripped;
     }
 
     private syncCacheTelemetry(): void {
@@ -466,6 +522,18 @@ export class FileSystemService implements IFileSystemService {
             misses: stats.misses,
             invalidations: stats.invalidations,
         });
+    }
+
+    private decodeUtf16WithBom(slice: Buffer): string | null {
+        if (slice.length >= 2 && slice[0] === 0xff && slice[1] === 0xfe) {
+            return slice.subarray(2).toString('utf16le');
+        }
+        if (slice.length >= 2 && slice[0] === 0xfe && slice[1] === 0xff) {
+            const payload = Buffer.from(slice.subarray(2));
+            payload.swap16();
+            return payload.toString('utf16le');
+        }
+        return null;
     }
 
     private async readBoundedText(
@@ -493,6 +561,14 @@ export class FileSystemService implements IFileSystemService {
                     const buffer = Buffer.allocUnsafe(bytesToRead);
                     const { bytesRead } = await handle.read(buffer, 0, bytesToRead, startOffset);
                     const slice = buffer.subarray(0, bytesRead);
+                    const utf16Text = startOffset === 0 ? this.decodeUtf16WithBom(slice) : null;
+                    if (utf16Text !== null) {
+                        return {
+                            text: utf16Text,
+                            binary: false,
+                            truncatedByBytes: typeof fileSize === 'number' && fileSize > bytesToRead,
+                        };
+                    }
                     if (slice.includes(0)) {
                         return { text: '', binary: true, truncatedByBytes: false };
                     }

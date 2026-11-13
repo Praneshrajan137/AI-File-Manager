@@ -76,7 +76,7 @@ export const FileGrid: React.FC<FileGridProps> = ({
     return () => {
       resizeObserver.disconnect();
     };
-  }, []);
+  }, [loading, error, sortedFiles.length, viewMode]);
 
   // Conditional returns AFTER all hooks
   if (loading) {

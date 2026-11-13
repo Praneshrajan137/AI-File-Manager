@@ -259,6 +259,69 @@ describe('M3 Closed-Loop ReactiveWorkspaceKernel & DSA Integration', () => {
       await kernel.shutdown();
     }
   });
+
+  it('coalesces older create + newer USER_ACTION unlink in chronological order and prunes PathTrie subtrees via removePrefix()', async () => {
+    const broadcasts: Array<{ channel: string; payload: string }> = [];
+    const indexEvents: Array<{ type: string; path: string }> = [];
+    const kernel = new ReactiveWorkspaceKernel({
+      allowedRoots: [workspaceDir],
+      coalesceMs: 25,
+      broadcaster: (channel, payload): void => {
+        broadcasts.push({ channel, payload });
+      },
+      indexMutationHook: (type, filePath): void => {
+        indexEvents.push({ type, path: filePath });
+      },
+    });
+
+    try {
+      const subDir = path.join(workspaceDir, 'nested-folder');
+      const nestedA = path.join(subDir, 'inner-alpha.txt');
+      const nestedB = path.join(subDir, 'sub', 'inner-beta.txt');
+
+      kernel.getPathTrie().insert(nestedA, {
+        filePath: nestedA,
+        totalChunks: 0,
+        indexedAt: 100,
+        fileSize: 10,
+      });
+      kernel.getPathTrie().insert(nestedB, {
+        filePath: nestedB,
+        totalChunks: 0,
+        indexedAt: 100,
+        fileSize: 10,
+      });
+      expect(kernel.getPathTrie().searchSubstring('er-alp', 10)).toEqual([nestedA]);
+
+      const q = kernel.getEventQueue();
+      // Deliberately enqueue in reverse order of priority/timestamp
+      q.enqueue({
+        type: 'create',
+        path: nestedA,
+        priority: EventPriority.FILE_WATCHER,
+        timestamp: 100,
+      });
+      q.enqueue({
+        type: 'unlink',
+        path: nestedA,
+        priority: EventPriority.USER_ACTION,
+        timestamp: 120,
+      });
+
+      const processed = await kernel.drainNow();
+      expect(processed).toBe(2);
+      expect(broadcasts).toEqual([{ channel: 'FILE_DELETED', payload: nestedA }]);
+      expect(indexEvents).toEqual([{ type: 'unlink', path: nestedA }]);
+      expect(kernel.getPathTrie().autocomplete('inner-alpha')).toEqual([]);
+
+      // Pruning the parent folder removes remaining nested subtree entries
+      const removed = kernel.getPathTrie().removePrefix(subDir);
+      expect(removed).toBe(1);
+      expect(kernel.getPathTrie().size()).toBe(0);
+    } finally {
+      await kernel.shutdown();
+    }
+  });
 });
 
 async function waitForCondition(predicate: () => boolean, timeoutMs: number): Promise<void> {

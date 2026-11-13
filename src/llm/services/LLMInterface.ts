@@ -95,11 +95,13 @@ export class LLMInterface {
         // Build prompts
         const systemPrompt = this.buildSystemPrompt();
         const userPrompt = this.buildUserPrompt(userQuery, retrievalResult);
+        const querySignal = (options as (LLMQueryOptions & { signal?: AbortSignal }) | undefined)?.signal;
 
         try {
             const response = await this.fetchRequest(`${this.ollamaUrl}/api/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                signal: querySignal,
                 body: JSON.stringify({
                     model,
                     messages: [
@@ -282,7 +284,9 @@ Please provide a clear answer based on the context above. If the context doesn't
      */
     async getAvailableModels(): Promise<string[]> {
         try {
-            const response = await this.fetchRequest(`${this.ollamaUrl}/api/tags`);
+            const response = await this.fetchRequest(`${this.ollamaUrl}/api/tags`, {
+                signal: AbortSignal.timeout(5000),
+            });
             if (!response.ok) {
                 return [];
             }

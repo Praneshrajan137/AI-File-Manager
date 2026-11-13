@@ -26,7 +26,7 @@ export const SearchInput: React.FC<SearchInputProps> = ({
     icon={<Search className="w-4 h-4" />}
     iconPosition="left"
     type="search"
-    className="w-64"
+    className="w-44 lg:w-56"
     data-testid="search-input"
   />
 );

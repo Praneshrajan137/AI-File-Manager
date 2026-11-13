@@ -10,8 +10,10 @@ interface ChatInterfaceProps {
   llm?: UseLLMReturn;
 }
 
-export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentPath = '', llm }) => {
-  const internalLlm = useLLM();
+const ChatInterfaceBody: React.FC<{ currentPath: string; llmState: UseLLMReturn }> = ({
+  currentPath,
+  llmState,
+}) => {
   const {
     messages,
     loading,
@@ -20,7 +22,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentPath = '', 
     startIndexing,
     stopIndexing,
     clearIndex,
-  } = llm ?? internalLlm;
+  } = llmState;
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -123,4 +125,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentPath = '', 
       />
     </div>
   );
+};
+
+const ChatInterfaceStandalone: React.FC<{ currentPath: string }> = ({ currentPath }) => {
+  const internalLlm = useLLM();
+  return <ChatInterfaceBody currentPath={currentPath} llmState={internalLlm} />;
+};
+
+export const ChatInterface: React.FC<ChatInterfaceProps> = ({ currentPath = '', llm }) => {
+  if (llm) {
+    return <ChatInterfaceBody currentPath={currentPath} llmState={llm} />;
+  }
+  return <ChatInterfaceStandalone currentPath={currentPath} />;
 };

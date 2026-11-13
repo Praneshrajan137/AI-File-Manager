@@ -143,7 +143,7 @@ function createWindow(): void {
       // CRITICAL SECURITY SETTINGS - DO NOT MODIFY
       contextIsolation: true,    // Isolate renderer from Node.js context
       nodeIntegration: false,     // Disable Node.js in renderer
-      sandbox: config.get('security').enableSandbox, // Enable OS-level sandboxing (from config)
+      sandbox: true,              // Always enforce OS-level sandboxing regardless of disk config
 
       // Preload script - bridge between Main and Renderer
       preload: path.join(__dirname, 'preload.js'),
@@ -192,6 +192,7 @@ function createWindow(): void {
   // Security: Prevent navigation to external URLs or arbitrary local files
   mainWindow.webContents.on('will-navigate', (event, url) => {
     const rendererDirUrl = pathToFileURL(path.resolve(__dirname, '../renderer')).href;
+    const rendererDirPrefix = rendererDirUrl.endsWith('/') ? rendererDirUrl : `${rendererDirUrl}/`;
     const allowedOrigins = isDevelopment
       ? ['http://localhost:8080']
       : [rendererDirUrl];
@@ -202,9 +203,11 @@ function createWindow(): void {
       if (isDevelopment) {
         isAllowed = parsedUrl.origin === 'http://localhost:8080';
       } else {
+        const lowerHref = parsedUrl.href.toLowerCase();
         isAllowed =
           parsedUrl.protocol === 'file:' &&
-          parsedUrl.href.toLowerCase().startsWith(rendererDirUrl.toLowerCase());
+          (lowerHref === rendererDirUrl.toLowerCase() ||
+            lowerHref.startsWith(rendererDirPrefix.toLowerCase()));
       }
     } catch {
       isAllowed = false;
@@ -299,59 +302,55 @@ app.on('window-all-closed', () => {
   const logger = getLogger();
   logger.info('All windows closed');
 
-  // Shutdown ReactiveWorkspaceKernel (stops watcher, clears timers/caches)
-  resetReactiveWorkspaceKernel()
-    .then(() => {
+  void (async () => {
+    const [kernelResult, llmResult] = await Promise.allSettled([
+      resetReactiveWorkspaceKernel(),
+      import('./handlers/llmHandlers').then(({ cleanupLLMServices }) => cleanupLLMServices()),
+    ]);
+
+    if (kernelResult.status === 'fulfilled') {
       logger.info('ReactiveWorkspaceKernel stopped');
-    })
-    .catch((error) => {
+    } else {
       logger.error('Error stopping ReactiveWorkspaceKernel', {
-        error: error instanceof Error ? error.message : String(error),
+        error:
+          kernelResult.reason instanceof Error
+            ? kernelResult.reason.message
+            : String(kernelResult.reason),
       });
-    });
+    }
 
-  // Cleanup LLM services (terminates worker threads)
-  import('./handlers/llmHandlers')
-    .then(({ cleanupLLMServices }) => cleanupLLMServices())
-    .then(() => {
+    if (llmResult.status === 'fulfilled') {
       logger.info('LLM services cleaned up');
-    })
-    .catch(() => {
+    } else {
       logger.debug('LLM cleanup skipped (not initialized)');
-    });
+    }
 
-  if (process.platform !== 'darwin') {
-    logger.info('Quitting application');
-    app.quit();
-  }
+    if (process.platform !== 'darwin') {
+      logger.info('Quitting application');
+      app.quit();
+    }
+  })();
 });
 
-/**
- * Single instance lock: Prevent multiple app instances.
- * If user tries to open second instance, focus existing window instead.
- *
- * TEMPORARILY DISABLED FOR DEBUGGING
- */
-// const gotTheLock = app.requestSingleInstanceLock();
-// 
-// if (!gotTheLock) {
-//   const logger = getLogger();
-//   logger.warn('Another instance is already running, quitting');
-//   app.quit();
-// } else {
-//   app.on('second-instance', () => {
-//     const logger = getLogger();
-//     logger.info('Second instance launch attempt, focusing existing window');
-//     
-//     // Someone tried to run a second instance, focus our window
-//     if (mainWindow) {
-//       if (mainWindow.isMinimized()) {
-//         mainWindow.restore();
-//       }
-//       mainWindow.focus();
-//     }
-//   });
-// }
+if (process.env.E2E_TEST !== 'true' && process.env.NODE_ENV !== 'test') {
+  const gotTheLock = app.requestSingleInstanceLock();
+  if (!gotTheLock) {
+    const logger = getLogger();
+    logger.warn('Another instance is already running, quitting');
+    app.quit();
+  } else {
+    app.on('second-instance', () => {
+      const logger = getLogger();
+      logger.info('Second instance launch attempt, focusing existing window');
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) {
+          mainWindow.restore();
+        }
+        mainWindow.focus();
+      }
+    });
+  }
+}
 
 /**
  * Note: Error handling is now managed by ErrorHandler.

@@ -212,4 +212,50 @@ describe('VectorStore', () => {
             expect(stats.totalChunks).toBe(0);
         });
     });
+
+    describe('concurrency & failure recovery', () => {
+        it('serializes concurrent flushPendingRecords() calls without duplicating rows', async () => {
+            const chunks: TextChunk[] = [
+                { text: 'concurrent chunk 1', startChar: 0, endChar: 18, chunkIndex: 0 },
+                { text: 'concurrent chunk 2', startChar: 18, endChar: 36, chunkIndex: 1 },
+            ];
+            const embeddings: Embedding[] = [
+                new Array(384).fill(0.2),
+                new Array(384).fill(0.4),
+            ];
+
+            await store.addChunks(chunks, embeddings, '/test/concurrent.txt');
+            await Promise.all([store.flushPendingRecords(), store.flushPendingRecords()]);
+
+            const stats = await store.getStats();
+            expect(stats.totalChunks).toBe(2);
+            expect(stats.totalFiles).toBe(1);
+        });
+
+        it('retains pending records and filesPendingReplace when table.add fails so retry persists them', async () => {
+            const chunks: TextChunk[] = [
+                { text: 'retry chunk 1', startChar: 0, endChar: 13, chunkIndex: 0 },
+                { text: 'retry chunk 2', startChar: 13, endChar: 26, chunkIndex: 1 },
+            ];
+            const embeddings: Embedding[] = [
+                new Array(384).fill(0.3),
+                new Array(384).fill(0.6),
+            ];
+
+            await store.addChunks(chunks, embeddings, '/test/retry-me.txt');
+            const internalTable = (store as unknown as { table: { add: (rows: unknown[]) => Promise<void> } }).table;
+            const addSpy = jest.spyOn(internalTable, 'add').mockRejectedValueOnce(new Error('simulated write failure'));
+
+            try {
+                await expect(store.flushPendingRecords()).rejects.toThrow('simulated write failure');
+            } finally {
+                addSpy.mockRestore();
+            }
+
+            await store.flushPendingRecords();
+            const stats = await store.getStats();
+            expect(stats.totalChunks).toBe(2);
+            expect(stats.totalFiles).toBe(1);
+        });
+    });
 });

@@ -25,9 +25,15 @@ export {
   isIPCEnvelope,
 } from './envelope';
 
+const RESERVED_DOS_NAMES = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
+]);
+
 /**
- * Validates single directory/file entry names to prevent relative traversal
- * or embedded path separators (e.g. "../escape", "a/b", "a\\b", ".", "..").
+ * Validates single directory/file entry names to prevent relative traversal,
+ * embedded path separators, NTFS Alternate Data Streams, or invalid OS names.
  */
 export function isSafeEntryName(name: string): boolean {
   if (typeof name !== 'string') {
@@ -37,10 +43,20 @@ export function isSafeEntryName(name: string): boolean {
   if (trimmed.length === 0 || trimmed === '.' || trimmed === '..') {
     return false;
   }
-  if (name.includes('\0') || name.includes('/') || name.includes('\\')) {
+  if (name.endsWith('.') || name.endsWith(' ')) {
     return false;
   }
-  if (name.includes('..') && (name === '..' || name.includes('/') || name.includes('\\'))) {
+  if (
+    name.includes('\0') ||
+    name.includes('/') ||
+    name.includes('\\') ||
+    name.includes('..') ||
+    /[<>:"|?*]/.test(name)
+  ) {
+    return false;
+  }
+  const baseUpper = trimmed.split('.')[0].toUpperCase();
+  if (RESERVED_DOS_NAMES.has(baseUpper)) {
     return false;
   }
   return true;
@@ -51,7 +67,7 @@ export const safeEntryNameSchema = z
   .min(1, 'Name cannot be empty')
   .max(255, 'Name exceeds maximum length')
   .refine(isSafeEntryName, {
-    message: 'Name cannot contain path separators ("/", "\\"), null bytes, or be "." / ".."',
+    message: 'Name contains invalid characters, "..", reserved DOS name, or trailing dots/spaces',
   });
 
 const optionalEmptyObjectSchema = z

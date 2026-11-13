@@ -15,7 +15,7 @@ export const NavigationButtons: React.FC<NavigationButtonsProps> = ({
   onBack,
   onForward
 }) => (
-  <div className="flex gap-2" data-testid="navigation-buttons">
+  <div className="flex gap-2 flex-shrink-0" data-testid="navigation-buttons">
     <Button
       variant="ghost"
       size="sm"

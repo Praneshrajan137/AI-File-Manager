@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { PathValidator } from '@main/services/PathValidator';
 import path from 'path';
 import os from 'os';
@@ -288,6 +289,34 @@ describe('PathValidator', () => {
 
             expect(result.valid).toBe(false);
             expect(result.error).toBe('PATH_TRAVERSAL');
+        });
+
+        it('rejects Win32 drive-relative paths and NTFS Alternate Data Streams', () => {
+            const driveRelative = validator.validate('C:relative.txt');
+            const ntfsAds = validator.validate(path.join(allowedRoot, 'note.txt:secret'));
+
+            expect(driveRelative.valid).toBe(false);
+            expect(driveRelative.error).toBeTruthy();
+            expect(ntfsAds.valid).toBe(false);
+            expect(ntfsAds.error).toBeTruthy();
+        });
+
+        it('fails closed when canonical realpath encounters ELOOP or EACCES', async () => {
+            const targetPath = path.join(allowedRoot, 'loop.txt');
+            const realpathSpy = jest.spyOn(fs.promises, 'realpath').mockImplementation(async (p) => {
+                if (String(p) === targetPath) {
+                    throw Object.assign(new Error('Too many levels of symbolic links'), { code: 'ELOOP' });
+                }
+                return String(p);
+            });
+
+            try {
+                const res = await validator.validateCanonical(targetPath);
+                expect(res.valid).toBe(false);
+                expect(res.error).toBeTruthy();
+            } finally {
+                realpathSpy.mockRestore();
+            }
         });
     });
 });

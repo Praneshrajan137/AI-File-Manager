@@ -23,6 +23,7 @@ interface ToolbarProps {
   currentPath: string;
   onNavigate: (path: string) => void;
   onSearch: (query: string) => void;
+  onSearchSelect?: (path: string) => void;
   viewMode: 'list' | 'grid';
   onViewModeChange: (mode: 'list' | 'grid') => void;
   sortBy: 'name' | 'size' | 'modified' | 'type';
@@ -46,6 +47,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   currentPath,
   onNavigate,
   onSearch,
+  onSearchSelect,
   viewMode,
   onViewModeChange,
   sortBy,
@@ -70,11 +72,10 @@ export const Toolbar: React.FC<ToolbarProps> = ({
 
     <Breadcrumb path={currentPath} onNavigate={onNavigate} />
 
-    <div className="flex-1" />
+    <div className="flex items-center gap-2 flex-shrink-0">
+      <SearchBar onSearch={onSearch} onSelect={onSearchSelect ?? onNavigate} />
 
-    <SearchBar onSearch={onSearch} onSelect={onNavigate} />
-
-    <div className="h-6 w-px bg-primary-200" />
+      <div className="h-6 w-px bg-primary-200" />
 
     {onNewFile && (
       <Button
@@ -150,13 +151,14 @@ export const Toolbar: React.FC<ToolbarProps> = ({
       />
     )}
 
-    <Button
-      variant="ghost"
-      icon={<MessageSquare className={`w-5 h-5 ${chatOpen ? 'text-indigo-600' : 'text-primary-500'}`} />}
-      onClick={onToggleChat}
-      aria-label={chatOpen ? 'Close chat' : 'Open chat'}
-      data-testid="chat-toggle-button"
-      className={chatOpen ? 'bg-indigo-50' : ''}
-    />
+      <Button
+        variant="ghost"
+        icon={<MessageSquare className={`w-5 h-5 ${chatOpen ? 'text-indigo-600' : 'text-primary-500'}`} />}
+        onClick={onToggleChat}
+        aria-label={chatOpen ? 'Close chat' : 'Open chat'}
+        data-testid="chat-toggle-button"
+        className={chatOpen ? 'bg-indigo-50' : ''}
+      />
+    </div>
   </div>
 );

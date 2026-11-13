@@ -228,3 +228,7 @@ export function registerNavigationHandlers(): IPCChannel[] {
 export function getNavigationServiceForTesting(): NavigationService {
   return getNavigationService();
 }
+
+export function resetNavigationServices(): void {
+  navigationService = null;
+}

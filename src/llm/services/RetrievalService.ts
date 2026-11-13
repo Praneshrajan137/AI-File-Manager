@@ -121,10 +121,7 @@ export class RetrievalService {
 
         // Preserve exact dense order calls to similarity() for unit mock determinism
         denseCandidates.forEach((candidate, rank) => {
-            const rawSimilarity = this.embeddingModel.similarity(
-                queryEmbedding,
-                candidate.embedding
-            );
+            const rawSimilarity = this.safeSimilarity(queryEmbedding, candidate.embedding);
             const similarityScore = Number.isFinite(rawSimilarity) ? rawSimilarity : 0;
             const denseRrf = 1 / (RRF_K + rank + 1);
             merged.set(candidate.id, {
@@ -143,10 +140,7 @@ export class RetrievalService {
                 existing.rrfScore += lexicalRrf;
                 existing.lexicalBoost = normalizedLexicalBoost;
             } else {
-                const rawSimilarity = this.embeddingModel.similarity(
-                    queryEmbedding,
-                    match.record.embedding
-                );
+                const rawSimilarity = this.safeSimilarity(queryEmbedding, match.record.embedding);
                 const similarityScore = Number.isFinite(rawSimilarity) ? rawSimilarity : 0;
                 merged.set(match.record.id, {
                     record: match.record,
@@ -209,5 +203,16 @@ ${record.chunk_text}
      */
     private estimateTokens(text: string): number {
         return Math.ceil(text.length / 4);
+    }
+
+    private safeSimilarity(a: Embedding, b: Embedding): number {
+        if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || a.length !== b.length) {
+            return 0;
+        }
+        try {
+            return this.embeddingModel.similarity(a, b);
+        } catch {
+            return 0;
+        }
     }
 }

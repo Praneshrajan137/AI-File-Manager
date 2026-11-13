@@ -84,6 +84,7 @@ interface ElectronAPI {
 declare global {
   interface Window {
     electronAPI: ElectronAPI;
+    __electronIPCBridge?: unknown;
   }
 }
 

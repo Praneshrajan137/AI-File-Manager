@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { FileNode, FileSystemError } from '@shared/contracts';
 
 interface UseFileSystemReturn {
@@ -9,8 +9,8 @@ interface UseFileSystemReturn {
   error: FileSystemError | null;
 
   // Actions
-  readDirectory: (path: string) => Promise<void>;
-  deleteFile: (path: string, recursive?: boolean) => Promise<void>;
+  readDirectory: (path: string) => Promise<boolean>;
+  deleteFile: (path: string, recursive?: boolean, skipRefresh?: boolean) => Promise<void>;
   moveFile: (source: string, destination: string) => Promise<void>;
   setSearchResults: (results: FileNode[]) => void;
 }
@@ -39,38 +39,56 @@ export function useFileSystem(options: UseFileSystemOptions = {}): UseFileSystem
   const [currentPath, setCurrentPath] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<FileSystemError | null>(null);
+  const readSeqRef = useRef<number>(0);
   const { onError, onSuccess } = options;
 
-  const readDirectory = useCallback(async (path: string) => {
+  const readDirectory = useCallback(async (path: string): Promise<boolean> => {
+    const requestSeq = ++readSeqRef.current;
     setLoading(true);
     setError(null);
 
     try {
       const result = await window.electronAPI.fs.readDirectory(path);
+      if (requestSeq !== readSeqRef.current) {
+        return false;
+      }
       setFiles(result);
       setCurrentPath(path);
+      return true;
     } catch (err: unknown) {
+      if (requestSeq !== readSeqRef.current) {
+        return false;
+      }
       // Handle both Error objects and serialized error objects from IPC
-      const errObj = err && typeof err === 'object' ? (err as { message?: string; details?: string; code?: string }) : undefined;
+      const errObj =
+        err && typeof err === 'object'
+          ? (err as { message?: string; details?: string; code?: string; cause?: { code?: string } })
+          : undefined;
       const message = errObj?.message || errObj?.details || (typeof err === 'object' && err !== null ? JSON.stringify(err) : String(err));
       const fsError: FileSystemError = {
-        code: toFileSystemErrorCode(errObj?.code),
+        code: toFileSystemErrorCode(errObj?.code ?? errObj?.cause?.code),
         message: message,
         path: path,
       };
       setError(fsError);
       onError?.(`Failed to read directory: ${message}`);
+      return false;
     } finally {
-      setLoading(false);
+      if (requestSeq === readSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, [onError]);
 
-  const deleteFile = useCallback(async (path: string, recursive: boolean = true) => {
+  const deleteFile = useCallback(async (
+    path: string,
+    recursive: boolean = true,
+    skipRefresh: boolean = false
+  ) => {
     try {
       await window.electronAPI.fs.delete(path, recursive);
       onSuccess?.('File deleted successfully');
-      // Refresh current directory
-      if (currentPath) {
+      if (!skipRefresh && currentPath) {
         await readDirectory(currentPath);
       }
     } catch (err: unknown) {

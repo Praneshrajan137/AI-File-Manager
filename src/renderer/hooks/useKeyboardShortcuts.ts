@@ -14,9 +14,35 @@ type ShortcutMap = Record<string, ShortcutHandler>;
  *   'Delete': handleDelete,
  * });
  */
+function isEditableElement(target: EventTarget | null): boolean {
+  if (!target || typeof (target as HTMLElement).tagName !== 'string') {
+    return false;
+  }
+  const el = target as HTMLElement;
+  const tag = el.tagName.toUpperCase();
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+    return true;
+  }
+  if (el.isContentEditable) {
+    return true;
+  }
+  return typeof el.closest === 'function' && el.closest('[contenteditable="true"]') !== null;
+}
+
 export function useKeyboardShortcuts(shortcuts: ShortcutMap): void {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (isEditableElement(e.target)) {
+        return;
+      }
+      if (
+        e.key === 'Delete' &&
+        typeof document !== 'undefined' &&
+        document.querySelector('[role="dialog"]') !== null
+      ) {
+        return;
+      }
+
       // Build key combination string
       const parts: string[] = [];
 

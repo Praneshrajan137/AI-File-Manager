@@ -41,8 +41,8 @@ test.describe('Security', () => {
     await page.waitForLoadState('networkidle');
     await page.waitForTimeout(2000);
 
-    // Attempt path traversal from allowed directory
-    const traversalPath = path.join(testDir, '..', '..', '..', 'etc', 'passwd');
+    // Attempt literal unnormalized path traversal from allowed directory (without path.join folding ..)
+    const traversalPath = `${testDir}${path.sep}..${path.sep}..${path.sep}..${path.sep}etc${path.sep}passwd`;
 
     const result = await page.evaluate(async (path) => {
       try {
@@ -59,11 +59,9 @@ test.describe('Security', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBeDefined();
-    // Error should be serialized - check for error indication
-    // The error might be serialized as [object Object] or as a string message
     expect(typeof result.error).toBe('string');
-    // The error should indicate failure (either contains error keywords or is an object string)
     expect(result.error.length).toBeGreaterThan(0);
+    expect(result.code).toBe('PATH_TRAVERSAL');
   });
 
   test('should prevent accessing files outside allowed roots', async ({ page }) => {
@@ -93,6 +91,7 @@ test.describe('Security', () => {
     // Should be blocked - system directories are outside allowed roots
     expect(result.success).toBe(false);
     expect(result.error).toBeDefined();
+    expect(result.code).toBe('UNAUTHORIZED_ACCESS');
   });
 
   test('should validate paths before file operations', async ({ page }) => {
@@ -129,19 +128,26 @@ test.describe('Security', () => {
     await page.waitForLoadState('networkidle');
     await page.waitForTimeout(2000);
 
-    // Check that require, process, fs are not accessible
+    // Check that require, real Node process, fs, and ipcRenderer are not accessible
     const nodeAPIs = await page.evaluate(() => {
+      const win = window as unknown as Record<string, unknown>;
+      const proc = typeof process !== 'undefined' ? (process as unknown as Record<string, unknown>) : undefined;
       return {
         hasRequire: typeof require !== 'undefined',
-        hasProcess: typeof process !== 'undefined',
+        hasNodeVersions: Boolean(proc && proc.versions && (proc.versions as Record<string, unknown>).node),
         hasFs: typeof fs !== 'undefined',
+        hasWindowIpcRenderer: typeof win.ipcRenderer !== 'undefined',
+        hasBridgeIpcRenderer: typeof (win.electronAPI as Record<string, unknown> | undefined)?.ipcRenderer !== 'undefined',
         hasElectronAPI: typeof window.electronAPI !== 'undefined',
       };
     });
 
-    // Renderer should NOT have direct Node.js access
+    // Renderer should NOT have direct Node.js or raw IPC access
     expect(nodeAPIs.hasRequire).toBe(false);
+    expect(nodeAPIs.hasNodeVersions).toBe(false);
     expect(nodeAPIs.hasFs).toBe(false);
+    expect(nodeAPIs.hasWindowIpcRenderer).toBe(false);
+    expect(nodeAPIs.hasBridgeIpcRenderer).toBe(false);
     
     // But should have electronAPI (via preload)
     expect(nodeAPIs.hasElectronAPI).toBe(true);

@@ -62,6 +62,7 @@ export class ReactiveWorkspaceKernel {
   private closed = false;
   private totalProcessed = 0;
   private totalCoalesced = 0;
+  private totalDropped = 0;
 
   constructor(options: ReactiveWorkspaceKernelOptions = {}) {
     this.allowedRoots =
@@ -259,9 +260,14 @@ export class ReactiveWorkspaceKernel {
       timestamp: Date.now(),
     };
 
-    this.eventQueue.enqueue(event);
+    try {
+      this.eventQueue.enqueue(event);
+    } catch {
+      this.totalDropped += 1;
+    }
     RuntimeDiagnostics.getInstance().recordEventQueueStats({
       pending: this.eventQueue.size(),
+      dropped: this.totalDropped,
     });
     this.scheduleDrain();
   }
@@ -338,6 +344,10 @@ export class ReactiveWorkspaceKernel {
       return 0;
     }
 
+    // Coalesce strictly in chronological order so newer USER_ACTION unlinks
+    // are never overwritten by stale lower-priority watcher events.
+    rawEvents.sort((a, b) => a.timestamp - b.timestamp || b.priority - a.priority);
+
     const netByPath = new Map<string, FileEvent>();
     for (const ev of rawEvents) {
       const key = this.canonicalKey(ev.path);
@@ -371,15 +381,17 @@ export class ReactiveWorkspaceKernel {
 
     for (const event of netByPath.values()) {
       this.fileSystemService.invalidatePath(event.path);
-      const hookType: 'create' | 'change' | 'unlink' =
+      let hookType: 'create' | 'change' | 'unlink' =
         event.type === 'rename' ? 'change' : event.type;
 
       if (hookType === 'unlink') {
-        this.pathTrie.remove(event.path);
+        this.pathTrie.removePrefix(event.path);
         this.emitBroadcast('FILE_DELETED', event.path);
       } else {
+        let existsOnDisk = false;
         try {
           const stats = await fs.stat(event.path);
+          existsOnDisk = true;
           const ext = path.extname(event.path).replace(/^\./, '').toLowerCase();
           const metadata: FileMetadata = {
             filePath: event.path,
@@ -390,13 +402,18 @@ export class ReactiveWorkspaceKernel {
           };
           this.pathTrie.insert(event.path, metadata);
         } catch {
-          this.pathTrie.remove(event.path);
+          this.pathTrie.removePrefix(event.path);
+          hookType = 'unlink';
         }
 
-        this.emitBroadcast(
-          hookType === 'create' ? 'FILE_CREATED' : 'FILE_CHANGED',
-          event.path
-        );
+        if (existsOnDisk) {
+          this.emitBroadcast(
+            hookType === 'create' ? 'FILE_CREATED' : 'FILE_CHANGED',
+            event.path
+          );
+        } else {
+          this.emitBroadcast('FILE_DELETED', event.path);
+        }
       }
 
       if (this.indexMutationHook) {
@@ -424,6 +441,7 @@ export class ReactiveWorkspaceKernel {
       pending: this.eventQueue.size(),
       processed: this.totalProcessed,
       coalesced: this.totalCoalesced,
+      dropped: this.totalDropped,
       lastFlushAt: Date.now(),
       lastFlushDurationMs: Date.now() - startMs,
     });

@@ -301,6 +301,74 @@ export class PathTrie {
         return true;
     }
 
+    /**
+     * Remove a file or an entire directory subtree (all descendant paths matching prefix).
+     */
+    removePrefix(prefixPath: string): number {
+        if (!prefixPath || prefixPath.trim().length === 0) {
+            return 0;
+        }
+
+        const normalized = this.normalizePath(prefixPath);
+        const segments = this.splitPath(normalized);
+        let currentNode = this.root;
+
+        for (const segment of segments) {
+            const key = segment.toLowerCase();
+            const next = currentNode.children.get(key);
+            if (!next) {
+                return 0;
+            }
+            currentNode = next;
+        }
+
+        const targets: string[] = [];
+        this.collectPaths(currentNode, targets, Number.MAX_SAFE_INTEGER);
+
+        let removedCount = 0;
+        for (const target of targets) {
+            if (this.remove(target)) {
+                removedCount++;
+            }
+        }
+        return removedCount;
+    }
+
+    /**
+     * Find indexed paths whose basename contains the given case-insensitive substring.
+     */
+    searchSubstring(substring: string, maxResults: number = 50): string[] {
+        const needle = substring.trim().toLowerCase();
+        if (!needle || maxResults <= 0) {
+            return [];
+        }
+
+        const matches: string[] = [];
+        const walk = (node: TrieNode): void => {
+            if (matches.length >= maxResults) {
+                return;
+            }
+            if (node.isEndOfPath && node.metadata) {
+                const fileName = path.basename(node.metadata.filePath).toLowerCase();
+                if (fileName.includes(needle)) {
+                    matches.push(node.metadata.filePath);
+                    if (matches.length >= maxResults) {
+                        return;
+                    }
+                }
+            }
+            for (const child of node.children.values()) {
+                walk(child);
+                if (matches.length >= maxResults) {
+                    return;
+                }
+            }
+        };
+
+        walk(this.root);
+        return matches;
+    }
+
     private insertBasename(basename: string, canonicalKey: string, storedPath: string): void {
         let current = this.basenameRoot;
         for (const ch of basename) {

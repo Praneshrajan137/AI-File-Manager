@@ -2,15 +2,20 @@
  * securityMiddleware.test.ts - Tests for security middleware
  */
 
+import os from 'os';
+import path from 'path';
 import { validatePathOrThrow, validatePathRequest, validateRequestSchema } from '@main/handlers/securityMiddleware';
 
 describe('securityMiddleware', () => {
   describe('validatePathRequest', () => {
-    it('should extract path from valid request', () => {
-      const request = { path: '/home/user/test.txt' };
-      // This will throw if path validation fails with PathValidator
-      // For unit testing, we'd need to mock PathValidator
-      expect(() => validatePathRequest(request)).toBeDefined();
+    it('should extract path from valid request inside allowed root', () => {
+      const safePath = path.join(os.homedir(), 'test.txt');
+      const request = { path: safePath };
+      expect(validatePathRequest(request)).toBe(safePath);
+    });
+
+    it('should reject traversal paths in request', () => {
+      expect(() => validatePathRequest({ path: path.join(os.homedir(), '..', 'escape.txt') })).toThrow();
     });
 
     it('should throw if request is not an object', () => {

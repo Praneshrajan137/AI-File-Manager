@@ -12,42 +12,43 @@
  */
 
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
-import { isIPCEnvelope } from '@shared/ipc/envelope';
+import {
+  IPCEnvelope,
+  isIPCEnvelope,
+  wrapIPCError,
+  wrapIPCSuccess,
+} from '@shared/ipc/envelope';
 import type { IPCChannel, IPCResponse } from '@shared/ipc/contracts';
-
-interface RehydratedIPCError extends Error {
-  code?: string;
-  userMessage?: string;
-  isOperational?: boolean;
-  details?: Record<string, unknown>;
-}
 
 let llmStreamCounter = 0;
 
 /**
- * Unwrap Main-process IPCEnvelope responses cleanly and rehydrate structured Error instances.
+ * Invoke a Main-process contract channel and preserve the structured
+ * IPCEnvelope across Electron's contextBridge so the renderer's main JS world
+ * can rehydrate Error instances with `.code` and `.details` intact.
  */
 async function invokeContract<C extends IPCChannel>(
   channel: C,
   payload?: unknown
-): Promise<IPCResponse<C>> {
-  const raw = await ipcRenderer.invoke(channel, payload);
+): Promise<IPCEnvelope<IPCResponse<C>>> {
+  try {
+    const raw = await ipcRenderer.invoke(channel, payload);
 
-  if (isIPCEnvelope<IPCResponse<C>>(raw)) {
-    if (raw.ok) {
-      return raw.data;
+    if (isIPCEnvelope<IPCResponse<C>>(raw)) {
+      return raw;
     }
 
-    const err: RehydratedIPCError = new Error(raw.error.userMessage || raw.error.message);
-    err.name = raw.error.name || 'IPCError';
-    err.code = raw.error.code;
-    err.userMessage = raw.error.userMessage;
-    err.isOperational = raw.error.isOperational;
-    err.details = raw.error.details;
-    throw err;
+    return wrapIPCSuccess(raw as IPCResponse<C>);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return wrapIPCError({
+      name: error instanceof Error ? error.name : 'IPCError',
+      code: 'IPC_INVOKE_FAILED',
+      message,
+      userMessage: message,
+      isOperational: true,
+    });
   }
-
-  return raw as IPCResponse<C>;
 }
 
 const electronAPI = {
@@ -116,6 +117,12 @@ const electronAPI = {
     query: async (query: string, callback: (chunk: string) => void) => {
       llmStreamCounter += 1;
       const channel = `LLM:QUERY:${Date.now()}:${llmStreamCounter}`;
+      let streamEnded = false;
+      let safetyTimer: ReturnType<typeof setTimeout> | null = null;
+      let resolveEnd: (() => void) | null = null;
+      const endPromise = new Promise<void>((resolve) => {
+        resolveEnd = resolve;
+      });
 
       const handleChunk = (_event: IpcRendererEvent, chunk: unknown) => {
         if (typeof chunk === 'string' && chunk !== '[DONE]') {
@@ -124,15 +131,36 @@ const electronAPI = {
       };
 
       const handleEnd = () => {
-        ipcRenderer.removeListener(channel, handleChunk);
+        streamEnded = true;
+        if (safetyTimer) {
+          clearTimeout(safetyTimer);
+          safetyTimer = null;
+        }
+        resolveEnd?.();
       };
 
       ipcRenderer.on(channel, handleChunk);
       ipcRenderer.once(`${channel}:end`, handleEnd);
 
       try {
-        return await invokeContract('LLM:QUERY', { query, channel });
+        const result = await invokeContract('LLM:QUERY', { query, channel });
+        if (result.ok && !streamEnded) {
+          await Promise.race([
+            endPromise,
+            new Promise<void>((resolve) => {
+              safetyTimer = setTimeout(() => {
+                safetyTimer = null;
+                resolve();
+              }, 5000);
+            }),
+          ]);
+        }
+        return result;
       } finally {
+        if (safetyTimer) {
+          clearTimeout(safetyTimer);
+          safetyTimer = null;
+        }
         ipcRenderer.removeListener(channel, handleChunk);
         ipcRenderer.removeListener(`${channel}:end`, handleEnd);
       }
@@ -204,6 +232,6 @@ const electronAPI = {
   ping: () => invokeContract('ping'),
 };
 
-contextBridge.exposeInMainWorld('electronAPI', electronAPI);
+contextBridge.exposeInMainWorld('__electronIPCBridge', electronAPI);
 
-export type ElectronAPI = typeof electronAPI;
+export type ElectronIPCBridge = typeof electronAPI;

@@ -8,6 +8,32 @@
 import { ElectronApplication, Page, _electron as electron } from 'playwright';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
+
+const appLogs = new WeakMap<ElectronApplication, string[]>();
+const appSandboxDirs = new WeakMap<ElectronApplication, string>();
+const appExitFailures = new WeakMap<ElectronApplication, string>();
+const MAX_LOG_LINES = 80;
+
+function recordAppLog(buffer: string[], stream: 'stdout' | 'stderr', chunk: Buffer | string): void {
+  const lines = String(chunk)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  for (const line of lines) {
+    buffer.push(`[${stream}] ${line}`);
+    if (buffer.length > MAX_LOG_LINES) {
+      buffer.shift();
+    }
+  }
+}
+
+/**
+ * Retrieve captured recent stdout/stderr lines from an Electron test instance.
+ */
+export function getElectronAppLogs(electronApp: ElectronApplication): string[] {
+  return [...(appLogs.get(electronApp) ?? [])];
+}
 
 /**
  * Launch Electron application for testing
@@ -35,25 +61,69 @@ export async function launchElectronApp(options: {
   const isDev = process.env.NODE_ENV === 'development' || 
                 process.env.E2E_DEV_MODE === 'true';
 
+  const sandboxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'osfm-e2e-home-'));
+  const userDataDir = path.join(sandboxDir, 'chromium-user-data');
+  const appDataDir = path.join(sandboxDir, 'AppData', 'Roaming');
+  const localAppDataDir = path.join(sandboxDir, 'AppData', 'Local');
+  const defaultVectorDbDir = path.join(sandboxDir, 'vectordb');
+  fs.mkdirSync(userDataDir, { recursive: true });
+  fs.mkdirSync(appDataDir, { recursive: true });
+  fs.mkdirSync(localAppDataDir, { recursive: true });
+
+  const allowedRoots =
+    options.env?.FILE_MANAGER_ALLOWED_ROOTS ||
+    process.env.FILE_MANAGER_ALLOWED_ROOTS ||
+    [sandboxDir, os.tmpdir()].join(path.delimiter);
+
+  const launchEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) {
+      launchEnv[key] = value;
+    }
+  }
+
   const electronApp = await electron.launch({
     executablePath: electronPath,
     args: [
       mainPath,
+      `--user-data-dir=${userDataDir}`,
       // Disable GPU acceleration for CI environments
       '--disable-gpu',
-      // Enable remote debugging for Playwright
-      '--remote-debugging-port=9222',
       // Disable sandbox for testing (if needed)
       ...(process.env.CI ? ['--no-sandbox'] : []),
       ...(options.args || []),
     ],
     env: {
+      ...launchEnv,
       NODE_ENV: isDev ? 'development' : 'test',
       E2E_TEST: 'true',
+      HOME: sandboxDir,
+      USERPROFILE: sandboxDir,
+      APPDATA: appDataDir,
+      LOCALAPPDATA: localAppDataDir,
+      FILE_MANAGER_VECTOR_DB_PATH: defaultVectorDbDir,
+      FILE_MANAGER_ALLOWED_ROOTS: allowedRoots,
       ...options.env,
     },
     timeout: 60000, // 60 second timeout
   });
+
+  const logBuffer: string[] = [];
+  appLogs.set(electronApp, logBuffer);
+  appSandboxDirs.set(electronApp, sandboxDir);
+  const child = electronApp.process();
+  if (child) {
+    child.stdout?.on('data', (chunk) => recordAppLog(logBuffer, 'stdout', chunk));
+    child.stderr?.on('data', (chunk) => recordAppLog(logBuffer, 'stderr', chunk));
+    child.once('exit', (code, signal) => {
+      if ((code !== null && code !== 0) || signal !== null) {
+        appExitFailures.set(
+          electronApp,
+          `Electron process exited unexpectedly (code=${String(code)}, signal=${String(signal)})`
+        );
+      }
+    });
+  }
 
   return electronApp;
 }
@@ -65,8 +135,19 @@ export async function launchElectronApp(options: {
  * @returns First window page
  */
 export async function getFirstWindow(electronApp: ElectronApplication): Promise<Page> {
-  // Wait for window to be created (with timeout)
-  const window = await electronApp.firstWindow({ timeout: 30000 });
+  let window: Page;
+  try {
+    // Wait for window to be created (with timeout)
+    window = await electronApp.firstWindow({ timeout: 30000 });
+  } catch (error) {
+    const recentLogs = getElectronAppLogs(electronApp);
+    const baseMessage = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `${baseMessage}\nRecent Electron process logs:\n${
+        recentLogs.length > 0 ? recentLogs.join('\n') : '(no output captured)'
+      }`
+    );
+  }
   
   // Wait for window to be ready
   await window.waitForLoadState('domcontentloaded');
@@ -106,6 +187,28 @@ function getElectronPath(): string {
  * @param electronApp Electron application instance
  */
 export async function closeElectronApp(electronApp: ElectronApplication): Promise<void> {
-  await electronApp.close();
+  const sandboxDir = appSandboxDirs.get(electronApp);
+  const child = electronApp.process();
+
+  try {
+    if (!child || child.exitCode === null) {
+      await electronApp.close();
+    }
+
+    const unexpectedFailure = appExitFailures.get(electronApp);
+    if (unexpectedFailure) {
+      const recentLogs = getElectronAppLogs(electronApp);
+      throw new Error(
+        `${unexpectedFailure}\nRecent Electron process logs:\n${
+          recentLogs.length > 0 ? recentLogs.join('\n') : '(no output captured)'
+        }`
+      );
+    }
+  } finally {
+    if (sandboxDir) {
+      fs.rmSync(sandboxDir, { recursive: true, force: true });
+    }
+  }
 }
+
 

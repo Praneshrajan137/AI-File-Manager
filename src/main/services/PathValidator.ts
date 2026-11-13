@@ -101,6 +101,20 @@ export class PathValidator {
         // Step 3: Decode URL encoding to prevent %2e%2e attacks (BUG FIX #2)
         const decoded = this.decodeSafe(requestedPath);
 
+        // Step 3b: Reject Windows drive-relative paths (C:foo) & NTFS Alternate Data Streams (:)
+        const driveRelativeMatch = /^[A-Za-z]:(?![\\/])/.test(decoded);
+        const colonRemainder = /^[A-Za-z]:/.test(decoded) ? decoded.slice(2) : decoded;
+        if (driveRelativeMatch || colonRemainder.includes(':')) {
+            SecurityLogger.error('Invalid drive-relative or alternate data stream path rejected', {
+                originalPath: requestedPath,
+            });
+            return {
+                valid: false,
+                error: 'INVALID_PATH',
+                details: 'Drive-relative paths and alternate data stream colons are not allowed',
+            };
+        }
+
         // Step 4: CHECK FOR '..' IN ORIGINAL PATH FIRST (BUG FIX #1)
         if (decoded.includes('..')) {
             SecurityLogger.error('Path traversal attempt detected', {
@@ -172,7 +186,9 @@ export class PathValidator {
         } catch (err: unknown) {
             const code = (err as { code?: string })?.code;
             if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-                return resolvedTarget;
+                throw err instanceof Error
+                    ? err
+                    : new Error(`Failed to resolve canonical path: ${String(err)}`);
             }
         }
 
@@ -210,9 +226,17 @@ export class PathValidator {
                 if (err instanceof Error && err.message.startsWith('Circular symbolic link')) {
                     throw err;
                 }
+                const errCode = (err as { code?: string })?.code;
+                if (errCode !== 'ENOENT' && errCode !== 'ENOTDIR') {
+                    throw err instanceof Error
+                        ? err
+                        : new Error(`Canonical path inspection failed: ${String(err)}`);
+                }
                 const parent = path.dirname(cursor);
                 if (parent === cursor) {
-                    return resolvedTarget;
+                    throw err instanceof Error
+                        ? err
+                        : new Error(`Unable to resolve root canonical path for "${resolvedTarget}"`);
                 }
                 pendingSegments.push(path.basename(cursor));
                 cursor = parent;

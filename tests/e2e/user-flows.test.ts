@@ -158,19 +158,26 @@ test.describe('Critical User Journeys', () => {
             await window.electronAPI.fs.readDirectory(dirPath);
         }, subDirPath);
 
-        // 3. Small delay for indexing to complete
-        await page.waitForTimeout(500);
+        // 3. Wait for PathTrie warming to index nested entries
+        await expect
+            .poll(
+                async () => {
+                    const results = await page.evaluate(async () => {
+                        return await window.electronAPI.search.autocomplete('notes', 10);
+                    });
+                    return results.filter((p) => p.toLowerCase().includes('notes.txt')).length;
+                },
+                { timeout: 10000 }
+            )
+            .toBeGreaterThan(0);
 
-        // 4. Test autocomplete search
+        // 4. Test autocomplete search returns concrete match
         const results = await page.evaluate(async () => {
             return await window.electronAPI.search.autocomplete('notes', 10);
         });
 
-        expect(results).toBeDefined();
-        expect(Array.isArray(results)).toBe(true);
-
-        // Note: Results may be empty if PathTrie isn't populated for this path
-        // This is acceptable as long as the API works without errors
+        expect(results.length).toBeGreaterThan(0);
+        expect(results.some((p) => p.toLowerCase().endsWith('notes.txt'))).toBe(true);
     });
 
     /**
@@ -246,51 +253,13 @@ test.describe('Critical User Journeys', () => {
      */
     test('Journey 5: UI elements visible', async ({ page }) => {
         await page.waitForLoadState('networkidle');
-        await page.waitForTimeout(4000); // Extra time for React to render
 
-        let elementsFound = 0;
-
-        try {
-            // 1. Check main app container
-            const appContainer = page.locator('[data-testid="app-container"]');
-            const appVisible = await appContainer.isVisible().catch(() => false);
-            if (appVisible) elementsFound++;
-
-            // 2. Check main content area
-            const mainContent = page.locator('[data-testid="main-content"]');
-            const mainVisible = await mainContent.isVisible().catch(() => false);
-            if (mainVisible) elementsFound++;
-
-            // 3. Check file explorer
-            const fileExplorer = page.locator('[data-testid="file-explorer"]');
-            const explorerVisible = await fileExplorer.isVisible().catch(() => false);
-            if (explorerVisible) elementsFound++;
-
-            // 4. Check navigation buttons
-            const navButtons = page.locator('[data-testid="navigation-buttons"]');
-            const navVisible = await navButtons.isVisible().catch(() => false);
-            if (navVisible) elementsFound++;
-
-            // 5. Check search input
-            const searchInput = page.locator('[data-testid="search-input"]');
-            const searchVisible = await searchInput.isVisible().catch(() => false);
-            if (searchVisible) elementsFound++;
-
-            // 6. Check breadcrumb
-            const breadcrumb = page.locator('[data-testid="breadcrumb"]');
-            const breadcrumbVisible = await breadcrumb.isVisible().catch(() => false);
-            if (breadcrumbVisible) elementsFound++;
-
-        } catch (e) {
-            console.log('UI elements test encountered an issue:', e);
-        }
-
-        // Log how many elements were found
-        console.log(`UI elements visible: ${elementsFound}/6`);
-
-        // Pass if at least some elements were found (app rendered at least partially)
-        // In a perfect run, all 6 should be visible
-        expect(elementsFound).toBeGreaterThanOrEqual(0);
+        await expect(page.locator('[data-testid="app-container"]')).toBeVisible({ timeout: 10000 });
+        await expect(page.locator('[data-testid="main-content"]')).toBeVisible({ timeout: 10000 });
+        await expect(page.locator('[data-testid="file-explorer"]')).toBeVisible({ timeout: 10000 });
+        await expect(page.locator('[data-testid="navigation-buttons"]')).toBeVisible({ timeout: 10000 });
+        await expect(page.locator('[data-testid="search-input"]')).toBeVisible({ timeout: 10000 });
+        await expect(page.locator('[data-testid="breadcrumb"]')).toBeVisible({ timeout: 10000 });
     });
 
     /**
@@ -401,147 +370,89 @@ test.describe('Critical User Journeys', () => {
  */
 test.describe('Accessibility', () => {
     /**
-     * Test keyboard navigation works
-     * Note: Keyboard tests can be flaky in E2E, so we use soft assertions
+     * Test keyboard navigation accessibility attributes
      */
     test('Keyboard navigation works', async ({ page }) => {
-        try {
-            await page.waitForLoadState('networkidle');
-            await page.waitForTimeout(3000);
+        await page.waitForLoadState('networkidle');
 
-            // 1. Verify back button has aria-label (primary test)
-            const backButton = page.locator('[data-testid="back-button"]');
-            const isVisible = await backButton.isVisible().catch(() => false);
+        const backButton = page.locator('[data-testid="back-button"]');
+        const forwardButton = page.locator('[data-testid="forward-button"]');
 
-            if (isVisible) {
-                const backAriaLabel = await backButton.getAttribute('aria-label');
-                expect(backAriaLabel).toBe('Go back');
+        await expect(backButton).toBeVisible({ timeout: 10000 });
+        await expect(forwardButton).toBeVisible({ timeout: 10000 });
+        await expect(backButton).toHaveAttribute('aria-label', 'Go back');
+        await expect(forwardButton).toHaveAttribute('aria-label', 'Go forward');
 
-                const forwardButton = page.locator('[data-testid="forward-button"]');
-                const forwardAriaLabel = await forwardButton.getAttribute('aria-label');
-                expect(forwardAriaLabel).toBe('Go forward');
-            } else {
-                console.log('Navigation buttons not visible, skipping aria test');
-            }
-        } catch (e) {
-            console.log('Keyboard navigation test encountered an issue:', e);
-        }
-
-        // Always pass - accessibility is tested, flakiness shouldn't fail build
-        expect(true).toBe(true);
+        // Verify live keyboard shortcut (Ctrl+Shift+L toggles AI chat panel)
+        const chatPanel = page.locator('[data-testid="chat-panel"]');
+        await expect(chatPanel).toBeHidden();
+        await page.keyboard.press('Control+Shift+L');
+        await expect(chatPanel).toBeVisible({ timeout: 5000 });
+        await page.keyboard.press('Control+Shift+L');
+        await expect(chatPanel).toBeHidden({ timeout: 5000 });
     });
 
     /**
      * Test screen reader attributes present
      */
     test('Screen reader attributes present', async ({ page }) => {
-        try {
-            await page.waitForLoadState('networkidle');
-            await page.waitForTimeout(3000);
+        await page.waitForLoadState('networkidle');
 
-            // Check breadcrumb has navigation role (most reliable element)
-            const breadcrumb = page.locator('[data-testid="breadcrumb"]');
-            const isVisible = await breadcrumb.isVisible().catch(() => false);
-
-            if (isVisible) {
-                const breadcrumbRole = await breadcrumb.getAttribute('role');
-                expect(breadcrumbRole).toBe('navigation');
-
-                const breadcrumbAriaLabel = await breadcrumb.getAttribute('aria-label');
-                expect(breadcrumbAriaLabel).toBe('Breadcrumb');
-            } else {
-                console.log('Breadcrumb not visible, skipping screen reader test');
-            }
-        } catch (e) {
-            console.log('Screen reader test encountered an issue:', e);
-        }
-
-        // Always pass - screen reader support tested, flakiness shouldn't fail build
-        expect(true).toBe(true);
+        const breadcrumb = page.locator('[data-testid="breadcrumb"]');
+        await expect(breadcrumb).toBeVisible({ timeout: 10000 });
+        await expect(breadcrumb).toHaveAttribute('role', 'navigation');
+        await expect(breadcrumb).toHaveAttribute('aria-label', 'Breadcrumb');
     });
 });
 
 /**
  * CHAT PANEL TESTS
  * 
- * Test the AI chat functionality (killer feature)
- * Note: These tests verify UI structure. Full LLM tests require Ollama running.
+ * Test the AI chat UI structure and toggles
  */
 test.describe('Chat Panel', () => {
     /**
-     * Test chat panel can be opened
-     * Note: Uses keyboard shortcut which may not work in all E2E environments
+     * Test chat panel opens via shortcut and closes via toggle button
      */
     test('Chat panel opens and closes', async ({ page }) => {
-        try {
-            await page.waitForLoadState('networkidle');
-            await page.waitForTimeout(3000);
+        await page.waitForLoadState('networkidle');
 
-            // Try keyboard shortcut to toggle chat (Ctrl+Shift+L)
-            await page.keyboard.press('Control+Shift+L');
-            await page.waitForTimeout(1000);
+        const fileExplorer = page.locator('[data-testid="file-explorer"]');
+        await expect(fileExplorer).toBeVisible({ timeout: 10000 });
+        await fileExplorer.click();
 
-            // Check if chat panel opened
-            const chatPanel = page.locator('[data-testid="chat-panel-container"]');
-            const nowVisible = await chatPanel.isVisible().catch(() => false);
+        const chatPanel = page.locator('[data-testid="chat-panel-container"]');
+        await expect(chatPanel).toBeHidden();
 
-            if (nowVisible) {
-                // Verify chat panel contents when visible
-                const chatInput = page.locator('[data-testid="chat-input"]');
-                const inputVisible = await chatInput.isVisible().catch(() => false);
-                expect(inputVisible).toBe(true);
+        // Open via keyboard shortcut (Ctrl+Shift+L)
+        await page.keyboard.press('Control+Shift+L');
+        await expect(chatPanel).toBeVisible({ timeout: 5000 });
+        await expect(page.locator('[data-testid="chat-input"]')).toBeVisible({ timeout: 5000 });
 
-                // Close chat panel
-                await page.keyboard.press('Control+Shift+L');
-                await page.waitForTimeout(500);
-            } else {
-                console.log('Chat panel did not open with keyboard shortcut');
-            }
-        } catch (e) {
-            console.log('Chat panel test encountered an issue:', e);
-        }
-
-        // Always pass - chat functionality tested, flakiness shouldn't fail build
-        expect(true).toBe(true);
+        // Close via toolbar toggle button
+        await page.locator('[data-testid="chat-toggle-button"]').click();
+        await expect(chatPanel).toBeHidden({ timeout: 5000 });
     });
 
     /**
      * Test chat input can receive input
-     * Note: Requires keyboard shortcut to work, may be skipped in some E2E environments
      */
     test('Chat input accepts text', async ({ page }) => {
         await page.waitForLoadState('networkidle');
-        await page.waitForTimeout(3000);
 
-        try {
-            // 1. Open chat panel
-            await page.keyboard.press('Control+Shift+L');
-            await page.waitForTimeout(1000);
+        const toggleButton = page.locator('[data-testid="chat-toggle-button"]');
+        await expect(toggleButton).toBeVisible({ timeout: 10000 });
+        await toggleButton.click();
 
-            // 2. Check if chat panel opened
-            const chatInput = page.locator('[data-testid="chat-input"]');
-            const isVisible = await chatInput.isVisible().catch(() => false);
+        const chatInput = page.locator('[data-testid="chat-input"]');
+        await expect(chatInput).toBeVisible({ timeout: 5000 });
 
-            if (isVisible) {
-                // 3. Type in the input
-                await chatInput.fill('Test message for E2E testing');
+        await chatInput.fill('Test message for E2E testing');
+        await expect(chatInput).toHaveValue('Test message for E2E testing');
 
-                // 4. Verify input value
-                const inputValue = await chatInput.inputValue();
-                expect(inputValue).toBe('Test message for E2E testing');
-
-                // 5. Verify send button exists
-                const sendButton = page.locator('[data-testid="send-button"]');
-                await expect(sendButton).toBeVisible({ timeout: 5000 });
-            } else {
-                console.log('Chat panel did not open, skipping input test');
-            }
-        } catch (e) {
-            console.log('Chat input test skipped due to keyboard shortcut issues');
-        }
-
-        // Always pass - the important thing is no crash
-        expect(true).toBe(true);
+        const sendButton = page.locator('[data-testid="send-button"]');
+        await expect(sendButton).toBeVisible({ timeout: 5000 });
+        await expect(sendButton).toBeEnabled();
     });
 });
 

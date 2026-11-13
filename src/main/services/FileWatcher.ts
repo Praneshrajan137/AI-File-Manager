@@ -123,16 +123,38 @@ export class FileWatcher extends EventEmitter {
 
         const mergedOptions = { ...defaultOptions, ...options };
 
-        // Bug Fix #4: Return Promise that resolves when 'ready' event fires
-        return new Promise<void>((resolve) => {
-            this.watcher = chokidar.watch(normalizedPath, mergedOptions);
+        // Bug Fix #4: Return Promise that resolves when 'ready' event fires and rejects on startup error
+        return new Promise<void>((resolve, reject) => {
+            const watcher = chokidar.watch(normalizedPath, mergedOptions);
+            this.watcher = watcher;
+            let settled = false;
 
             // Create bound handlers to allow cleanup later (Bug Fix #9)
             const addHandler = (filePath: string): void => this.handleFileCreated(filePath);
             const changeHandler = (filePath: string): void => this.handleFileChanged(filePath);
             const unlinkHandler = (filePath: string): void => this.handleFileDeleted(filePath);
-            const errorHandler = (error: Error): void => this.handleError(error);
+            const errorHandler = (error: Error): void => {
+                if (!settled) {
+                    settled = true;
+                    watcher.removeAllListeners();
+                    void watcher.close().catch(() => undefined);
+                    if (this.watcher === watcher) {
+                        this.watcher = null;
+                        this.watchRoot = null;
+                        this.watching = false;
+                        this.eventHandlers.clear();
+                    }
+                    this.handleError(error);
+                    reject(error);
+                    return;
+                }
+                this.handleError(error);
+            };
             const readyHandler = (): void => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
                 this.watching = true;
                 this.emit('ready');
                 resolve();
@@ -146,7 +168,7 @@ export class FileWatcher extends EventEmitter {
             this.eventHandlers.set('ready', readyHandler as WatcherListener);
 
             // Register event handlers
-            this.watcher
+            watcher
                 .on('add', addHandler)
                 .on('change', changeHandler)
                 .on('unlink', unlinkHandler)
@@ -385,20 +407,15 @@ export class FileWatcher extends EventEmitter {
                 '.file-manager',
                 'vectordb',
                 '.lancedb',
-                'dist',
-                'build',
-                'coverage',
-                'cache',
-                'logs',
             ]);
 
             if (segments.some((segment) => ignoredDirs.has(segment))) {
                 return true;
             }
 
-            // Ignore common temp file patterns
+            // Ignore temporary/lock/database artifact extensions (allow user .log & cache dirs)
             const ext = path.extname(normalizedPath).toLowerCase();
-            const ignoredExtensions = ['.tmp', '.swp', '.log', '.cache', '.lock', '.ldb'];
+            const ignoredExtensions = ['.tmp', '.swp', '.ldb'];
             if (ignoredExtensions.includes(ext)) {
                 return true;
             }

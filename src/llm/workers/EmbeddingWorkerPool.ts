@@ -122,6 +122,20 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
      */
     private async _initialize(): Promise<void> {
         return new Promise<void>((resolve, reject) => {
+            let settled = false;
+            const settleResolve = (): void => {
+                if (!settled) {
+                    settled = true;
+                    resolve();
+                }
+            };
+            const settleReject = (err: Error): void => {
+                if (!settled) {
+                    settled = true;
+                    reject(err);
+                }
+            };
+
             try {
                 // Determine worker script path
                 // In development: src/llm/workers/embeddingWorker.ts
@@ -132,7 +146,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
 
                 // Set up message handler
                 this.worker.on('message', (response: WorkerResponse) => {
-                    this.handleWorkerMessage(response, resolve);
+                    this.handleWorkerMessage(response, settleResolve, settleReject);
                 });
 
                 // Handle worker errors
@@ -140,7 +154,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                     console.error('[EmbeddingWorkerPool] Worker error:', error);
                     this.handleWorkerError(error);
                     if (!this.workerReady) {
-                        reject(error);
+                        settleReject(error);
                     }
                 });
 
@@ -149,8 +163,13 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                     if (code !== 0) {
                         console.error(`[EmbeddingWorkerPool] Worker exited with code ${code}`);
                     }
+                    const wasReady = this.workerReady;
                     this.workerReady = false;
                     this.worker = null;
+
+                    if (!wasReady) {
+                        settleReject(new Error(`Worker exited before initialization with code ${code}`));
+                    }
 
                     // Reject all pending requests
                     for (const [id, request] of this.pendingRequests) {
@@ -163,7 +182,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                 this.worker.postMessage({ type: 'init' } as WorkerRequest);
 
             } catch (error) {
-                reject(error);
+                settleReject(error instanceof Error ? error : new Error(String(error)));
             }
         });
     }
@@ -191,7 +210,8 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
      */
     private handleWorkerMessage(
         response: WorkerResponse,
-        initResolve?: (value: void) => void
+        initResolve?: (value: void) => void,
+        initReject?: (error: Error) => void
     ): void {
         switch (response.type) {
             case 'ready':
@@ -226,7 +246,9 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
 
             case 'error':
                 console.error('[EmbeddingWorkerPool] Worker error:', response.message);
-                if (response.id !== undefined && response.id >= 0) {
+                if (response.id === -1 && initReject) {
+                    initReject(new Error(response.message || 'Worker initialization failed'));
+                } else if (response.id !== undefined && response.id >= 0) {
                     const request = this.pendingRequests.get(response.id);
                     if (request) {
                         request.reject(new Error(response.message || 'Unknown worker error'));
@@ -345,21 +367,29 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
 
             // Wait for worker to exit
             await new Promise<void>((resolve) => {
-                if (this.worker) {
-                    this.worker.on('exit', () => {
-                        resolve();
-                    });
-
-                    // Force terminate after 5 seconds
-                    setTimeout(async () => {
-                        if (this.worker) {
-                            await this.worker.terminate();
-                        }
-                        resolve();
-                    }, 5000);
-                } else {
+                if (!this.worker) {
                     resolve();
+                    return;
                 }
+                let done = false;
+                const forceTimer = setTimeout(async () => {
+                    if (done) return;
+                    done = true;
+                    if (this.worker) {
+                        await this.worker.terminate();
+                    }
+                    resolve();
+                }, 5000);
+                if (typeof forceTimer.unref === 'function') {
+                    forceTimer.unref();
+                }
+
+                this.worker.once('exit', () => {
+                    if (done) return;
+                    done = true;
+                    clearTimeout(forceTimer);
+                    resolve();
+                });
             });
 
             this.worker = null;

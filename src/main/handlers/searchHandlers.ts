@@ -359,8 +359,16 @@ async function handleQuery(
       process.platform === 'win32'
         ? path.resolve(input.searchRoot).toLowerCase()
         : path.resolve(input.searchRoot);
+    const normalizedRootPrefix = normalizedRoot.endsWith(path.sep)
+      ? normalizedRoot
+      : `${normalizedRoot}${path.sep}`;
 
-    const trieCandidates = pathTrie.autocomplete(queryLower, 50);
+    const trieCandidates = Array.from(
+      new Set([
+        ...pathTrie.autocomplete(queryLower, 50),
+        ...pathTrie.searchSubstring(queryLower, 50),
+      ])
+    );
     for (const candidatePath of trieCandidates) {
       const normalizedCandidate =
         process.platform === 'win32'
@@ -371,8 +379,11 @@ async function handleQuery(
       }
       if (
         normalizedCandidate !== normalizedRoot &&
-        !normalizedCandidate.startsWith(normalizedRoot + path.sep)
+        !normalizedCandidate.startsWith(normalizedRootPrefix)
       ) {
+        continue;
+      }
+      if (!path.basename(candidatePath).toLowerCase().includes(queryLower)) {
         continue;
       }
       try {

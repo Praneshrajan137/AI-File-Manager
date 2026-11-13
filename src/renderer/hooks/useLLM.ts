@@ -59,33 +59,59 @@ export function useLLM(): UseLLMReturn {
 
     try {
       let responseContent = '';
+      const assistantMessageId = messageIdCounter++;
+      const assistantTimestamp = Date.now();
 
       // Use streaming response from LLM
-      await window.electronAPI.llm.query(query, (chunk: string) => {
+      const result = await window.electronAPI.llm.query(query, (chunk: string) => {
         responseContent += chunk;
+        const latestContent = responseContent;
 
         setMessages(prev => {
-          const newMessages = [...prev];
-          const lastIndex = newMessages.length - 1;
-          const lastMsg = newMessages[lastIndex];
-
-          if (lastMsg?.role === 'assistant') {
-            newMessages[lastIndex] = {
-              ...lastMsg,
-              content: responseContent,
-            };
-          } else {
-            newMessages.push({
-              id: messageIdCounter++,
-              role: 'assistant',
-              content: responseContent,
-              timestamp: Date.now(),
-            });
+          const existingIndex = prev.findIndex(msg => msg.id === assistantMessageId);
+          if (existingIndex >= 0) {
+            return prev.map((msg, idx) =>
+              idx === existingIndex ? { ...msg, content: latestContent } : msg
+            );
           }
-
-          return newMessages;
+          return [
+            ...prev,
+            {
+              id: assistantMessageId,
+              role: 'assistant',
+              content: latestContent,
+              timestamp: assistantTimestamp,
+            },
+          ];
         });
       });
+
+      if (!result?.success && result?.error) {
+        const errorText = result.error;
+        if (!responseContent.includes(errorText)) {
+          const finalContent =
+            responseContent.trim().length > 0
+              ? `${responseContent}\n\nError: ${errorText}`
+              : `Error: ${errorText}`;
+          setMessages(prev => {
+            const existingIndex = prev.findIndex(msg => msg.id === assistantMessageId);
+            if (existingIndex >= 0) {
+              return prev.map((msg, idx) =>
+                idx === existingIndex ? { ...msg, content: finalContent } : msg
+              );
+            }
+            return [
+              ...prev,
+              {
+                id: assistantMessageId,
+                role: 'assistant',
+                content: finalContent,
+                timestamp: assistantTimestamp,
+              },
+            ];
+          });
+        }
+      }
 
       loadingRef.current = false;
       setLoading(false);
@@ -110,8 +136,15 @@ export function useLLM(): UseLLMReturn {
 
   const startIndexing = useCallback(async (path: string) => {
     try {
-      await window.electronAPI.llm.startIndexing(path);
-      setIndexingStatus(prev => ({ ...prev, inProgress: true }));
+      const response = await window.electronAPI.llm.startIndexing(path);
+      if (!response?.success) {
+        throw new Error(response?.error || response?.message || 'Failed to start indexing');
+      }
+      setIndexingStatus(prev => ({
+        ...prev,
+        total: response.total ?? prev.total,
+        inProgress: true,
+      }));
     } catch (error) {
       console.error('Failed to start indexing:', error);
       throw error;
@@ -138,18 +171,23 @@ export function useLLM(): UseLLMReturn {
     }
   }, []);
 
-  // Poll indexing status
+  // Poll indexing status (hydrates once on mount and polls while active)
   useEffect(() => {
-    let intervalId: NodeJS.Timeout;
+    let cancelled = false;
+    let intervalId: NodeJS.Timeout | undefined;
 
     const pollIndexingStatus = async () => {
       try {
         const status = await window.electronAPI.llm.getIndexingStatus();
-        setIndexingStatus(status);
+        if (!cancelled) {
+          setIndexingStatus(status);
+        }
       } catch (error) {
         console.error('Failed to get indexing status:', error);
       }
     };
+
+    void pollIndexingStatus();
 
     // Poll every 2 seconds if indexing is in progress
     if (indexingStatus.inProgress) {
@@ -157,6 +195,7 @@ export function useLLM(): UseLLMReturn {
     }
 
     return () => {
+      cancelled = true;
       if (intervalId) {
         clearInterval(intervalId);
       }

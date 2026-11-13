@@ -14,7 +14,7 @@ import { ErrorSerializer, SerializedError } from '@main/middleware/ErrorSerializ
 import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
 import { SecurityLogger, IPCLogger } from '@shared/logging';
 import { ConfigManager } from '@shared/config';
-import { ValidationError } from '@shared/errors';
+import { IPCError, ValidationError } from '@shared/errors';
 import {
   IPC_CONTRACTS,
   IPCChannel,
@@ -237,8 +237,8 @@ export function serializeIPCError(error: unknown): IPCSerializedErrorPayload {
   return {
     name: serialized.name,
     code,
-    message: serialized.message,
-    userMessage,
+    message: ErrorSerializer.sanitizeText(serialized.message),
+    userMessage: ErrorSerializer.sanitizeText(userMessage),
     isOperational: serialized.isOperational,
     timestamp: serialized.timestamp,
     details: serialized.metadata,
@@ -269,7 +269,7 @@ export async function validateAndInvokeContract<C extends IPCChannel>(
       throw new ValidationError(
         'INVALID_INPUT',
         `Invalid IPC payload for ${channel} (${fieldPath}): ${detail}`,
-        { field: fieldPath, value: rawRequest }
+        { field: fieldPath }
       );
     }
 
@@ -440,7 +440,9 @@ const rateLimiter = new RateLimiter();
  */
 export function checkRateLimit(channel: string, policy?: IPCRateLimitPolicy): void {
   if (!rateLimiter.checkLimit(channel, policy)) {
-    throw new Error('Rate limit exceeded. Please try again later.');
+    throw new IPCError('UNAUTHORIZED_REQUEST', 'Rate limit exceeded. Please try again later.', {
+      channel,
+    });
   }
 }
 

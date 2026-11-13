@@ -17,6 +17,8 @@ interface InputProps {
   className?: string;
   name?: string;
   id?: string;
+  'data-testid'?: string;
+  'aria-label'?: string;
 }
 
 export const Input: React.FC<InputProps> = ({
@@ -36,6 +38,8 @@ export const Input: React.FC<InputProps> = ({
   className = '',
   name,
   id,
+  'data-testid': dataTestId,
+  'aria-label': ariaLabel,
 }) => {
   const baseClasses = 'w-full px-3 py-2 text-sm border rounded-lg transition-colors focus:outline-none focus:ring-2';
 
@@ -77,6 +81,8 @@ export const Input: React.FC<InputProps> = ({
         placeholder={placeholder}
         disabled={disabled}
         autoFocus={autoFocus}
+        data-testid={dataTestId}
+        aria-label={ariaLabel}
         className={`
           ${baseClasses}
           ${stateClasses}

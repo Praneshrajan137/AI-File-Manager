@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, RefreshCw, X, ShieldCheck, Cpu, Database, HardDrive, Layers } from 'lucide-react';
 import type { RuntimeDiagnosticsSnapshot } from '@shared/diagnostics';
 
@@ -11,17 +11,29 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
   const [snapshot, setSnapshot] = useState<RuntimeDiagnosticsSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isOpenRef = useRef(isOpen);
+  const requestSeqRef = useRef(0);
+  isOpenRef.current = isOpen;
 
   const loadDiagnostics = useCallback(async (): Promise<void> => {
+    const seq = ++requestSeqRef.current;
     setLoading(true);
     setError(null);
     try {
       const next = await window.electronAPI.diagnostics.getSnapshot();
+      if (!isOpenRef.current || seq !== requestSeqRef.current) {
+        return;
+      }
       setSnapshot(next);
     } catch (err: unknown) {
+      if (!isOpenRef.current || seq !== requestSeqRef.current) {
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Failed to load diagnostics');
     } finally {
-      setLoading(false);
+      if (isOpenRef.current && seq === requestSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -99,6 +111,12 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
           {error && (
             <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
               {error}
+            </div>
+          )}
+
+          {loading && !snapshot && !error && (
+            <div className="p-6 text-center text-sm text-gray-500">
+              Loading runtime diagnostics...
             </div>
           )}
 

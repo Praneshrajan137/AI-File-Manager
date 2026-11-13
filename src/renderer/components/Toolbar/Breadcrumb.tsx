@@ -1,22 +1,38 @@
 import React from 'react';
 import { Home, ChevronRight } from 'lucide-react';
-import * as pathLib from 'path';
 
 interface BreadcrumbProps {
   path: string;
   onNavigate: (path: string) => void;
 }
 
-export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
-  // Use platform-specific path separator (/ on Unix, \ on Windows)
-  const separator = pathLib.sep;
-  const parsedPath = pathLib.parse(path);
-  const root = parsedPath.root;
+function parseBreadcrumbPath(targetPath: string): { root: string; separator: string; segments: string[] } {
+  const uncMatch = /^(\\\\[^\\/]+[\\/][^\\/]+)(?:[\\/](.*))?$/.exec(targetPath);
+  if (uncMatch) {
+    const shareRoot = uncMatch[1].replace(/\//g, '\\');
+    const remainder = uncMatch[2] || '';
+    const segments = remainder.split(/[\\/]+/).filter((segment) => segment.length > 0);
+    return { root: shareRoot, separator: '\\', segments };
+  }
 
-  // Split and filter out empty segments and the root itself
-  const segments = path.split(separator).filter(segment => {
-    return segment && segment !== root && segment !== root.replace(separator, '');
-  });
+  const isWindowsStyle = /^[A-Za-z]:/.test(targetPath) || (targetPath.includes('\\') && !targetPath.includes('/'));
+  const separator = isWindowsStyle ? '\\' : '/';
+  const driveMatch = /^([A-Za-z]:)(?:[\\/]|$)/.exec(targetPath);
+
+  if (driveMatch) {
+    const drivePrefix = `${driveMatch[1]}\\`;
+    const remainder = targetPath.slice(driveMatch[0].length);
+    const segments = remainder.split(/[\\/]+/).filter((segment) => segment.length > 0);
+    return { root: drivePrefix, separator: '\\', segments };
+  }
+
+  const root = targetPath.startsWith('/') ? '/' : '';
+  const segments = targetPath.split(/[\\/]+/).filter((segment) => segment.length > 0);
+  return { root, separator, segments };
+}
+
+export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
+  const { root, separator, segments } = parseBreadcrumbPath(path);
 
   // Handle home button click - navigate to user's home directory
   const handleHomeClick = async () => {
@@ -29,22 +45,39 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
   };
 
   return (
-    <div className="flex items-center gap-1.5 text-sm overflow-x-auto" role="navigation" aria-label="Breadcrumb" data-testid="breadcrumb">
+    <div
+      className="flex items-center gap-1.5 text-sm overflow-x-auto flex-1 min-w-[140px]"
+      role="navigation"
+      aria-label="Breadcrumb"
+      data-testid="breadcrumb"
+    >
       <button
         onClick={handleHomeClick}
-        className="p-1.5 rounded-md text-primary-500 hover:text-primary-700 hover:bg-primary-50 transition-all"
+        className="p-1.5 rounded-md text-primary-500 hover:text-primary-700 hover:bg-primary-50 transition-all flex-shrink-0"
         aria-label="Home"
       >
         <Home className="w-4 h-4" />
       </button>
 
+      {root.startsWith('\\\\') && (
+        <React.Fragment key={root}>
+          <ChevronRight className="w-3.5 h-3.5 text-primary-300 flex-shrink-0" />
+          <button
+            onClick={() => onNavigate(root)}
+            className={`px-2 py-1 rounded-md truncate max-w-[180px] flex-shrink-0 transition-all ${
+              segments.length === 0
+                ? 'font-medium text-primary-900 bg-primary-50'
+                : 'text-primary-600 hover:text-primary-800 hover:bg-primary-50'
+            }`}
+          >
+            {root}
+          </button>
+        </React.Fragment>
+      )}
+
       {segments.map((segment, idx) => {
-        // Build path incrementally from root
-        // On Windows: root is "C:\", segments are ["Users", "Documents"]
-        // On Unix: root is "/", segments are ["home", "user"]
         const pathSegments = segments.slice(0, idx + 1);
-        // Only add separator if root doesn't already end with it
-        const needsSeparator = !root.endsWith(separator);
+        const needsSeparator = root.length > 0 && !root.endsWith(separator);
         const fullPath = root + (needsSeparator ? separator : '') + pathSegments.join(separator);
         const isLast = idx === segments.length - 1;
 
@@ -53,7 +86,7 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
             <ChevronRight className="w-3.5 h-3.5 text-primary-300 flex-shrink-0" />
             <button
               onClick={() => onNavigate(fullPath)}
-              className={`px-2 py-1 rounded-md truncate max-w-[150px] transition-all ${isLast
+              className={`px-2 py-1 rounded-md truncate max-w-[150px] flex-shrink-0 transition-all ${isLast
                   ? 'font-medium text-primary-900 bg-primary-50'
                   : 'text-primary-600 hover:text-primary-800 hover:bg-primary-50'
                 }`}

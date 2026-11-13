@@ -7,8 +7,8 @@
 
 import { ipcMain } from 'electron';
 import { registerFileSystemHandlers } from './fileSystemHandlers';
-import { registerNavigationHandlers } from './navigationHandlers';
-import { registerSearchHandlers } from './searchHandlers';
+import { registerNavigationHandlers, resetNavigationServices } from './navigationHandlers';
+import { registerSearchHandlers, resetSearchService } from './searchHandlers';
 import { registerLLMHandlers } from './llmHandlers';
 import { registerShellHandlers } from './shellHandlers';
 import { withContract, resolveAllowedRoots } from './securityMiddleware';
@@ -72,6 +72,7 @@ export function registerAllHandlers(): void {
     IPCLogger.error('Failed to register IPC handlers', {
       error: error instanceof Error ? error.message : String(error),
     });
+    unregisterAllHandlers();
     throw error;
   }
 }
@@ -87,6 +88,8 @@ export function unregisterAllHandlers(): void {
   }
 
   registeredChannels.clear();
+  resetSearchService();
+  resetNavigationServices();
   resetReactiveWorkspaceKernelSync();
   RuntimeDiagnostics.getInstance().setRegisteredChannels(0);
 

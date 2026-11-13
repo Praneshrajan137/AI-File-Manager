@@ -11,8 +11,11 @@
 
 import React from 'react';
 import { createRoot } from 'react-dom/client';
+import { installElectronAPI } from './utils/installElectronAPI';
 import App from './App';
 import './index.css';
+
+installElectronAPI();
 
 /**
  * Get root element from DOM.

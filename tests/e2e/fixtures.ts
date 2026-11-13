@@ -24,8 +24,11 @@ export const test = base.extend<ElectronTestFixtures>({
   // Launch Electron app before each test
   electronApp: async ({}, use) => {
     const electronApp = await launchElectronApp();
-    await use(electronApp);
-    await closeElectronApp(electronApp);
+    try {
+      await use(electronApp);
+    } finally {
+      await closeElectronApp(electronApp);
+    }
   },
 
   // Get first window/page from Electron app

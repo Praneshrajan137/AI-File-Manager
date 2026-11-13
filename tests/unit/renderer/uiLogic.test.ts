@@ -2,9 +2,13 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   extractBasename,
+  extractParentDirectory,
   isPathInsideDirectory,
   normalizeComparablePath,
 } from '@renderer/utils/pathHelpers';
+import { Breadcrumb } from '@renderer/components/Toolbar/Breadcrumb';
+import { wrapBridgeNamespace } from '@renderer/utils/installElectronAPI';
+import { wrapIPCError, wrapIPCSuccess } from '@shared/ipc/envelope';
 import { FileGrid } from '@renderer/components/FileExplorer/FileGrid';
 import { FilePreviewDrawer } from '@renderer/components/Preview/FilePreviewDrawer';
 import { FileContextMenu } from '@renderer/components/ContextMenu/FileContextMenu';
@@ -62,6 +66,27 @@ describe('Renderer UI & M5 Control Upgrades', () => {
       expect(
         isPathInsideDirectory('/tmp/work-other/file.txt', '/tmp/work')
       ).toBe(false);
+    });
+
+    it('preserves root "/" comparison, drive roots, extractParentDirectory, and UNC breadcrumbs', () => {
+      expect(normalizeComparablePath('/')).toBe('/');
+      expect(isPathInsideDirectory('/home/alice/doc.txt', '/')).toBe(true);
+      expect(isPathInsideDirectory('C:\\Users\\doc.txt', 'c:\\')).toBe(true);
+
+      expect(extractParentDirectory('C:\\Users\\alice\\docs\\notes.txt')).toBe('C:\\Users\\alice\\docs');
+      expect(extractParentDirectory('/tmp/workspace/report.md')).toBe('/tmp/workspace');
+      expect(extractParentDirectory('C:\\notes.txt')).toBe('C:\\');
+      expect(extractParentDirectory('/notes.txt')).toBe('/');
+
+      const uncHtml = renderToStaticMarkup(
+        React.createElement(Breadcrumb, {
+          path: '\\\\fileserver\\shared\\projects',
+          onNavigate: () => undefined,
+        })
+      );
+      expect(uncHtml).toContain('fileserver');
+      expect(uncHtml).toContain('shared');
+      expect(uncHtml).toContain('projects');
     });
   });
 
@@ -254,6 +279,45 @@ describe('Renderer UI & M5 Control Upgrades', () => {
       expect(toolbarHtml).toContain('data-testid="diagnostics-button"');
       expect(modalHtml).toContain('Kernel Runtime Diagnostics');
       expect(modalHtml).toContain('data-testid="diagnostics-modal"');
+    });
+  });
+
+  describe('installElectronAPI / wrapBridgeNamespace', () => {
+    it('rehydrates structured Error.code and details from IPC error envelopes while passing sync and success calls', async () => {
+      const bridge = {
+        fs: {
+          readDirectory: async () => wrapIPCSuccess(['ok']),
+          failAccess: async () =>
+            wrapIPCError({
+              name: 'PathValidationError',
+              code: 'UNAUTHORIZED_ACCESS',
+              message: 'Raw internal path refused',
+              userMessage: 'Access denied outside workspace',
+              isOperational: true,
+              details: { rootCount: 1 },
+            }),
+        },
+        fileWatcher: {
+          subscribe: () => () => 'unsubscribed',
+        },
+      };
+
+      const wrapped = wrapBridgeNamespace(bridge);
+      await expect(wrapped.fs.readDirectory()).resolves.toEqual(['ok']);
+      expect(wrapped.fileWatcher.subscribe()()).toBe('unsubscribed');
+
+      let caught: (Error & { code?: string; userMessage?: string; details?: Record<string, unknown> }) | null = null;
+      try {
+        await wrapped.fs.failAccess();
+      } catch (err) {
+        caught = err as Error & { code?: string; userMessage?: string; details?: Record<string, unknown> };
+      }
+
+      expect(caught).toBeInstanceOf(Error);
+      expect(caught?.name).toBe('PathValidationError');
+      expect(caught?.code).toBe('UNAUTHORIZED_ACCESS');
+      expect(caught?.message).toBe('Access denied outside workspace');
+      expect(caught?.details).toEqual({ rootCount: 1 });
     });
   });
 });

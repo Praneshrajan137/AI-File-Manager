@@ -14,29 +14,40 @@ export const DirectoryTreeNode: React.FC<DirectoryTreeNodeProps> = ({
   level = 0
 }) => {
   const [expanded, setExpanded] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [children, setChildren] = useState<FileNode[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const handleToggle = async () => {
-    if (!expanded && children.length === 0) {
-      // Lazy load children on first expand
+  const loadChildrenIfNeeded = async (): Promise<void> => {
+    if (!loaded) {
       setLoading(true);
       try {
         const subDirs = await window.electronAPI.fs.readDirectory(node.path);
         const dirs = subDirs.filter(f => f.isDirectory && f.isHidden !== true);
         setChildren(dirs);
+        setLoaded(true);
       } catch (error) {
         console.error('Failed to load children:', error);
       } finally {
         setLoading(false);
       }
     }
-    setExpanded(!expanded);
   };
 
-  const handleClick = () => {
-    handleToggle();
-    onNavigate(node.path); // Navigate to the folder when clicked
+  const handleChevronClick = async (e: React.MouseEvent): Promise<void> => {
+    e.stopPropagation();
+    if (!expanded) {
+      await loadChildrenIfNeeded();
+    }
+    setExpanded((prev) => !prev);
+  };
+
+  const handleClick = (): void => {
+    if (!expanded) {
+      void loadChildrenIfNeeded();
+      setExpanded(true);
+    }
+    onNavigate(node.path);
   };
 
   return (
@@ -46,11 +57,18 @@ export const DirectoryTreeNode: React.FC<DirectoryTreeNodeProps> = ({
         onClick={handleClick}
         style={{ paddingLeft: `${level * 16 + 8}px` }}
       >
-        <ChevronRight
-          className={`w-4 h-4 transition-transform ${
-            expanded ? 'rotate-90' : ''
-          }`}
-        />
+        <button
+          type="button"
+          onClick={handleChevronClick}
+          className="p-0.5 rounded hover:bg-gray-200"
+          aria-label={expanded ? `Collapse ${node.name}` : `Expand ${node.name}`}
+        >
+          <ChevronRight
+            className={`w-4 h-4 transition-transform ${
+              expanded ? 'rotate-90' : ''
+            }`}
+          />
+        </button>
         <Folder className="w-4 h-4 text-blue-500" />
         <span className="text-sm truncate flex-1">{node.name}</span>
         {loading && <Loader className="w-3 h-3 animate-spin text-gray-400" />}
