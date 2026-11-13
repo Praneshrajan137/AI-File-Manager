@@ -241,14 +241,14 @@ export class Logger {
    * userLogger.info('Action performed', { action: 'login' });
    * // Logs with { userId: '123', requestId: 'abc', action: 'login' }
    */
-  child(defaultMetadata: LogMetadata): Omit<Logger, 'child' | 'startTimer'> {
+  child(defaultMetadata: LogMetadata): Pick<Logger, 'error' | 'warn' | 'info' | 'debug' | 'trace'> {
     return {
       error: (msg: string, meta?: LogMetadata) => this.error(msg, { ...defaultMetadata, ...meta }),
       warn: (msg: string, meta?: LogMetadata) => this.warn(msg, { ...defaultMetadata, ...meta }),
       info: (msg: string, meta?: LogMetadata) => this.info(msg, { ...defaultMetadata, ...meta }),
       debug: (msg: string, meta?: LogMetadata) => this.debug(msg, { ...defaultMetadata, ...meta }),
       trace: (msg: string, meta?: LogMetadata) => this.trace(msg, { ...defaultMetadata, ...meta }),
-    } as any;
+    };
   }
 
   /**

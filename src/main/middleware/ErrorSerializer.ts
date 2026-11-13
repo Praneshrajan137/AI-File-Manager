@@ -59,6 +59,13 @@ export interface SerializationOptions {
   sensitiveKeys?: string[];
 }
 
+interface DeserializedError extends Error {
+  code?: unknown;
+  timestamp?: unknown;
+  isOperational?: unknown;
+  metadata?: unknown;
+}
+
 /**
  * Error serializer for IPC transmission.
  */
@@ -268,15 +275,15 @@ export class ErrorSerializer {
    * console.error(error.message);
    */
   static deserialize(serialized: SerializedError): Error {
-    const error = new Error(serialized.message);
+    const error: DeserializedError = new Error(serialized.message);
     error.name = serialized.name;
     error.stack = serialized.stack;
     
     // Attach additional properties
-    (error as any).code = serialized.code;
-    (error as any).timestamp = serialized.timestamp;
-    (error as any).isOperational = serialized.isOperational;
-    (error as any).metadata = serialized.metadata;
+    error.code = serialized.code;
+    error.timestamp = serialized.timestamp;
+    error.isOperational = serialized.isOperational;
+    error.metadata = serialized.metadata;
 
     return error;
   }

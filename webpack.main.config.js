@@ -30,6 +30,7 @@ module.exports = {
         alias: {
             '@shared': path.resolve(__dirname, 'src/shared'),
             '@main': path.resolve(__dirname, 'src/main'),
+            '@llm': path.resolve(__dirname, 'src/llm'),
         },
     },
 

@@ -133,15 +133,19 @@ export class FileSystemError extends BaseError {
    * }
    */
   static fromFsError(
-    fsError: any,
+    fsError: unknown,
     path?: string,
     operation?: string
   ): FileSystemError {
+    const errRecord =
+      fsError && typeof fsError === 'object'
+        ? (fsError as { code?: string; message?: string })
+        : {};
     let code: FileSystemErrorCode = 'UNKNOWN';
-    let message = fsError.message || 'Unknown file system error';
+    let message = errRecord.message || 'Unknown file system error';
 
     // Map Node.js fs error codes to our error codes
-    switch (fsError.code) {
+    switch (errRecord.code) {
       case 'ENOENT':
         code = 'FILE_NOT_FOUND';
         message = path 
@@ -185,13 +189,13 @@ export class FileSystemError extends BaseError {
 
       default:
         code = 'UNKNOWN';
-        message = `File system error (${fsError.code || 'unknown'}): ${message}`;
+        message = `File system error (${errRecord.code || 'unknown'}): ${message}`;
     }
 
     const error = new FileSystemError(code, message, {
       path,
       operation,
-      originalCode: fsError.code,
+      originalCode: errRecord.code,
     });
     
     // Store original error for debugging (as non-enumerable property)

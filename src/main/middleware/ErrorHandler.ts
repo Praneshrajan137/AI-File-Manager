@@ -131,7 +131,7 @@ export class ErrorHandler {
    */
   private registerHandlers(): void {
     // Unhandled Promise rejections
-    process.on('unhandledRejection', (reason: any, promise: Promise<any>) => {
+    process.on('unhandledRejection', (reason: unknown, promise: Promise<unknown>) => {
       const error = reason instanceof Error 
         ? reason 
         : new Error(`Unhandled Promise rejection: ${String(reason)}`);
@@ -248,7 +248,7 @@ export class ErrorHandler {
    * 
    * @param error - Operational error
    */
-  private defaultOperationalHandler(error: BaseError): void {
+  private defaultOperationalHandler(_error: BaseError): void {
     // Default: just log (already done in handleOperationalError)
     // Can be overridden to show notifications, update UI, etc.
   }
@@ -258,7 +258,7 @@ export class ErrorHandler {
    * 
    * @param error - Programmer error
    */
-  private defaultProgrammerHandler(error: Error): void {
+  private defaultProgrammerHandler(_error: Error): void {
     // Default: just log (already done in handleProgrammerError)
     // Can be overridden to send error reports, alert developers, etc.
   }

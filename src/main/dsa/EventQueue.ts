@@ -4,7 +4,7 @@
  * @author Praneshrajan (https://github.com/Praneshrajan137)
  */
 
-import { FileEvent, EventPriority } from '@shared/contracts';
+import { FileEvent } from '@shared/contracts';
 
 /**
  * EventQueue - Min-Heap Priority Queue for file system events.
@@ -221,7 +221,7 @@ export class EventQueue {
      * @complexity O(log n)
      */
     private heapifyDown(index: number): void {
-        while (true) {
+        while (index < this.heap.length) {
             const leftChild = 2 * index + 1;
             const rightChild = 2 * index + 2;
             let smallest = index;

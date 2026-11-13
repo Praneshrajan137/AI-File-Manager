@@ -86,7 +86,7 @@ export class ErrorFactory {
    * }
    */
   static fromFsError(
-    fsError: any,
+    fsError: unknown,
     path?: string,
     operation?: string
   ): FileSystemError {

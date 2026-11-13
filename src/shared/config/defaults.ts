@@ -61,7 +61,7 @@ export const defaultConfig: AppConfig = {
   app: {
     name: 'File Manager',
     version: '0.1.0',
-    environment: process.env.NODE_ENV as any || 'development',
+    environment: (process.env.NODE_ENV as 'development' | 'production' | 'test') || 'development',
   },
 
   window: {
@@ -87,7 +87,7 @@ export const defaultConfig: AppConfig = {
   },
 
   logging: {
-    level: (process.env.APP_LOG_LEVEL as any) || (process.env.NODE_ENV === 'development' ? 'debug' : 'info'),
+    level: (process.env.APP_LOG_LEVEL as 'error' | 'warn' | 'info' | 'debug' | 'trace') || (process.env.NODE_ENV === 'development' ? 'debug' : 'info'),
     console: process.env.NODE_ENV === 'development',
     file: process.env.NODE_ENV === 'production',
     maxFiles: 30,

@@ -33,6 +33,10 @@ import { type AppConfig, type PartialAppConfig } from './schema';
 import { defaultConfig } from './defaults';
 import { validateConfigOrThrow } from './validator';
 
+type DeepPartialAppConfig = {
+  [K in keyof AppConfig]?: Partial<AppConfig[K]>;
+};
+
 /**
  * Config manager options.
  */
@@ -123,6 +127,16 @@ export class ConfigManager {
   }
 
   /**
+   * Reset singleton instance (test helper only).
+   */
+  static resetForTesting(): void {
+    if (ConfigManager.instance) {
+      ConfigManager.instance.stopWatching();
+      ConfigManager.instance = null;
+    }
+  }
+
+  /**
    * Get configuration value by path.
    * 
    * Uses dot notation to access nested values.
@@ -135,13 +149,14 @@ export class ConfigManager {
    * const width = config.get('window.width'); // 1200
    */
   get<K extends keyof AppConfig>(key: K): AppConfig[K];
-  get(path: string): any {
+  get(path: string): unknown;
+  get(path: string): unknown {
     const keys = path.split('.');
-    let value: any = this.config;
+    let value: unknown = this.config;
 
     for (const key of keys) {
       if (value && typeof value === 'object' && key in value) {
-        value = value[key];
+        value = (value as Record<string, unknown>)[key];
       } else {
         return undefined;
       }
@@ -163,16 +178,17 @@ export class ConfigManager {
    * config.set('llm.model', 'llama3.3');
    * config.set('window.width', 1600, true); // Save to file
    */
-  set(path: string, value: any, save: boolean = false): void {
+  set(path: string, value: unknown, save: boolean = false): void {
     const keys = path.split('.');
     const lastKey = keys.pop()!;
-    let target: any = this.config;
+    let target: Record<string, unknown> = this.config as unknown as Record<string, unknown>;
 
     for (const key of keys) {
-      if (!(key in target)) {
+      const current = target[key];
+      if (!current || typeof current !== 'object' || Array.isArray(current)) {
         target[key] = {};
       }
-      target = target[key];
+      target = target[key] as Record<string, unknown>;
     }
 
     target[lastKey] = value;
@@ -226,12 +242,18 @@ export class ConfigManager {
     // Merge user config file (if exists)
     const userConfig = this.loadConfigFile();
     if (userConfig) {
-      merged = this.deepMerge(merged, userConfig);
+      merged = this.deepMerge(
+        merged as unknown as Record<string, unknown>,
+        userConfig as unknown as Record<string, unknown>
+      ) as PartialAppConfig;
     }
 
     // Merge environment variables
     const envConfig = this.loadEnvConfig();
-    merged = this.deepMerge(merged, envConfig);
+    merged = this.deepMerge(
+      merged as unknown as Record<string, unknown>,
+      envConfig as unknown as Record<string, unknown>
+    ) as PartialAppConfig;
 
     // Validate and return
     return validateConfigOrThrow(merged);
@@ -242,7 +264,7 @@ export class ConfigManager {
    * 
    * @returns User configuration or null if file doesn't exist
    */
-  private loadConfigFile(): PartialAppConfig | null {
+  private loadConfigFile(): DeepPartialAppConfig | null {
     try {
       if (fs.existsSync(this.configPath)) {
         const content = fs.readFileSync(this.configPath, 'utf-8');
@@ -263,12 +285,14 @@ export class ConfigManager {
    * 
    * @returns Configuration from environment
    */
-  private loadEnvConfig(): PartialAppConfig {
-    const env: any = {};
+  private loadEnvConfig(): DeepPartialAppConfig {
+    const env: DeepPartialAppConfig = {};
 
     // Map environment variables to config
     if (process.env.NODE_ENV) {
-      env.app = { environment: process.env.NODE_ENV as any };
+      env.app = {
+        environment: process.env.NODE_ENV as AppConfig['app']['environment'],
+      };
     }
 
     if (process.env.OLLAMA_URL) {
@@ -280,13 +304,15 @@ export class ConfigManager {
     }
 
     if (process.env.APP_LOG_LEVEL) {
-      env.logging = { level: process.env.APP_LOG_LEVEL as any };
+      env.logging = {
+        level: process.env.APP_LOG_LEVEL as AppConfig['logging']['level'],
+      };
     }
 
     if (process.env.MAX_CACHE_SIZE) {
       const size = parseInt(process.env.MAX_CACHE_SIZE, 10);
       if (!isNaN(size)) {
-        env.fileSystem = { cacheSize: size };
+        env.fileSystem = { ...env.fileSystem, cacheSize: size };
       }
     }
 
@@ -294,6 +320,23 @@ export class ConfigManager {
       const workers = parseInt(process.env.INDEXING_WORKERS, 10);
       if (!isNaN(workers)) {
         env.performance = { indexingConcurrency: workers };
+      }
+    }
+
+    // Strict test/E2E override only: allows temp directories alongside default homedir root
+    if (
+      process.env.FILE_MANAGER_ALLOWED_ROOTS &&
+      (process.env.NODE_ENV === 'test' || process.env.E2E_TEST === 'true')
+    ) {
+      const extraRoots = process.env.FILE_MANAGER_ALLOWED_ROOTS
+        .split(path.delimiter)
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+      if (extraRoots.length > 0) {
+        env.fileSystem = {
+          ...env.fileSystem,
+          allowedRoots: Array.from(new Set([...defaultConfig.fileSystem.allowedRoots, ...extraRoots])),
+        };
       }
     }
 
@@ -397,17 +440,29 @@ export class ConfigManager {
    * @param source - Source object
    * @returns Merged object
    */
-  private deepMerge(target: any, source: any): any {
-    const result = { ...target };
+  private deepMerge<T extends Record<string, unknown>>(target: T, source: Record<string, unknown>): T {
+    const result: Record<string, unknown> = { ...target };
 
-    for (const key in source) {
-      if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
-        result[key] = this.deepMerge(result[key] || {}, source[key]);
-      } else {
-        result[key] = source[key];
+    for (const key of Object.keys(source)) {
+      const sourceVal = source[key];
+      const targetVal = result[key];
+      if (
+        sourceVal &&
+        typeof sourceVal === 'object' &&
+        !Array.isArray(sourceVal) &&
+        targetVal &&
+        typeof targetVal === 'object' &&
+        !Array.isArray(targetVal)
+      ) {
+        result[key] = this.deepMerge(
+          targetVal as Record<string, unknown>,
+          sourceVal as Record<string, unknown>
+        );
+      } else if (sourceVal !== undefined) {
+        result[key] = sourceVal;
       }
     }
 
-    return result;
+    return result as T;
   }
 }

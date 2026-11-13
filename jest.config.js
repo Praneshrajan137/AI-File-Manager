@@ -3,6 +3,7 @@ module.exports = {
   testEnvironment: 'node',
   roots: ['<rootDir>/tests'],
   testMatch: ['**/*.test.ts', '**/*.test.tsx'],
+  testPathIgnorePatterns: ['/node_modules/', '<rootDir>/tests/e2e/'],
   moduleNameMapper: {
     '^@shared/(.*)$': '<rootDir>/src/shared/$1',
     '^@main/(.*)$': '<rootDir>/src/main/$1',

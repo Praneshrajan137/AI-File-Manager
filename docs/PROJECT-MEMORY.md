@@ -1,0 +1,42 @@
+# Project Memory — OS File Manager Transformation
+
+**Transformation:** *Unified Contract-Enforced, Self-Observing Reactive Kernel*
+**Started:** 2026-11-13 | **Brief:** [PROJECT-BRIEF.md](./PROJECT-BRIEF.md)
+
+---
+
+## Core Architectural Decisions & Rejected Alternatives
+
+| Decision | Choice | Rejected Alternatives & Why |
+| --- | --- | --- |
+| **Transformation Strategy** | Unified typed IPC/security contracts + single coalescing `EventQueue` causal loop connecting all 5 DSAs & RAG + live `RuntimeDiagnostics` + real UI/E2E verification | *Prune-only cleanup* (guts DSAs & leaves security bypasses); *Vite + native SQLite FTS5 rewrite* (high Win native build churn, wrong leverage priority); *Security-only* (leaves watcher/cache/trie/RAG disconnected). |
+| **Hybrid Search Strategy** | LanceDB `0.4.20` dense cosine vectors + pure-TS BM25 (`HybridLexicalIndex`) rebuilt deterministically from LanceDB rows + Reciprocal Rank Fusion (RRF) | `@lancedb/lancedb@0.4.20` JS SDK lacks FTS/BM25 (`Index` only exposes `ivfPq`/`btree`); adding `better-sqlite3`/`sqlite3` risks native ABI friction on Electron 28 + Node 24. |
+| **IPC Contract & Error Model** | Single Zod contract registry (`shared/ipc/contracts.ts`) enforcing `filepath`/traversal/symlink security middleware + returning `IPCEnvelope<T>` that `preload.ts` unwraps & rethrows as structured `Error` (`.code`, `.userMessage`, `.details`) | Returning raw `{ ok: false }` everywhere would break existing `try/catch` UI & Playwright error specs; throwing plain objects over IPC causes `[object Object]` coercion. |
+| **Temp Root Policy** | Production defaults to `ConfigManager` `allowedRoots` (`[os.homedir()]`); `FILE_MANAGER_ALLOWED_ROOTS` honored strictly when `NODE_ENV === 'test' \|\| E2E_TEST === 'true'` | Hardcoding `os.homedir()` breaks Linux/macOS `/tmp` E2E specs; always trusting env vars weakens production sandbox boundaries. |
+| **UI Test Coverage Strategy** | Keep Jest on pure TypeScript logic, handlers, security, kernel & React `react-dom/server` verification (`jest-environment-jsdom` not in `node_modules`) + Playwright real Chromium Electron UI journeys | Installing new npm packages (`jsdom`) avoided unless necessary. |
+
+## Milestone Tracker
+
+- [x] **M0 (Diagnostic Experiment)**: Reproduced M0 watcher/Journey 6 tests (`2/2` in `15.8s`). Confirmed `--remote-debugging-port=9222` static port risk across 30 consecutive launches AND discovered `ipc-communication.spec.ts:134` assertion (`expect(Array.isArray(receivedEvents)).toBe(true)`) silently passed with `0` events received!
+- [x] **M1 (Memory, RuntimeDiagnostics & Tooling Baseline)** — `RuntimeDiagnostics` + `shared/diagnostics.ts` live; `jest.config.js` excludes `tests/e2e/`; `webpack.main.config.js` adds `@llm`; `ConfigManager` supports test/E2E-gated `FILE_MANAGER_ALLOWED_ROOTS`; M1 files 0 ESLint errors; `tsc --noEmit` exit `0`; `npx jest tests/unit` `19/19` suites (`356/356` tests) green.
+- [ ] **M2 (Contract-Enforced IPC & Canonical Security Boundary)** — in progress
+- [ ] **M3 (Closed-Loop Reactive Workspace Kernel & DSA Wiring)**
+- [ ] **M4 (Node-Decoupled Hybrid RAG, ContextManager & LLMMetrics)**
+- [ ] **M5 (Surgical UI Inspector, Quick Preview Drawer & Control Fixes)**
+- [ ] **M6 (E2E Hardening, Full Verification & Adversarial Subagent Review)**
+
+## Acceptance Criteria Ledger
+
+| Criterion | Status | Evidence |
+| --- | --- | --- |
+| **AC-1** Zero unvalidated path bypasses & symlink escape blocked | Pending | `—` |
+| **AC-2** Single IPC contract source of truth + clean stream unsubscribe | Pending | `—` |
+| **AC-3** Live reactive kernel (`Watcher -> EventQueue -> Trie/Cache/Index`) | Pending | `—` |
+| **AC-4** `RingBuffer` + `LRUCache` power `FS:PREVIEW_FILE` UI drawer | Pending | `—` |
+| **AC-5** Node-decoupled Hybrid RAG + small-batch flush + chunk dedup + mock streaming | Pending | `—` |
+| **AC-6** Live `RUNTIME:GET_DIAGNOSTICS` & UI Inspector | Pending | `—` |
+| **AC-7** `type-check`, `lint`, `build`, `npm test`, `npm run test:e2e` 100% green | Pending | `—` |
+
+## Open Items / Next Actions Outside Transformation Scope
+- Native OS file drag-and-drop & cross-session Favorites persistence (`FavoritesList`).
+- Live GPU Ollama `llama3.2` interactive benchmark (requires running Ollama desktop daemon).
