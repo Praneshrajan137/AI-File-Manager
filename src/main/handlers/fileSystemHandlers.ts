@@ -13,32 +13,29 @@ import {
   validateCanonicalPathOrThrow,
 } from './securityMiddleware';
 import { FileSystemService } from '../services/FileSystemService';
+import {
+  getReactiveWorkspaceKernel,
+  resetReactiveWorkspaceKernelSync,
+} from '../services/ReactiveWorkspaceKernel';
 import { FileNode, FilePreviewResult, FileStats, SystemPaths } from '@shared/contracts';
 import { FileSystemLogger, IPCLogger } from '@shared/logging';
 import { IPCChannel } from '@shared/ipc/contracts';
 import os from 'os';
 import path from 'path';
 
-let fileSystemService: FileSystemService | null = null;
-
 /**
- * Get or create FileSystemService instance configured with canonical allowed roots.
+ * Get the kernel-owned FileSystemService configured with canonical allowed roots.
  */
 export function getFileSystemService(): FileSystemService {
-  if (!fileSystemService) {
-    const roots = resolveAllowedRoots();
-    fileSystemService = new FileSystemService(roots);
-    FileSystemLogger.info('FileSystemService initialized', { roots });
-  }
-
-  return fileSystemService;
+  void resolveAllowedRoots();
+  return getReactiveWorkspaceKernel().getFileSystemService();
 }
 
 /**
- * Reset singleton FileSystemService (used after config changes or in tests).
+ * Reset shared FileSystemService / kernel state (used after config changes or in tests).
  */
 export function resetFileSystemService(): void {
-  fileSystemService = null;
+  resetReactiveWorkspaceKernelSync();
 }
 
 function getSystemPaths(): SystemPaths {
@@ -57,8 +54,12 @@ async function handleReadDirectory(
 ): Promise<FileNode[]> {
   FileSystemLogger.info('Reading directory', { path: input.path });
 
-  const service = getFileSystemService();
+  const kernel = getReactiveWorkspaceKernel();
+  const service = kernel.getFileSystemService();
   const files = await service.readDirectory(input.path);
+
+  kernel.warmDirectory(files);
+  await kernel.activateDirectory(input.path);
 
   FileSystemLogger.info('Directory read successful', {
     path: input.path,
@@ -89,26 +90,8 @@ async function handlePreviewFile(
   _event: IpcMainInvokeEvent,
   input: { path: string; maxLines?: number }
 ): Promise<FilePreviewResult> {
-  const maxLines = input.maxLines ?? 100;
   const service = getFileSystemService();
-  const stats = await service.getStats(input.path);
-  const raw = await service.readFile(input.path);
-  const binary = raw.includes('\0');
-  const allLines = binary ? [] : raw.split(/\r?\n/);
-  const sliced = allLines.slice(0, maxLines);
-
-  return {
-    path: input.path,
-    name: path.basename(input.path),
-    extension: path.extname(input.path).replace(/^\./, '').toLowerCase(),
-    size: stats.size,
-    modified: stats.modified,
-    lines: sliced,
-    totalLinesBuffered: sliced.length,
-    truncated: allLines.length > maxLines,
-    binary,
-    fromCache: false,
-  };
+  return await service.previewFile(input.path, input.maxLines);
 }
 
 async function handleWriteFile(
@@ -120,8 +103,9 @@ async function handleWriteFile(
     contentLength: input.content.length,
   });
 
-  const service = getFileSystemService();
-  const result = await service.writeFile(input.path, input.content);
+  const kernel = getReactiveWorkspaceKernel();
+  const result = await kernel.getFileSystemService().writeFile(input.path, input.content);
+  kernel.notifyMutation('change', input.path);
 
   FileSystemLogger.info('File write successful', { path: input.path });
 
@@ -137,8 +121,9 @@ async function handleDelete(
     recursive: input.recursive || false,
   });
 
-  const service = getFileSystemService();
-  const result = await service.delete(input.path, input.recursive);
+  const kernel = getReactiveWorkspaceKernel();
+  const result = await kernel.getFileSystemService().delete(input.path, input.recursive);
+  kernel.notifyMutation('unlink', input.path);
 
   FileSystemLogger.info('Delete successful', { path: input.path });
 
@@ -154,8 +139,10 @@ async function handleMove(
     destination: input.destination,
   });
 
-  const service = getFileSystemService();
-  const result = await service.move(input.source, input.destination);
+  const kernel = getReactiveWorkspaceKernel();
+  const result = await kernel.getFileSystemService().move(input.source, input.destination);
+  kernel.notifyMutation('unlink', input.source);
+  kernel.notifyMutation('create', result.newPath);
 
   FileSystemLogger.info('Move successful', {
     source: input.source,
@@ -179,8 +166,9 @@ async function handleCreateFile(
     fullPath,
   });
 
-  const service = getFileSystemService();
-  await service.writeFile(fullPath, input.content ?? '');
+  const kernel = getReactiveWorkspaceKernel();
+  await kernel.getFileSystemService().writeFile(fullPath, input.content ?? '');
+  kernel.notifyMutation('create', fullPath);
 
   FileSystemLogger.info('File created successfully', { path: fullPath });
 
@@ -200,8 +188,9 @@ async function handleCreateDirectory(
     fullPath,
   });
 
-  const service = getFileSystemService();
-  await service.createDirectory(fullPath);
+  const kernel = getReactiveWorkspaceKernel();
+  await kernel.getFileSystemService().createDirectory(fullPath);
+  kernel.notifyMutation('create', fullPath);
 
   FileSystemLogger.info('Directory created successfully', { path: fullPath });
 
@@ -234,8 +223,10 @@ async function handleRename(
     newName: input.newName,
   });
 
-  const service = getFileSystemService();
-  const result = await service.move(input.oldPath, canonicalNewPath);
+  const kernel = getReactiveWorkspaceKernel();
+  const result = await kernel.getFileSystemService().move(input.oldPath, canonicalNewPath);
+  kernel.notifyMutation('unlink', input.oldPath);
+  kernel.notifyMutation('create', result.newPath);
 
   FileSystemLogger.info('File renamed successfully', {
     oldPath: input.oldPath,

@@ -6,6 +6,29 @@
 
 import { CacheNode } from '@shared/contracts';
 
+interface SizedCacheNode<T> extends CacheNode<T> {
+    byteSize: number;
+    prev: SizedCacheNode<T> | null;
+    next: SizedCacheNode<T> | null;
+}
+
+export interface LRUCacheOptions<T> {
+    maxBytes?: number;
+    sizeOf?: (value: T) => number;
+}
+
+export interface LRUCacheStats {
+    size: number;
+    capacity: number;
+    bytes: number;
+    maxBytes: number;
+    hits: number;
+    misses: number;
+    evictions: number;
+    invalidations: number;
+    hitRate: number;
+}
+
 /**
  * LRU (Least Recently Used) Cache with O(1) operations.
  * 
@@ -35,106 +58,80 @@ import { CacheNode } from '@shared/contracts';
  */
 export class LRUCache<T> {
     private capacity: number;
-    private cache: Map<string, CacheNode<T>>;
-    private head: CacheNode<T> | null; // Most recently used
-    private tail: CacheNode<T> | null; // Least recently used
+    private cache: Map<string, SizedCacheNode<T>>;
+    private head: SizedCacheNode<T> | null; // Most recently used
+    private tail: SizedCacheNode<T> | null; // Least recently used
+    private maxBytes: number;
+    private sizeOf: (value: T) => number;
+    private currentBytes: number = 0;
+    private hits: number = 0;
+    private misses: number = 0;
+    private evictions: number = 0;
+    private invalidations: number = 0;
 
-    /**
-     * Create LRU cache with specified capacity.
-     * 
-     * @param capacity - Maximum number of items to store
-     * 
-     * @throws Error if capacity < 1
-     * 
-     * @example
-     * const cache = new LRUCache<Buffer>(100);
-     * cache.put('thumbnail1', buffer);
-     */
-    constructor(capacity: number) {
+    constructor(capacity: number, options?: LRUCacheOptions<T>) {
         if (capacity < 1) {
             throw new Error('Cache capacity must be at least 1');
         }
 
         this.capacity = capacity;
+        this.maxBytes = options?.maxBytes ?? Infinity;
+        this.sizeOf = options?.sizeOf ?? ((): number => 0);
         this.cache = new Map();
         this.head = null;
         this.tail = null;
     }
 
-    /**
-     * Get value by key and mark as recently used.
-     * 
-     * @param key - Cache key
-     * @returns Cached value or null if not found
-     * 
-     * @complexity O(1)
-     * 
-     * @throws Error if key is empty
-     * 
-     * @example
-     * const thumbnail = cache.get('file1.jpg');
-     * if (thumbnail) {
-     *   displayThumbnail(thumbnail);
-     * }
-     */
     get(key: string): T | null {
         this.validateKey(key);
 
         const node = this.cache.get(key);
 
         if (!node) {
+            this.misses++;
             return null;
         }
 
+        this.hits++;
         // Move to front (mark as most recently used)
         this.moveToFront(node);
 
         return node.value;
     }
 
-    /**
-     * Put value in cache, evicting LRU item if at capacity.
-     * 
-     * If key already exists, updates value and marks as most recently used.
-     * 
-     * @param key - Cache key
-     * @param value - Value to cache
-     * 
-     * @complexity O(1)
-     * 
-     * @throws Error if key is empty
-     * 
-     * @example
-     * cache.put('thumbnail.jpg', thumbnailBuffer);
-     */
     put(key: string, value: T): void {
         this.validateKey(key);
+
+        const nextByteSize = Math.max(0, this.sizeOf(value));
+        if (Number.isFinite(this.maxBytes) && nextByteSize > this.maxBytes) {
+            this.delete(key);
+            return;
+        }
 
         const existingNode = this.cache.get(key);
 
         if (existingNode) {
-            // Key exists - update value and move to front
+            this.currentBytes = Math.max(0, this.currentBytes - existingNode.byteSize + nextByteSize);
             existingNode.value = value;
+            existingNode.byteSize = nextByteSize;
             this.moveToFront(existingNode);
+            this.enforceBounds();
             return;
         }
 
-        // Create new node
-        const newNode: CacheNode<T> = {
+        const newNode: SizedCacheNode<T> = {
             key,
             value,
+            byteSize: nextByteSize,
             prev: null,
             next: null,
         };
 
-        // Add to front
         this.addToFront(newNode);
         this.cache.set(key, newNode);
+        this.currentBytes += nextByteSize;
 
-        // Evict if over capacity
-        if (this.cache.size > this.capacity) {
-            this.evictTail();
-        }
+        this.enforceBounds();
     }
 
     /**
@@ -177,8 +174,49 @@ export class LRUCache<T> {
 
         this.removeNode(node);
         this.cache.delete(key);
+        this.currentBytes = Math.max(0, this.currentBytes - node.byteSize);
 
         return true;
+    }
+
+    invalidate(key: string): boolean {
+        if (this.delete(key)) {
+            this.invalidations++;
+            return true;
+        }
+        return false;
+    }
+
+    invalidatePrefix(prefix: string): number {
+        let removed = 0;
+        for (const key of Array.from(this.cache.keys())) {
+            if (key.startsWith(prefix)) {
+                if (this.delete(key)) {
+                    removed++;
+                }
+            }
+        }
+        this.invalidations += removed;
+        return removed;
+    }
+
+    getBytes(): number {
+        return this.currentBytes;
+    }
+
+    getStats(): LRUCacheStats {
+        const total = this.hits + this.misses;
+        return {
+            size: this.cache.size,
+            capacity: this.capacity,
+            bytes: this.currentBytes,
+            maxBytes: Number.isFinite(this.maxBytes) ? this.maxBytes : -1,
+            hits: this.hits,
+            misses: this.misses,
+            evictions: this.evictions,
+            invalidations: this.invalidations,
+            hitRate: total > 0 ? this.hits / total : 0,
+        };
     }
 
     /**
@@ -216,6 +254,7 @@ export class LRUCache<T> {
         this.cache.clear();
         this.head = null;
         this.tail = null;
+        this.currentBytes = 0;
     }
 
     /**
@@ -262,7 +301,7 @@ export class LRUCache<T> {
      * 
      * @complexity O(1)
      */
-    private moveToFront(node: CacheNode<T>): void {
+    private moveToFront(node: SizedCacheNode<T>): void {
         if (node === this.head) {
             return; // Already at front
         }
@@ -274,14 +313,7 @@ export class LRUCache<T> {
         this.addToFront(node);
     }
 
-    /**
-     * Add node to front of list.
-     * 
-     * @param node - Node to add
-     * 
-     * @complexity O(1)
-     */
-    private addToFront(node: CacheNode<T>): void {
+    private addToFront(node: SizedCacheNode<T>): void {
         node.next = this.head;
         node.prev = null;
 
@@ -296,18 +328,7 @@ export class LRUCache<T> {
         }
     }
 
-    /**
-     * Remove node from list (but don't delete from cache).
-     * 
-     * This method updates the doubly linked list pointers to remove
-     * the node from the list. The node's prev/next pointers are nulled
-     * after removal to aid garbage collection.
-     * 
-     * @param node - Node to remove
-     * 
-     * @complexity O(1)
-     */
-    private removeNode(node: CacheNode<T>): void {
+    private removeNode(node: SizedCacheNode<T>): void {
         if (node.prev) {
             node.prev.next = node.next;
         } else {
@@ -322,25 +343,29 @@ export class LRUCache<T> {
             this.tail = node.prev;
         }
 
-        // Null out pointers after removal to aid GC (BUG FIX #4)
-        // This happens after reassigning head/tail to ensure we don't
-        // lose references to the list structure
         node.prev = null;
         node.next = null;
     }
 
-    /**
-     * Evict least recently used item (tail).
-     * 
-     * @complexity O(1)
-     */
+    private enforceBounds(): void {
+        while (
+            this.tail &&
+            (this.cache.size > this.capacity ||
+                (Number.isFinite(this.maxBytes) && this.currentBytes > this.maxBytes))
+        ) {
+            this.evictTail();
+        }
+    }
+
     private evictTail(): void {
         if (!this.tail) {
             return;
         }
 
-        const keyToEvict = this.tail.key;
-        this.removeNode(this.tail);
-        this.cache.delete(keyToEvict);
+        const evicted = this.tail;
+        this.removeNode(evicted);
+        this.cache.delete(evicted.key);
+        this.currentBytes = Math.max(0, this.currentBytes - evicted.byteSize);
+        this.evictions++;
     }
 }

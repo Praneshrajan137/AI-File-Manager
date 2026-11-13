@@ -13,6 +13,7 @@ import { registerLLMHandlers } from './llmHandlers';
 import { registerShellHandlers } from './shellHandlers';
 import { withContract, resolveAllowedRoots } from './securityMiddleware';
 import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
+import { resetReactiveWorkspaceKernelSync } from '@main/services/ReactiveWorkspaceKernel';
 import { IPCLogger } from '@shared/logging';
 import { ALL_IPC_CHANNELS, IPCChannel } from '@shared/ipc/contracts';
 
@@ -86,6 +87,7 @@ export function unregisterAllHandlers(): void {
   }
 
   registeredChannels.clear();
+  resetReactiveWorkspaceKernelSync();
   RuntimeDiagnostics.getInstance().setRegisteredChannels(0);
 
   IPCLogger.info('All IPC handlers unregistered', {

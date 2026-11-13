@@ -7,34 +7,30 @@
 import { TrieNode, FileMetadata } from '@shared/contracts';
 import path from 'path';
 
+interface BasenameTrieNode {
+    children: Map<string, BasenameTrieNode>;
+    paths: Map<string, string>;
+}
+
 /**
- * PathTrie - Prefix tree for O(L) file path search.
+ * PathTrie - Prefix tree for O(L) file path search & basename lookup.
  * 
- * Mimics how Linux kernel performs inode lookups. Instead of iterating
- * through all files (O(N)), we traverse the path segments (O(L) where
- * L = number of segments in path).
- * 
- * Example:
- *   insert('/home/user/file.txt')
- *   
- *   Creates tree:
- *   root -> 'home' -> 'user' -> 'file.txt' [terminal node with metadata]
- * 
- * Complexity Analysis:
- * - insert(): O(L) where L = path length
- * - search(): O(L) where L = path length
- * - autocomplete(): O(L + M) where M = number of matches
- * - remove(): O(L) where L = path length
- * 
- * Space Complexity: O(N * L) where N = number of paths, L = avg path length
+ * Dual-indexed:
+ * 1. Segment trie rooted at `root` for full hierarchical path lookups (/home/user/doc -> ...)
+ * 2. Character-level basename trie rooted at `basenameRoot` for O(L) filename prefix lookups ('rep' -> report.md)
  */
 export class PathTrie {
     private root: TrieNode;
+    private basenameRoot: BasenameTrieNode;
 
     constructor() {
         this.root = {
             children: new Map(),
             isEndOfPath: false,
+        };
+        this.basenameRoot = {
+            children: new Map(),
+            paths: new Map(),
         };
     }
 
@@ -44,12 +40,9 @@ export class PathTrie {
      * @param filePath - Absolute path to file
      * @param metadata - File metadata to store at terminal node
      * 
-     * @complexity O(L) where L = number of path segments
+     * @complexity O(L) where L = number of path segments + basename length
      * 
      * @throws Error if path is empty or metadata is inconsistent
-     * 
-     * @example
-     * trie.insert('/home/user/file.txt', metadata);
      */
     insert(filePath: string, metadata: FileMetadata): void {
         // Validate input
@@ -87,6 +80,12 @@ export class PathTrie {
         // Mark as terminal node and store metadata
         currentNode.isEndOfPath = true;
         currentNode.metadata = metadata;
+
+        // Also index basename for O(L) filename prefix autocomplete
+        const basename = segments[segments.length - 1]?.toLowerCase() ?? '';
+        if (basename.length > 0) {
+            this.insertBasename(basename, normalized.toLowerCase(), metadata.filePath);
+        }
     }
 
     /**
@@ -151,25 +150,81 @@ export class PathTrie {
             throw new Error('Prefix cannot be empty');
         }
 
+        if (maxResults <= 0) {
+            return [];
+        }
+
+        const trimmed = prefix.trim();
+        const hasPathSeparator = trimmed.includes('/') || trimmed.includes('\\');
+
+        if (!hasPathSeparator) {
+            const results: string[] = [];
+            const seen = new Set<string>();
+            this.autocompleteBasename(trimmed.toLowerCase(), results, seen, maxResults);
+
+            if (results.length < maxResults) {
+                const keyPrefix = trimmed.toLowerCase();
+                for (const [childKey, childNode] of this.root.children.entries()) {
+                    if (childKey.startsWith(keyPrefix)) {
+                        const rootMatches: string[] = [];
+                        this.collectPaths(childNode, rootMatches, maxResults - results.length);
+                        for (const match of rootMatches) {
+                            const canonical = match.replace(/\\/g, '/').toLowerCase();
+                            if (!seen.has(canonical)) {
+                                seen.add(canonical);
+                                results.push(match);
+                                if (results.length >= maxResults) {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (results.length >= maxResults) {
+                        break;
+                    }
+                }
+            }
+
+            return results;
+        }
+
         const normalized = this.normalizePath(prefix);
         const segments = this.splitPath(normalized);
+        const results: string[] = [];
+
+        if (segments.length === 0) {
+            this.collectPaths(this.root, results, maxResults);
+            return results;
+        }
 
         let currentNode = this.root;
 
-        // Navigate to the node representing the prefix
-        for (const segment of segments) {
-            const key = segment.toLowerCase();
-
+        // Navigate parent segments strictly
+        for (let i = 0; i < segments.length - 1; i++) {
+            const key = segments[i].toLowerCase();
             if (!currentNode.children.has(key)) {
-                return []; // Prefix doesn't exist
+                return [];
             }
-
             currentNode = currentNode.children.get(key)!;
         }
 
-        // Collect all paths from this node
-        const results: string[] = [];
-        this.collectPaths(currentNode, results, maxResults);
+        // Last segment supports both exact match and partial segment prefix match
+        const lastKey = segments[segments.length - 1].toLowerCase();
+        const exactChild = currentNode.children.get(lastKey);
+        if (exactChild) {
+            this.collectPaths(exactChild, results, maxResults);
+        }
+
+        if (results.length < maxResults) {
+            for (const [childKey, childNode] of currentNode.children.entries()) {
+                if (childKey !== lastKey && childKey.startsWith(lastKey)) {
+                    this.collectPaths(childNode, results, maxResults);
+                    if (results.length >= maxResults) {
+                        break;
+                    }
+                }
+            }
+        }
 
         return results;
     }
@@ -238,7 +293,89 @@ export class PathTrie {
             }
         }
 
+        const basename = segments[segments.length - 1]?.toLowerCase() ?? '';
+        if (basename.length > 0) {
+            this.removeBasename(basename, normalized.toLowerCase());
+        }
+
         return true;
+    }
+
+    private insertBasename(basename: string, canonicalKey: string, storedPath: string): void {
+        let current = this.basenameRoot;
+        for (const ch of basename) {
+            let next = current.children.get(ch);
+            if (!next) {
+                next = { children: new Map(), paths: new Map() };
+                current.children.set(ch, next);
+            }
+            current = next;
+        }
+        current.paths.set(canonicalKey, storedPath);
+    }
+
+    private removeBasename(basename: string, canonicalKey: string): void {
+        const nodePath: BasenameTrieNode[] = [this.basenameRoot];
+        let current = this.basenameRoot;
+        for (const ch of basename) {
+            const next = current.children.get(ch);
+            if (!next) {
+                return;
+            }
+            current = next;
+            nodePath.push(current);
+        }
+
+        current.paths.delete(canonicalKey);
+
+        for (let i = basename.length - 1; i >= 0; i--) {
+            const node = nodePath[i + 1];
+            const parent = nodePath[i];
+            if (node.children.size === 0 && node.paths.size === 0) {
+                parent.children.delete(basename[i]);
+            } else {
+                break;
+            }
+        }
+    }
+
+    private autocompleteBasename(
+        prefix: string,
+        results: string[],
+        seen: Set<string>,
+        maxResults: number
+    ): void {
+        let current = this.basenameRoot;
+        for (const ch of prefix) {
+            const next = current.children.get(ch);
+            if (!next) {
+                return;
+            }
+            current = next;
+        }
+
+        const collectBasename = (node: BasenameTrieNode): void => {
+            if (results.length >= maxResults) {
+                return;
+            }
+            for (const [canonical, storedPath] of node.paths.entries()) {
+                if (!seen.has(canonical)) {
+                    seen.add(canonical);
+                    results.push(storedPath);
+                    if (results.length >= maxResults) {
+                        return;
+                    }
+                }
+            }
+            for (const child of node.children.values()) {
+                collectBasename(child);
+                if (results.length >= maxResults) {
+                    return;
+                }
+            }
+        };
+
+        collectBasename(current);
     }
 
     /**
@@ -362,10 +499,24 @@ export class PathTrie {
 
         clearNode(this.root);
 
-        // Reinitialize root
+        // Reinitialize roots
         this.root = {
             children: new Map(),
             isEndOfPath: false,
+        };
+
+        const clearBasenameNode = (node: BasenameTrieNode): void => {
+            for (const child of node.children.values()) {
+                clearBasenameNode(child);
+            }
+            node.children.clear();
+            node.paths.clear();
+        };
+
+        clearBasenameNode(this.basenameRoot);
+        this.basenameRoot = {
+            children: new Map(),
+            paths: new Map(),
         };
     }
 }

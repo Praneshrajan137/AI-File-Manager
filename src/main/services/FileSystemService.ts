@@ -3,37 +3,44 @@ import path from 'path';
 import {
     IFileSystemService,
     FileNode,
+    FilePreviewResult,
     FileStats,
     ValidationResult,
+    CACHE_CAPACITY,
+    MAX_CACHE_MEMORY,
+    RING_BUFFER_CAPACITY,
 } from '@shared/contracts';
 import { PathValidator } from './PathValidator';
+import { LRUCache } from '@main/dsa/LRUCache';
+import { RingBuffer } from '@main/dsa/RingBuffer';
+import { RuntimeDiagnostics } from './RuntimeDiagnostics';
 import { ErrorFactory, FileSystemError } from '@shared/errors';
 import { FileSystemLogger } from '@shared/logging';
 
-/**
- * FileSystemService - Core file system operations with security validation.
- * 
- * SECURITY: All operations validate paths using PathValidator before
- * executing any fs operations.
- * 
- * PERFORMANCE: Uses fs/promises for non-blocking async operations.
- * 
- * ERROR HANDLING: Wraps fs errors in structured FileSystemError objects.
- */
+const MAX_PREVIEW_BYTES = 256 * 1024;
+const READ_DIR_CONCURRENCY = 16;
+
+function estimateFileNodesBytes(nodes: FileNode[]): number {
+    return nodes.reduce((sum, node) => sum + 128 + (node.path.length + node.name.length) * 2, 64);
+}
+
+function estimatePreviewBytes(preview: FilePreviewResult): number {
+    return preview.lines.reduce((sum, line) => sum + line.length * 2 + 16, 256);
+}
+
+function getFsErrorCode(error: unknown): string | undefined {
+    if (error && typeof error === 'object' && 'code' in error) {
+        const code = (error as { code?: unknown }).code;
+        return typeof code === 'string' ? code : undefined;
+    }
+    return undefined;
+}
+
 export class FileSystemService implements IFileSystemService {
     private validator: PathValidator;
+    private dirCache: LRUCache<FileNode[]>;
+    private previewCache: LRUCache<FilePreviewResult>;
 
-    /**
-     * Create file system service for specific root directory.
-     * 
-     * @param allowedRoot - Root directory that all operations are restricted to
-     * 
-     * @throws Error if allowedRoot is empty
-     * 
-     * @example
-     * const service = new FileSystemService('/home/user/documents');
-     * const files = await service.readDirectory('/home/user/documents');
-     */
     constructor(allowedRoot: string | string[]) {
         const roots = Array.isArray(allowedRoot)
             ? allowedRoot.filter((entry) => entry && entry.trim() !== '')
@@ -46,6 +53,14 @@ export class FileSystemService implements IFileSystemService {
         }
 
         this.validator = new PathValidator(roots);
+        this.dirCache = new LRUCache<FileNode[]>(CACHE_CAPACITY, {
+            maxBytes: Math.floor(MAX_CACHE_MEMORY / 2),
+            sizeOf: estimateFileNodesBytes,
+        });
+        this.previewCache = new LRUCache<FilePreviewResult>(CACHE_CAPACITY, {
+            maxBytes: Math.floor(MAX_CACHE_MEMORY / 2),
+            sizeOf: estimatePreviewBytes,
+        });
     }
 
     /**
@@ -59,55 +74,61 @@ export class FileSystemService implements IFileSystemService {
         // SECURITY: Validate path first
         this.validatePathOrThrow(dirPath);
 
+        const cacheKey = this.normalizeCacheKey(dirPath);
+        const cached = this.dirCache.get(cacheKey);
+        if (cached) {
+            this.syncCacheTelemetry();
+            return cached.map((entry) => ({ ...entry }));
+        }
+
         try {
             // Read directory with file types
             const entries = await fs.readdir(dirPath, { withFileTypes: true });
-
-            // Build FileNode objects with metadata
             const fileNodes: FileNode[] = [];
 
-            for (const entry of entries) {
-                const fullPath = path.join(dirPath, entry.name);
+            for (let i = 0; i < entries.length; i += READ_DIR_CONCURRENCY) {
+                const batch = entries.slice(i, i + READ_DIR_CONCURRENCY);
+                const settled = await Promise.all(
+                    batch.map(async (entry): Promise<FileNode | null> => {
+                        const fullPath = path.join(dirPath, entry.name);
+                        try {
+                            const stats = await fs.stat(fullPath);
+                            return {
+                                path: fullPath,
+                                name: entry.name,
+                                isDirectory: entry.isDirectory(),
+                                size: stats.size,
+                                modified: stats.mtimeMs,
+                                extension: this.getExtension(entry.name),
+                                mimeType: this.getMimeType(entry.name),
+                                isHidden: this.isHidden(entry.name),
+                            };
+                        } catch (statError: unknown) {
+                            FileSystemLogger.warn('Failed to stat file', {
+                                path: fullPath,
+                                error: statError instanceof Error ? statError.message : String(statError),
+                            });
+                            return null;
+                        }
+                    })
+                );
 
-                try {
-                    // Get detailed stats for each file
-                    const stats = await fs.stat(fullPath);
-
-                    const fileNode: FileNode = {
-                        path: fullPath,
-                        name: entry.name,
-                        isDirectory: entry.isDirectory(),
-                        size: stats.size,
-                        modified: stats.mtimeMs,
-                        extension: this.getExtension(entry.name),
-                        mimeType: this.getMimeType(entry.name),
-                        isHidden: this.isHidden(entry.name),
-                    };
-
-                    fileNodes.push(fileNode);
-                } catch (statError) {
-                    // If stat fails for individual file, skip it but continue
-                    FileSystemLogger.warn('Failed to stat file', {
-                        path: fullPath,
-                        error: statError instanceof Error ? statError.message : String(statError),
-                    });
+                for (const node of settled) {
+                    if (node) {
+                        fileNodes.push(node);
+                    }
                 }
             }
 
-            return fileNodes;
-        } catch (error: any) {
+            this.dirCache.put(cacheKey, fileNodes);
+            this.syncCacheTelemetry();
+
+            return fileNodes.map((entry) => ({ ...entry }));
+        } catch (error: unknown) {
             throw this.wrapError(error, dirPath);
         }
     }
 
-    /**
-     * Read file content as string.
-     * 
-     * @param filePath - Absolute path to file
-     * @param encoding - Character encoding (default: 'utf-8')
-     * @returns File content
-     * @throws FileSystemError if validation fails or file inaccessible
-     */
     async readFile(
         filePath: string,
         encoding: BufferEncoding = 'utf-8'
@@ -118,19 +139,116 @@ export class FileSystemService implements IFileSystemService {
         try {
             const content = await fs.readFile(filePath, encoding);
             return content;
-        } catch (error: any) {
+        } catch (error: unknown) {
             throw this.wrapError(error, filePath);
         }
     }
 
-    /**
-     * Write content to file.
-     * 
-     * @param filePath - Absolute path to file
-     * @param content - Content to write
-     * @returns Success status
-     * @throws FileSystemError if validation fails or write fails
-     */
+    async previewFile(
+        filePath: string,
+        maxLines: number = RING_BUFFER_CAPACITY
+    ): Promise<FilePreviewResult> {
+        this.validatePathOrThrow(filePath);
+
+        const cap = Math.max(1, Math.min(Math.floor(maxLines), RING_BUFFER_CAPACITY));
+        const normalizedFile = this.normalizeCacheKey(filePath);
+        const previewKey = `${normalizedFile}:${cap}`;
+
+        let stats: Awaited<ReturnType<typeof fs.stat>>;
+        try {
+            stats = await fs.stat(filePath);
+        } catch (error: unknown) {
+            throw this.wrapError(error, filePath);
+        }
+
+        const cached = this.previewCache.get(previewKey);
+        if (cached && cached.modified === stats.mtimeMs && cached.size === stats.size) {
+            this.syncCacheTelemetry();
+            RuntimeDiagnostics.getInstance().recordPreviewServed(true);
+            return {
+                ...cached,
+                lines: [...cached.lines],
+                fromCache: true,
+            };
+        }
+
+        if (cached) {
+            this.previewCache.invalidate(previewKey);
+        }
+
+        const ext = this.getExtension(filePath);
+        const isLogTail = ext === 'log';
+
+        try {
+            const { text, binary, truncatedByBytes } = await this.readBoundedText(
+                filePath,
+                stats.size,
+                isLogTail
+            );
+
+            if (binary) {
+                const binaryPreview: FilePreviewResult = {
+                    path: filePath,
+                    name: path.basename(filePath),
+                    extension: ext,
+                    size: stats.size,
+                    modified: stats.mtimeMs,
+                    lines: [],
+                    totalLinesBuffered: 0,
+                    truncated: false,
+                    binary: true,
+                    fromCache: false,
+                };
+                this.previewCache.put(previewKey, binaryPreview);
+                this.syncCacheTelemetry();
+                RuntimeDiagnostics.getInstance().recordPreviewServed(false);
+                return { ...binaryPreview, lines: [] };
+            }
+
+            const rawLines = text.length === 0 ? [] : text.split(/\r?\n/);
+            if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') {
+                rawLines.pop();
+            }
+
+            const ringBuffer = new RingBuffer(cap);
+            if (isLogTail) {
+                for (const line of rawLines) {
+                    ringBuffer.push(line);
+                }
+            } else {
+                const limit = Math.min(rawLines.length, cap);
+                for (let i = 0; i < limit; i++) {
+                    ringBuffer.push(rawLines[i]);
+                }
+            }
+
+            const bufferedLines = ringBuffer.getLines(cap);
+            const previewResult: FilePreviewResult = {
+                path: filePath,
+                name: path.basename(filePath),
+                extension: ext,
+                size: stats.size,
+                modified: stats.mtimeMs,
+                lines: bufferedLines,
+                totalLinesBuffered: ringBuffer.size(),
+                truncated: truncatedByBytes || rawLines.length > cap,
+                binary: false,
+                fromCache: false,
+            };
+
+            this.previewCache.put(previewKey, previewResult);
+            this.syncCacheTelemetry();
+            RuntimeDiagnostics.getInstance().recordPreviewServed(false);
+
+            return {
+                ...previewResult,
+                lines: [...previewResult.lines],
+            };
+        } catch (error: unknown) {
+            throw this.wrapError(error, filePath);
+        }
+    }
+
     async writeFile(
         filePath: string,
         content: string
@@ -140,23 +258,13 @@ export class FileSystemService implements IFileSystemService {
 
         try {
             await fs.writeFile(filePath, content, 'utf-8');
+            this.invalidatePath(filePath);
             return { success: true };
-        } catch (error: any) {
+        } catch (error: unknown) {
             throw this.wrapError(error, filePath);
         }
     }
 
-    /**
-     * Delete file or directory.
-     * 
-     * @param filePath - Absolute path to delete
-     * @param recursive - If true, delete directories recursively
-     * @returns Success status
-     * @throws FileSystemError if validation fails or deletion fails
-     * 
-     * BUG FIX: Simplified to use fs.rm() for everything (handles both files and directories)
-     * This avoids race conditions and unnecessary stat() calls.
-     */
     async delete(
         filePath: string,
         recursive: boolean = false
@@ -165,23 +273,14 @@ export class FileSystemService implements IFileSystemService {
         this.validatePathOrThrow(filePath);
 
         try {
-            // fs.rm() works for both files and directories
-            // No need to check with stat() first (avoids race condition)
             await fs.rm(filePath, { recursive, force: true });
+            this.invalidatePath(filePath);
             return { success: true };
-        } catch (error: any) {
+        } catch (error: unknown) {
             throw this.wrapError(error, filePath);
         }
     }
 
-    /**
-     * Move or rename file/directory.
-     * 
-     * @param source - Current path
-     * @param destination - New path
-     * @returns Success status and new path
-     * @throws FileSystemError if validation fails or move fails
-     */
     async move(
         source: string,
         destination: string
@@ -191,17 +290,20 @@ export class FileSystemService implements IFileSystemService {
         this.validatePathOrThrow(destination);
 
         try {
-            // Try rename first (fastest, works within same filesystem)
             await fs.rename(source, destination);
+            this.invalidatePath(source);
+            this.invalidatePath(destination);
             return { success: true, newPath: destination };
-        } catch (error: any) {
+        } catch (error: unknown) {
             // If rename fails with EXDEV (cross-device), do copy + delete
-            if (error.code === 'EXDEV') {
+            if (getFsErrorCode(error) === 'EXDEV') {
                 try {
                     await fs.copyFile(source, destination);
                     await fs.rm(source, { recursive: true, force: true });
+                    this.invalidatePath(source);
+                    this.invalidatePath(destination);
                     return { success: true, newPath: destination };
-                } catch (copyError: any) {
+                } catch (copyError: unknown) {
                     throw this.wrapError(copyError, source);
                 }
             }
@@ -210,13 +312,6 @@ export class FileSystemService implements IFileSystemService {
         }
     }
 
-    /**
-     * Get detailed file statistics.
-     * 
-     * @param filePath - Absolute path
-     * @returns FileStats object
-     * @throws FileSystemError if validation fails or path doesn't exist
-     */
     async getStats(filePath: string): Promise<FileStats> {
         // SECURITY: Validate path first
         this.validatePathOrThrow(filePath);
@@ -235,21 +330,11 @@ export class FileSystemService implements IFileSystemService {
                 isSymbolicLink: stats.isSymbolicLink(),
                 permissions: this.extractPermissions(stats.mode),
             };
-        } catch (error: any) {
+        } catch (error: unknown) {
             throw this.wrapError(error, filePath);
         }
     }
 
-    /**
-     * Create new directory.
-     * 
-     * @param dirPath - Absolute path to directory to create
-     * @returns Success status
-     * @throws FileSystemError if validation fails or creation fails
-     * 
-     * @example
-     * await service.createDirectory('/home/user/new-folder');
-     */
     async createDirectory(dirPath: string): Promise<{ success: boolean }> {
         // SECURITY: Validate path first
         this.validatePathOrThrow(dirPath);
@@ -257,13 +342,50 @@ export class FileSystemService implements IFileSystemService {
         try {
             // Create directory (recursive: false to only create final directory)
             await fs.mkdir(dirPath, { recursive: false });
-            
+            this.invalidatePath(dirPath);
+
             FileSystemLogger.info('Directory created', { path: dirPath });
-            
+
             return { success: true };
-        } catch (error: any) {
+        } catch (error: unknown) {
             throw this.wrapError(error, dirPath);
         }
+    }
+
+    invalidatePath(targetPath: string): void {
+        const normalizedTarget = this.normalizeCacheKey(targetPath);
+        const parentDir = this.normalizeCacheKey(path.dirname(targetPath));
+
+        this.dirCache.invalidate(normalizedTarget);
+        this.dirCache.invalidate(parentDir);
+        this.previewCache.invalidatePrefix(`${normalizedTarget}:`);
+        this.syncCacheTelemetry();
+    }
+
+    clearCache(): void {
+        this.dirCache.clear();
+        this.previewCache.clear();
+        this.syncCacheTelemetry();
+    }
+
+    getCacheStats(): {
+        items: number;
+        bytes: number;
+        hits: number;
+        misses: number;
+        evictions: number;
+        invalidations: number;
+    } {
+        const dirStats = this.dirCache.getStats();
+        const previewStats = this.previewCache.getStats();
+        return {
+            items: dirStats.size + previewStats.size,
+            bytes: dirStats.bytes + previewStats.bytes,
+            hits: dirStats.hits + previewStats.hits,
+            misses: dirStats.misses + previewStats.misses,
+            evictions: dirStats.evictions + previewStats.evictions,
+            invalidations: dirStats.invalidations + previewStats.invalidations,
+        };
     }
 
     /**
@@ -315,20 +437,81 @@ export class FileSystemService implements IFileSystemService {
      * @param filePath - Path where error occurred
      * @returns Structured FileSystemError
      */
-    private wrapError(error: any, filePath: string): FileSystemError {
+    private wrapError(error: unknown, filePath: string): FileSystemError {
         // Use ErrorFactory to create FileSystemError from fs error
         const fsError = ErrorFactory.fromFsError(error, filePath);
-        
+
         // Log the error
         FileSystemLogger.error('File system operation failed', {
             code: fsError.code,
             path: filePath,
-            originalCode: error.code,
+            originalCode: getFsErrorCode(error),
             message: fsError.message,
         });
 
-        // FileSystemError is now returned directly (not as object literal)
         return fsError;
+    }
+
+    private normalizeCacheKey(targetPath: string): string {
+        const resolved = path.resolve(targetPath);
+        return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    }
+
+    private syncCacheTelemetry(): void {
+        const stats = this.getCacheStats();
+        RuntimeDiagnostics.getInstance().setCacheStats({
+            entries: stats.items,
+            currentBytes: stats.bytes,
+            hits: stats.hits,
+            misses: stats.misses,
+            invalidations: stats.invalidations,
+        });
+    }
+
+    private async readBoundedText(
+        filePath: string,
+        fileSize: number,
+        tailMode: boolean
+    ): Promise<{ text: string; binary: boolean; truncatedByBytes: boolean }> {
+        if (typeof fs.open === 'function') {
+            const handle = await fs.open(filePath, 'r');
+            if (handle) {
+                try {
+                    const bytesToRead =
+                        typeof fileSize === 'number' && Number.isFinite(fileSize) && fileSize >= 0
+                            ? Math.min(fileSize, MAX_PREVIEW_BYTES)
+                            : MAX_PREVIEW_BYTES;
+
+                    if (bytesToRead === 0) {
+                        return { text: '', binary: false, truncatedByBytes: false };
+                    }
+
+                    const startOffset =
+                        tailMode && typeof fileSize === 'number' && fileSize > MAX_PREVIEW_BYTES
+                            ? fileSize - bytesToRead
+                            : 0;
+                    const buffer = Buffer.allocUnsafe(bytesToRead);
+                    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, startOffset);
+                    const slice = buffer.subarray(0, bytesRead);
+                    if (slice.includes(0)) {
+                        return { text: '', binary: true, truncatedByBytes: false };
+                    }
+                    return {
+                        text: slice.toString('utf-8'),
+                        binary: false,
+                        truncatedByBytes: typeof fileSize === 'number' && fileSize > bytesToRead,
+                    };
+                } finally {
+                    await handle.close();
+                }
+            }
+        }
+
+        const raw = await fs.readFile(filePath, 'utf-8');
+        if (raw.includes('\0')) {
+            return { text: '', binary: true, truncatedByBytes: false };
+        }
+        return { text: raw, binary: false, truncatedByBytes: false };
     }
 
     /**

@@ -30,20 +30,17 @@ import { pathToFileURL } from 'url';
 import { ConfigManager } from '@shared/config';
 import { Logger, getLogger } from '@shared/logging';
 import { ErrorHandler } from './middleware/ErrorHandler';
-import { FileWatcher } from './services/FileWatcher';
-import { EventQueue } from './dsa/EventQueue';
+import {
+  configureKernelHooks,
+  getReactiveWorkspaceKernel,
+  resetReactiveWorkspaceKernel,
+} from './services/ReactiveWorkspaceKernel';
 
 /**
  * Reference to main application window.
  * Kept at module level to prevent garbage collection.
  */
 let mainWindow: BrowserWindow | null = null;
-
-/**
- * Global FileWatcher instance.
- * Monitors file system changes and emits IPC events to renderer.
- */
-let globalFileWatcher: FileWatcher | null = null;
 
 /**
  * Determine if running in development mode.
@@ -227,129 +224,37 @@ function createWindow(): void {
 
   logger.info('Main window created successfully');
 
-  // Start file watcher after window is created
+  // Wire kernel broadcasts to active renderer windows
   startFileWatcher();
 }
 
 /**
- * Current watch path for dynamic file watching.
- * Updated when user navigates to a new directory.
- */
-let currentWatchPath: string | null = null;
-
-/**
- * Start global file watcher and connect it to IPC.
- * 
- * IMPORTANT: Does NOT auto-start watching. The watcher is started
- * dynamically when user navigates to a directory via IPC handler.
- * 
- * This prevents the critical bug of watching the entire home directory
- * which causes thousands of events and permission errors.
+ * Configure ReactiveWorkspaceKernel broadcaster so external FS changes
+ * and kernel events reach live renderer windows cleanly.
  */
 function startFileWatcher(): void {
   const logger = getLogger();
 
-  if (globalFileWatcher) {
-    logger.warn('FileWatcher already initialized');
-    return;
-  }
-
-  try {
-    // Create event queue and file watcher
-    const eventQueue = new EventQueue();
-    globalFileWatcher = new FileWatcher(eventQueue);
-
-    // Connect file watcher events to IPC
-    globalFileWatcher.on('fileCreated', (filePath: string) => {
-      logger.debug('File created, broadcasting to renderer', { path: filePath });
-      BrowserWindow.getAllWindows().forEach(window => {
+  configureKernelHooks({
+    broadcaster: (channel, payload) => {
+      BrowserWindow.getAllWindows().forEach((window) => {
         if (!window.isDestroyed()) {
-          window.webContents.send('FILE_CREATED', filePath);
+          window.webContents.send(channel, payload);
         }
       });
-    });
+    },
+  });
 
-    globalFileWatcher.on('fileChanged', (filePath: string) => {
-      logger.debug('File changed, broadcasting to renderer', { path: filePath });
-      BrowserWindow.getAllWindows().forEach(window => {
-        if (!window.isDestroyed()) {
-          window.webContents.send('FILE_CHANGED', filePath);
-        }
-      });
-    });
-
-    globalFileWatcher.on('fileDeleted', (filePath: string) => {
-      logger.debug('File deleted, broadcasting to renderer', { path: filePath });
-      BrowserWindow.getAllWindows().forEach(window => {
-        if (!window.isDestroyed()) {
-          window.webContents.send('FILE_DELETED', filePath);
-        }
-      });
-    });
-
-    globalFileWatcher.on('error', (error: Error) => {
-      // Log errors but don't crash - file watcher errors are non-fatal
-      logger.warn('FileWatcher error (non-fatal)', {
-        error: error.message,
-      });
-    });
-
-    globalFileWatcher.on('ready', () => {
-      logger.info('FileWatcher ready and monitoring', { path: currentWatchPath });
-    });
-
-    // NOTE: Do NOT auto-start watching home directory!
-    // The watcher will be started dynamically when user navigates.
-    logger.info('FileWatcher initialized (not started - waiting for navigation)');
-
-  } catch (error) {
-    logger.error('Failed to initialize FileWatcher', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
+  // Ensure kernel is instantiated
+  getReactiveWorkspaceKernel();
+  logger.info('ReactiveWorkspaceKernel initialized (watcher starts on navigation)');
 }
 
 /**
  * Update the watched directory when user navigates.
- * Called by IPC handlers when FS:READ_DIR is invoked.
- * 
- * @param newPath - The new directory to watch (single directory, not recursive)
  */
 export async function updateWatchPath(newPath: string): Promise<void> {
-  const logger = getLogger();
-
-  if (!globalFileWatcher) {
-    logger.warn('FileWatcher not initialized, cannot update watch path');
-    return;
-  }
-
-  // Skip if already watching this path
-  if (currentWatchPath === newPath) {
-    return;
-  }
-
-  try {
-    // Stop current watcher if running
-    if (globalFileWatcher.isWatching()) {
-      await globalFileWatcher.stop();
-    }
-
-    // Start watching the new path (non-recursive, single directory)
-    currentWatchPath = newPath;
-    await globalFileWatcher.start(newPath, {
-      ignoreInitial: true,
-      awaitWriteFinish: true,
-      // CRITICAL: Only watch immediate directory, not subdirectories
-      // depth: 0 is not directly supported, but we use ignored patterns
-    });
-
-    logger.info('FileWatcher updated to watch', { path: newPath });
-  } catch (error) {
-    logger.error('Failed to update FileWatcher path', {
-      error: error instanceof Error ? error.message : String(error),
-      path: newPath,
-    });
-  }
+  await getReactiveWorkspaceKernel().activateDirectory(newPath);
 }
 
 /**
@@ -394,17 +299,16 @@ app.on('window-all-closed', () => {
   const logger = getLogger();
   logger.info('All windows closed');
 
-  // Stop file watcher
-  if (globalFileWatcher) {
-    globalFileWatcher.stop().then(() => {
-      logger.info('FileWatcher stopped');
-    }).catch(error => {
-      logger.error('Error stopping FileWatcher', {
+  // Shutdown ReactiveWorkspaceKernel (stops watcher, clears timers/caches)
+  resetReactiveWorkspaceKernel()
+    .then(() => {
+      logger.info('ReactiveWorkspaceKernel stopped');
+    })
+    .catch((error) => {
+      logger.error('Error stopping ReactiveWorkspaceKernel', {
         error: error instanceof Error ? error.message : String(error),
       });
     });
-    globalFileWatcher = null;
-  }
 
   // Cleanup LLM services (terminates worker threads)
   import('./handlers/llmHandlers')

@@ -22,15 +22,16 @@ import { ipcMain, IpcMainInvokeEvent } from 'electron';
 import { PathTrie } from '@main/dsa/PathTrie';
 import { DirectoryScanner } from '@main/services/DirectoryScanner';
 import { FileSystemService } from '@main/services/FileSystemService';
+import { getReactiveWorkspaceKernel } from '@main/services/ReactiveWorkspaceKernel';
+import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
 import {
   withContract,
   resolveAllowedRoots,
 } from './securityMiddleware';
 import { FileNode, FileMetadata } from '@shared/contracts';
 import { IPCLogger, getLogger } from '@shared/logging';
-import { ConfigManager } from '@shared/config';
 import { IPCChannel } from '@shared/ipc/contracts';
-import os from 'os';
+import path from 'path';
 
 /**
  * SearchService using PathTrie for fast autocomplete.
@@ -195,14 +196,8 @@ class SearchService {
     IPCLogger.info('Starting background PathTrie indexing');
 
     try {
-      // Index home directory (or allowed roots from config)
-      let rootsToIndex: string[];
-      try {
-        const config = ConfigManager.getInstance();
-        rootsToIndex = config.get('fileSystem').allowedRoots || [os.homedir()];
-      } catch {
-        rootsToIndex = [os.homedir()];
-      }
+      // Index allowed roots resolved from canonical ConfigManager boundary
+      const rootsToIndex = resolveAllowedRoots();
 
       for (const root of rootsToIndex) {
         if (this.indexedPaths.has(root)) {
@@ -217,10 +212,11 @@ class SearchService {
         // Scan directory recursively
         const files = await scanner.scan(root, {
           recursive: true,
-          maxDepth: 5, // Limit depth to avoid excessive scanning
+          maxDepth: 3, // Limit depth to avoid excessive scanning
           skipErrors: true,
         });
 
+        const trieUpdateStart = Date.now();
         // Insert all files into PathTrie
         for (const file of files) {
           try {
@@ -242,6 +238,12 @@ class SearchService {
             });
           }
         }
+
+        RuntimeDiagnostics.getInstance().setPathTrieStats({
+          entryCount: this.pathTrie.size(),
+          indexedRoots: rootsToIndex,
+          lastIndexDurationMs: Date.now() - trieUpdateStart,
+        });
 
         IPCLogger.info('Directory indexing complete', {
           root,
@@ -296,12 +298,10 @@ let searchService: SearchService | null = null;
  * @returns SearchService instance
  */
 function getSearchService(): SearchService {
+  const kernel = getReactiveWorkspaceKernel();
   if (!searchService) {
-    const roots = resolveAllowedRoots();
-    const pathTrie = new PathTrie();
-    const fileSystemService = new FileSystemService(roots);
-    searchService = new SearchService(pathTrie, fileSystemService);
-    IPCLogger.info('SearchService initialized', { roots });
+    searchService = new SearchService(kernel.getPathTrie(), kernel.getFileSystemService());
+    IPCLogger.info('SearchService initialized with ReactiveWorkspaceKernel');
   }
 
   return searchService;
@@ -338,13 +338,63 @@ async function handleQuery(
   input: { query: string; searchRoot: string }
 ): Promise<FileNode[]> {
   const queryLower = input.query.toLowerCase().trim();
-  const fsService = new FileSystemService(resolveAllowedRoots());
+  const kernel = getReactiveWorkspaceKernel();
+  const fsService = kernel.getFileSystemService();
+  const pathTrie = kernel.getPathTrie();
   const entries = await fsService.readDirectory(input.searchRoot);
+  kernel.warmDirectory(entries);
 
   const fileNodes =
     queryLower.length === 0
-      ? entries
+      ? [...entries]
       : entries.filter((entry) => entry.name.toLowerCase().includes(queryLower));
+
+  if (queryLower.length > 0) {
+    const seen = new Set(
+      fileNodes.map((n) =>
+        process.platform === 'win32' ? path.resolve(n.path).toLowerCase() : path.resolve(n.path)
+      )
+    );
+    const normalizedRoot =
+      process.platform === 'win32'
+        ? path.resolve(input.searchRoot).toLowerCase()
+        : path.resolve(input.searchRoot);
+
+    const trieCandidates = pathTrie.autocomplete(queryLower, 50);
+    for (const candidatePath of trieCandidates) {
+      const normalizedCandidate =
+        process.platform === 'win32'
+          ? path.resolve(candidatePath).toLowerCase()
+          : path.resolve(candidatePath);
+      if (seen.has(normalizedCandidate)) {
+        continue;
+      }
+      if (
+        normalizedCandidate !== normalizedRoot &&
+        !normalizedCandidate.startsWith(normalizedRoot + path.sep)
+      ) {
+        continue;
+      }
+      try {
+        const stats = await fsService.getStats(candidatePath);
+        const fileName = path.basename(candidatePath);
+        const extension = path.extname(fileName).replace(/^\./, '').toLowerCase();
+        seen.add(normalizedCandidate);
+        fileNodes.push({
+          path: candidatePath,
+          name: fileName,
+          isDirectory: stats.isDirectory,
+          size: stats.size,
+          modified: stats.modified,
+          extension,
+          mimeType: extension ? `application/${extension}` : 'application/octet-stream',
+          isHidden: fileName.startsWith('.'),
+        });
+      } catch {
+        // Ignore stale candidates
+      }
+    }
+  }
 
   IPCLogger.info('Search query completed', {
     query: input.query,

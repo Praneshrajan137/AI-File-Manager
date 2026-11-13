@@ -55,11 +55,14 @@ export interface WatchOptions {
  * watcher.on('fileCreated', (path) => console.log('Created:', path));
  * await watcher.start('/home/user/documents');
  */
+type WatcherListener = { callback(...args: unknown[]): void }['callback'];
+
 export class FileWatcher extends EventEmitter {
     private watcher: chokidar.FSWatcher | null = null;
     private eventQueue: EventQueue;
     private watching: boolean = false;
-    private eventHandlers: Map<string, (...args: any[]) => void> = new Map();
+    private watchRoot: string | null = null;
+    private eventHandlers: Map<string, WatcherListener> = new Map();
 
     /**
      * Create file watcher.
@@ -99,9 +102,10 @@ export class FileWatcher extends EventEmitter {
 
         // Bug Fix #11: Normalize path for cross-platform compatibility
         const normalizedPath = path.normalize(dirPath);
+        this.watchRoot = normalizedPath;
 
         const defaultOptions: WatchOptions = {
-            ignored: this.defaultIgnorePatterns(),
+            ignored: this.defaultIgnorePatterns(normalizedPath),
             persistent: true,
             ignoreInitial: true,
             awaitWriteFinish: {
@@ -120,26 +124,26 @@ export class FileWatcher extends EventEmitter {
         const mergedOptions = { ...defaultOptions, ...options };
 
         // Bug Fix #4: Return Promise that resolves when 'ready' event fires
-        return new Promise<void>((resolve, reject) => {
+        return new Promise<void>((resolve) => {
             this.watcher = chokidar.watch(normalizedPath, mergedOptions);
 
             // Create bound handlers to allow cleanup later (Bug Fix #9)
-            const addHandler = (filePath: string) => this.handleFileCreated(filePath);
-            const changeHandler = (filePath: string) => this.handleFileChanged(filePath);
-            const unlinkHandler = (filePath: string) => this.handleFileDeleted(filePath);
-            const errorHandler = (error: Error) => this.handleError(error);
-            const readyHandler = () => {
+            const addHandler = (filePath: string): void => this.handleFileCreated(filePath);
+            const changeHandler = (filePath: string): void => this.handleFileChanged(filePath);
+            const unlinkHandler = (filePath: string): void => this.handleFileDeleted(filePath);
+            const errorHandler = (error: Error): void => this.handleError(error);
+            const readyHandler = (): void => {
                 this.watching = true;
                 this.emit('ready');
                 resolve();
             };
 
             // Store handlers for cleanup (Bug Fix #9)
-            this.eventHandlers.set('add', addHandler);
-            this.eventHandlers.set('change', changeHandler);
-            this.eventHandlers.set('unlink', unlinkHandler);
-            this.eventHandlers.set('error', errorHandler);
-            this.eventHandlers.set('ready', readyHandler);
+            this.eventHandlers.set('add', addHandler as WatcherListener);
+            this.eventHandlers.set('change', changeHandler as WatcherListener);
+            this.eventHandlers.set('unlink', unlinkHandler as WatcherListener);
+            this.eventHandlers.set('error', errorHandler as WatcherListener);
+            this.eventHandlers.set('ready', readyHandler as WatcherListener);
 
             // Register event handlers
             this.watcher
@@ -175,6 +179,7 @@ export class FileWatcher extends EventEmitter {
         await this.watcher.close();
         this.watcher = null;
         this.watching = false;
+        this.watchRoot = null;
         this.emit('stopped');
     }
 
@@ -185,6 +190,13 @@ export class FileWatcher extends EventEmitter {
      */
     isWatching(): boolean {
         return this.watching;
+    }
+
+    /**
+     * Get currently watched directory path, if active.
+     */
+    getWatchedPath(): string | null {
+        return this.watchRoot;
     }
 
     /**
@@ -311,78 +323,77 @@ export class FileWatcher extends EventEmitter {
      * 
      * @returns Function that returns true for ignored paths
      */
-    private defaultIgnorePatterns(): (filePath: string) => boolean {
-        return (filePath: string): boolean => {
-            // Bug Fix #6: Normalize path for cross-platform compatibility
-            const normalizedPath = path.normalize(filePath).toLowerCase();
+    private defaultIgnorePatterns(watchRoot?: string): (filePath: string) => boolean {
+        const normalizedRoot = watchRoot
+            ? path.normalize(watchRoot).toLowerCase().replace(/[\\/]+$/, '')
+            : null;
 
-            // Ignore hidden files/folders (starts with .)
+        return (filePath: string): boolean => {
+            const normalizedPath = path.normalize(filePath).toLowerCase().replace(/[\\/]+$/, '');
+
+            // Never ignore the watched directory itself
+            if (normalizedRoot && normalizedPath === normalizedRoot) {
+                return false;
+            }
+
+            // Inspect segments strictly relative to watchRoot when inside watchRoot
+            // so OS temp roots (e.g. AppData\Local\Temp, /tmp) are watchable when explicitly opened.
+            let targetForDirChecks = normalizedPath;
+            if (normalizedRoot && normalizedPath.startsWith(normalizedRoot + path.sep)) {
+                targetForDirChecks = normalizedPath.slice(normalizedRoot.length + 1);
+            }
+
             const basename = path.basename(normalizedPath);
-            if (basename.startsWith('.')) {
+            if (basename.startsWith('.') && basename !== '.' && basename !== '..') {
                 return true;
             }
 
-            // CRITICAL: Windows-specific system folders that cause EPERM errors
-            const windowsSystemFolders = [
-                'appdata',
-                'application data',
-                'local settings',
-                'cookies',
-                'my documents',
-                'my music',
-                'my pictures',
-                'my videos',
-                'nethood',
-                'printhood',
-                'recent',
-                'sendto',
-                'start menu',
-                'templates',
-                'temporary internet files',
-                'history',
-                'ntuser',
-                '$recycle.bin',
-                'system volume information',
-                'programdata',
-                'msocache',
-                'recovery',
-                'config.msi',
+            // Windows-specific noisy/EPERM subtrees (avoids blocking AppData\Local\Temp when watched)
+            const windowsSystemSubpaths = [
+                `${path.sep}appdata${path.sep}local${path.sep}microsoft`,
+                `${path.sep}appdata${path.sep}local${path.sep}packages`,
+                `${path.sep}appdata${path.sep}local${path.sep}google`,
+                `${path.sep}appdata${path.sep}roaming${path.sep}microsoft`,
+                `${path.sep}application data`,
+                `${path.sep}local settings`,
+                `${path.sep}temporary internet files`,
+                `${path.sep}system volume information`,
+                `${path.sep}$recycle.bin`,
+                `${path.sep}programdata`,
+                `${path.sep}msocache`,
+                `${path.sep}recovery`,
+                `${path.sep}config.msi`,
             ];
 
-            for (const folder of windowsSystemFolders) {
-                if (normalizedPath.includes(`${path.sep}${folder}`) ||
-                    normalizedPath.includes(`${path.sep}${folder}${path.sep}`)) {
+            for (const folder of windowsSystemSubpaths) {
+                if (
+                    targetForDirChecks.includes(`${folder}${path.sep}`) ||
+                    targetForDirChecks.endsWith(folder)
+                ) {
                     return true;
                 }
             }
 
-            // Ignore node_modules (cross-platform)
-            if (normalizedPath.includes(`${path.sep}node_modules${path.sep}`) ||
-                normalizedPath.endsWith(`${path.sep}node_modules`)) {
-                return true;
-            }
-
-            // Ignore common temp/cache directories
-            const ignoredDirs = [
+            const segments = targetForDirChecks.split(/[\\/]+/).filter(Boolean);
+            const ignoredDirs = new Set([
+                'node_modules',
                 '.git',
                 '.vscode',
                 '.idea',
                 '.cursor',
                 '__pycache__',
+                '.file-manager',
+                'vectordb',
+                '.lancedb',
                 'dist',
                 'build',
                 'coverage',
                 'cache',
-                'temp',
-                'tmp',
                 'logs',
-            ];
+            ]);
 
-            for (const dir of ignoredDirs) {
-                if (normalizedPath.includes(`${path.sep}${dir}${path.sep}`) ||
-                    normalizedPath.endsWith(`${path.sep}${dir}`)) {
-                    return true;
-                }
+            if (segments.some((segment) => ignoredDirs.has(segment))) {
+                return true;
             }
 
             // Ignore common temp file patterns
@@ -392,7 +403,7 @@ export class FileWatcher extends EventEmitter {
                 return true;
             }
 
-            // Ignore Windows-specific temp files
+            // Ignore Windows-specific Office/temp files
             if (basename.startsWith('~$') || basename.endsWith('.tmp')) {
                 return true;
             }
