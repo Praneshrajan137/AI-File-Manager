@@ -73,6 +73,10 @@ export const appConfigSchema = z.object({
     maxTokens: z.number().int().positive().default(2048),
     temperature: z.number().min(0).max(1).default(0.7),
     embeddingDimensions: z.number().int().positive().default(384),
+    embeddingModel: z.string().default('BAAI/bge-small-en-v1.5'),
+    embeddingDtype: z.enum(['q8', 'fp32']).default('q8'),
+    rerankerModel: z.string().default('Xenova/ms-marco-MiniLM-L-6-v2'),
+    enableWebGPU: z.boolean().default(false),
   }),
 
   logging: z.object({

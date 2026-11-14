@@ -29,6 +29,7 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { ConfigManager } from '@shared/config';
 import { Logger, getLogger } from '@shared/logging';
+import { suppressSqliteExperimentalWarning } from '@shared/utils/processWarnings';
 import { ErrorHandler } from './middleware/ErrorHandler';
 import {
   configureKernelHooks,
@@ -53,6 +54,7 @@ const isDevelopment = process.env.NODE_ENV === 'development';
  * Must be called before app.whenReady().
  */
 function initializeSystems(): void {
+  suppressSqliteExperimentalWarning();
   // 1. Initialize Configuration
   ConfigManager.initialize({
     watchConfig: isDevelopment, // Hot-reload in development

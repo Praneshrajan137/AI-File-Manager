@@ -10,9 +10,9 @@ module.exports = {
     '^@renderer/(.*)$': '<rootDir>/src/renderer/$1',
     '^@llm/(.*)$': '<rootDir>/src/llm/$1',
   },
-  // Transform ES modules from @xenova/transformers
+  // Transform ES modules from @huggingface/transformers
   transformIgnorePatterns: [
-    'node_modules/(?!(@xenova/transformers)/)',
+    'node_modules/(?!(@huggingface/transformers)/)',
   ],
   transform: {
     '^.+\\.tsx?$': ['ts-jest', {

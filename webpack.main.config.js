@@ -59,10 +59,14 @@ module.exports = {
     // Externals: Don't bundle Node.js built-ins, Electron, or native modules
     externals: {
         electron: 'commonjs electron',
+        'node:sqlite': 'commonjs node:sqlite',
         // Native modules that can't be bundled by webpack
         '@lancedb/lancedb': 'commonjs @lancedb/lancedb',
-        // NOTE: @xenova/transformers uses dynamicImport helper to bypass webpack
-        '@xenova/transformers': 'commonjs @xenova/transformers',
+        // NOTE: @huggingface/transformers uses dynamicImport helper / external CommonJS
+        '@huggingface/transformers': 'commonjs @huggingface/transformers',
+        'onnxruntime-node': 'commonjs onnxruntime-node',
+        'pdf-parse': 'commonjs pdf-parse',
+        'mammoth': 'commonjs mammoth',
         'sharp': 'commonjs sharp',
         'chokidar': 'commonjs chokidar',
         'ollama': 'commonjs ollama',

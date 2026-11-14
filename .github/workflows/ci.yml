@@ -72,6 +72,9 @@ jobs:
       - name: Build Electron main, preload & renderer
         run: npm run build
 
+      - name: Verify Electron 45 runtime ABI smoke check
+        run: node scripts/smoke-electron-stack.mjs --in-electron
+
       - name: Run Playwright Electron E2E tests (Linux Xvfb)
         if: runner.os == 'Linux'
         env:

@@ -1,82 +1,80 @@
 /**
  * embeddingWorker.ts - Worker Thread for Embedding Operations
- * 
- * This worker runs in a separate thread to prevent blocking the main process.
- * The EmbeddingModel runs here, performing CPU-intensive ML inference without
- * freezing the UI.
- * 
- * Message Protocol:
- * 
- * Incoming:
- * - { type: 'init' } - Initialize the model
- * - { type: 'embed', id: number, texts: string[] } - Generate embeddings
- * - { type: 'terminate' } - Shutdown worker
- * 
- * Outgoing:
- * - { type: 'initialized' } - Model ready
- * - { type: 'result', id: number, embeddings: number[][] } - Embeddings result
- * - { type: 'error', id: number, message: string } - Error occurred
- * - { type: 'progress', id: number, current: number, total: number } - Progress update
+ *
+ * Uses `@huggingface/transformers` v4 (`BAAI/bge-small-en-v1.5`, quantized `q8` on CPU
+ * by default) inside an isolated worker thread to keep the main event loop responsive.
  */
 
 import { parentPort } from 'worker_threads';
+import { DEFAULT_EMBEDDING_MODEL } from '../../shared/contracts';
+import { suppressSqliteExperimentalWarning } from '../../shared/utils/processWarnings';
+import {
+  loadTransformers,
+  TransformersDevice,
+  TransformersDtype,
+} from '../models/transformersLoader';
 
-// Dynamic import for ESM-only @xenova/transformers
-// eslint-disable-next-line @typescript-eslint/no-implied-eval
-const dynamicImport = new Function('modulePath', 'return import(modulePath)');
+suppressSqliteExperimentalWarning();
 
-// Type for transformers module
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let transformersModule: any = null;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let extractor: any = null;
+// Type for active feature extraction pipeline
+let extractor:
+  | ((input: string, options?: Record<string, unknown>) => Promise<{ data: ArrayLike<number> }>)
+  | null = null;
 
-const MODEL_NAME = 'Xenova/all-MiniLM-L6-v2';
+let activeModelName = DEFAULT_EMBEDDING_MODEL;
+let activeDtype: TransformersDtype = 'q8';
 const DIMENSIONS = 384;
 
 /**
- * Initialize the embedding model.
- * Downloads model on first run (~100MB, cached thereafter).
+ * Initialize the embedding model (`q8` quantized ONNX on CPU by default).
  */
-async function initializeModel(): Promise<void> {
-    if (extractor) {
-        return; // Already initialized
-    }
+async function initializeModel(options?: {
+  modelName?: string;
+  dtype?: TransformersDtype;
+  device?: TransformersDevice;
+}): Promise<void> {
+  const requestedModel = options?.modelName || activeModelName;
+  const requestedDtype = options?.dtype ?? activeDtype;
+  const requestedDevice = options?.device ?? 'cpu';
 
-    try {
-        // Dynamic import for ESM-only @xenova/transformers
-        if (!transformersModule) {
-            transformersModule = await dynamicImport('@xenova/transformers');
-            // Configure for Node.js environment
-            transformersModule.env.useBrowserCache = false;
-        }
+  if (extractor && requestedModel === activeModelName && requestedDtype === activeDtype) {
+    parentPort?.postMessage({ type: 'initialized' });
+    return;
+  }
 
-        // Load feature-extraction pipeline
-        extractor = await transformersModule.pipeline('feature-extraction', MODEL_NAME, {
-            progress_callback: undefined,
-        });
+  try {
+    const transformers = await loadTransformers();
+    extractor = await transformers.pipeline('feature-extraction', requestedModel, {
+      dtype: requestedDtype,
+      device: requestedDevice,
+    });
+    activeModelName = requestedModel;
+    activeDtype = requestedDtype;
 
-        parentPort?.postMessage({ type: 'initialized' });
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        parentPort?.postMessage({ type: 'error', id: -1, message: `Model init failed: ${message}` });
-    }
+    parentPort?.postMessage({ type: 'initialized' });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    parentPort?.postMessage({ type: 'error', id: -1, message: `Model init failed: ${message}` });
+  }
 }
 
 /**
  * Embed a single text.
  */
 async function embedText(text: string): Promise<number[]> {
-    if (!text || text.trim() === '') {
-        return new Array(DIMENSIONS).fill(0);
-    }
+  if (!text || text.trim() === '') {
+    return new Array(DIMENSIONS).fill(0);
+  }
+  if (!extractor) {
+    throw new Error('Embedding extractor is not initialized');
+  }
 
-    const output = await extractor(text, {
-        pooling: 'mean',
-        normalize: true,
-    });
+  const output = await extractor(text, {
+    pooling: 'mean',
+    normalize: true,
+  });
 
-    return Array.from(output.data as Float32Array);
+  return Array.from(output.data as Float32Array);
 }
 
 /**
@@ -130,16 +128,27 @@ parentPort?.on('message', async (message: {
     type: 'init' | 'embed' | 'terminate';
     id?: number;
     texts?: string[];
+    modelName?: string;
+    dtype?: TransformersDtype;
+    device?: TransformersDevice;
 }) => {
     try {
         switch (message.type) {
             case 'init':
-                await initializeModel();
+                await initializeModel({
+                    modelName: message.modelName,
+                    dtype: message.dtype,
+                    device: message.device,
+                });
                 break;
 
             case 'embed':
                 if (!extractor) {
-                    await initializeModel();
+                    await initializeModel({
+                        modelName: message.modelName,
+                        dtype: message.dtype,
+                        device: message.device,
+                    });
                 }
 
                 if (message.texts && message.id !== undefined) {
@@ -155,7 +164,6 @@ parentPort?.on('message', async (message: {
             case 'terminate':
                 // Cleanup and exit
                 extractor = null;
-                transformersModule = null;
                 process.exit(0);
                 break;
 

@@ -53,6 +53,9 @@ export interface VectorStoreDiagnostics {
   indexedFiles: number;
   lexicalDocs: number;
   pendingBuffer: number;
+  modelId?: string;
+  needsReindex?: boolean;
+  migrationReason?: string;
 }
 
 export interface LlmPipelineDiagnostics {

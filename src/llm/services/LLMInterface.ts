@@ -6,12 +6,25 @@
  * 
  * Privacy-first: All processing happens locally, no cloud APIs.
  */
-import * as electron from 'electron';
 import {
     LLMQueryOptions,
     RetrievalResult,
 } from '../../shared/contracts';
 import { LLMLogger } from '../../shared/logging';
+
+function getElectronNetFetch(): typeof fetch | null {
+    if (!process.versions?.electron) {
+        return null;
+    }
+    try {
+        // Lazy require keeps Node/Jest environments clean when Electron binary isn't loaded
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const electronMod = require('electron') as { net?: { fetch?: typeof fetch } };
+        return typeof electronMod?.net?.fetch === 'function' ? electronMod.net.fetch : null;
+    } catch {
+        return null;
+    }
+}
 
 function assertLocalOllamaUrl(rawUrl: string): string {
     const trimmed = rawUrl.replace(/\/+$/, '');
@@ -65,9 +78,9 @@ export class LLMInterface {
         if (this.customFetch) {
             return this.customFetch(url, init);
         }
-        const electronNet = (electron as unknown as { net?: { fetch?: typeof fetch } })?.net;
-        if (electronNet && typeof electronNet.fetch === 'function') {
-            return electronNet.fetch(url, init);
+        const electronNetFetch = getElectronNetFetch();
+        if (electronNetFetch) {
+            return electronNetFetch(url, init);
         }
         if (typeof globalThis.fetch === 'function') {
             return globalThis.fetch(url, init);
