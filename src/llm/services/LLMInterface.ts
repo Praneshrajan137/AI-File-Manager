@@ -13,11 +13,8 @@ import {
 import { LLMLogger } from '../../shared/logging';
 
 function getElectronNetFetch(): typeof fetch | null {
-    if (!process.versions?.electron) {
-        return null;
-    }
     try {
-        // Lazy require keeps Node/Jest environments clean when Electron binary isn't loaded
+        // Lazy require works with both mocked 'electron' in Jest and real Electron runtime
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const electronMod = require('electron') as { net?: { fetch?: typeof fetch } };
         return typeof electronMod?.net?.fetch === 'function' ? electronMod.net.fetch : null;
