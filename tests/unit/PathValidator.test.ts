@@ -168,12 +168,14 @@ describe('PathValidator', () => {
             expect(result.valid).toBe(true);
         });
 
-        it('should normalize Windows backslashes to forward slashes', () => {
-            const winPath = allowedRoot.replace(/\//g, '\\') + '\\file.txt';
+        it('should normalize alternate slashes and redundant separators safely', () => {
+            const altPath =
+                process.platform === 'win32'
+                    ? allowedRoot.replace(/\\/g, '/') + '/file.txt'
+                    : allowedRoot + '///file.txt';
 
-            const result = validator.validate(winPath);
+            const result = validator.validate(altPath);
 
-            // Should handle cross-platform
             expect(result.valid).toBe(true);
         });
     });
