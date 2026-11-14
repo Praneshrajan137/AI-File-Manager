@@ -3,11 +3,15 @@
  */
 
 import type {
+  FileDeleteMode,
   FileNode,
   FilePreviewResult,
   FileStats,
   IndexingStatus,
+  OperationJournalState,
   SystemPaths,
+  UndoRedoResult,
+  VaultConfigSnapshot,
 } from '../shared/contracts';
 import type { RuntimeDiagnosticsSnapshot } from '../shared/diagnostics';
 
@@ -26,11 +30,26 @@ interface ElectronAPI {
       path: string,
       name: string
     ) => Promise<{ success: boolean; path: string }>;
-    delete: (path: string, recursive?: boolean) => Promise<{ success: boolean }>;
+    delete: (path: string, recursive?: boolean, mode?: FileDeleteMode) => Promise<{ success: boolean }>;
     move: (source: string, destination: string) => Promise<{ success: boolean; newPath: string }>;
     getStats: (path: string) => Promise<FileStats>;
     getSystemPaths: () => Promise<SystemPaths>;
     rename: (oldPath: string, newName: string) => Promise<{ success: boolean; newPath: string }>;
+    undo: () => Promise<UndoRedoResult>;
+    redo: () => Promise<UndoRedoResult>;
+    getJournalState: () => Promise<OperationJournalState>;
+    emptyTrashVault: () => Promise<OperationJournalState>;
+  };
+
+  vault: {
+    getConfig: () => Promise<VaultConfigSnapshot>;
+    addRoot: (options?: {
+      path?: string;
+      pickDialog?: boolean;
+    }) => Promise<{ cancelled: boolean; addedPath?: string; config: VaultConfigSnapshot }>;
+    removeRoot: (path: string) => Promise<VaultConfigSnapshot>;
+    setIndexed: (path: string, enabled: boolean) => Promise<VaultConfigSnapshot>;
+    toggleFavorite: (path: string) => Promise<VaultConfigSnapshot>;
   };
 
   navigation: {

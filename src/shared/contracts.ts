@@ -107,6 +107,51 @@ export interface SystemPaths {
   pictures: string;
 }
 
+export type FileDeleteMode = 'vault' | 'trash' | 'permanent';
+
+export interface OperationRecord {
+  id: string;
+  type: 'delete' | 'move' | 'rename' | 'create_file' | 'create_dir' | 'batch';
+  timestamp: number;
+  sourcePath: string;
+  destinationPath?: string;
+  vaultPayloadPath?: string;
+  symlinkTarget?: string;
+  children?: OperationRecord[];
+  isDirectory: boolean;
+  isSymlink?: boolean;
+  size: number;
+  undoable: boolean;
+  mode?: FileDeleteMode;
+  description: string;
+}
+
+export interface OperationJournalState {
+  canUndo: boolean;
+  canRedo: boolean;
+  undoCount: number;
+  redoCount: number;
+  lastUndoDescription?: string;
+  lastRedoDescription?: string;
+  vaultItemCount: number;
+  vaultTotalBytes: number;
+}
+
+export interface UndoRedoResult {
+  success: boolean;
+  operation?: OperationRecord;
+  restoredPath?: string;
+  state: OperationJournalState;
+}
+
+export interface VaultConfigSnapshot {
+  allowedRoots: string[];
+  indexedRoots: string[];
+  excludedDirs: string[];
+  favorites: string[];
+  defaultDeleteMode: 'vault' | 'trash';
+}
+
 /**
  * Structured error for file system operations.
  */

@@ -144,8 +144,8 @@ export class FileSystemService implements IFileSystemService {
         filePath: string,
         encoding: BufferEncoding = 'utf-8'
     ): Promise<string> {
-        // SECURITY: Validate path first
-        this.validatePathOrThrow(filePath);
+        // SECURITY: Validate canonical path first (prevents ancestor/leaf symlink escapes)
+        await this.validateCanonicalPathOrThrow(filePath);
 
         try {
             const content = await fs.readFile(filePath, encoding);
@@ -159,7 +159,7 @@ export class FileSystemService implements IFileSystemService {
         filePath: string,
         maxLines: number = RING_BUFFER_CAPACITY
     ): Promise<FilePreviewResult> {
-        this.validatePathOrThrow(filePath);
+        await this.validateCanonicalPathOrThrow(filePath);
 
         const cap = Math.max(1, Math.min(Math.floor(maxLines), RING_BUFFER_CAPACITY));
         const normalizedFile = this.normalizeCacheKey(filePath);
@@ -271,8 +271,8 @@ export class FileSystemService implements IFileSystemService {
         filePath: string,
         content: string
     ): Promise<{ success: boolean }> {
-        // SECURITY: Validate path first
-        this.validatePathOrThrow(filePath);
+        // SECURITY: Validate canonical target/ancestor path first
+        await this.validateCanonicalPathOrThrow(filePath);
 
         try {
             await fs.writeFile(filePath, content, 'utf-8');
@@ -287,8 +287,8 @@ export class FileSystemService implements IFileSystemService {
         filePath: string,
         recursive: boolean = false
     ): Promise<{ success: boolean }> {
-        // SECURITY: Validate path first
-        this.validatePathOrThrow(filePath);
+        // SECURITY: Validate parent canonically if leaf is a symlink so we unlink without dereferencing targets
+        await this.validateLinkAwarePathOrThrow(filePath);
 
         try {
             await fs.rm(filePath, { recursive, force: true });
@@ -303,9 +303,9 @@ export class FileSystemService implements IFileSystemService {
         source: string,
         destination: string
     ): Promise<{ success: boolean; newPath: string }> {
-        // SECURITY: Validate both paths
-        this.validatePathOrThrow(source);
-        this.validatePathOrThrow(destination);
+        // SECURITY: Validate source (link-aware) and canonical destination
+        await this.validateLinkAwarePathOrThrow(source);
+        await this.validateCanonicalPathOrThrow(destination);
 
         try {
             await fs.rename(source, destination);
@@ -336,8 +336,8 @@ export class FileSystemService implements IFileSystemService {
     }
 
     async getStats(filePath: string): Promise<FileStats> {
-        // SECURITY: Validate path first
-        this.validatePathOrThrow(filePath);
+        // SECURITY: Validate canonical path first
+        await this.validateCanonicalPathOrThrow(filePath);
 
         try {
             const stats = await fs.stat(filePath);
@@ -359,8 +359,8 @@ export class FileSystemService implements IFileSystemService {
     }
 
     async createDirectory(dirPath: string): Promise<{ success: boolean }> {
-        // SECURITY: Validate path first
-        this.validatePathOrThrow(dirPath);
+        // SECURITY: Validate canonical path first
+        await this.validateCanonicalPathOrThrow(dirPath);
 
         try {
             // Create directory (recursive: false to only create final directory)
@@ -437,6 +437,59 @@ export class FileSystemService implements IFileSystemService {
      */
     getAllowedRoot(): string {
         return this.validator.getAllowedRoot();
+    }
+
+    getAllowedRoots(): string[] {
+        return this.validator.getAllowedRoots();
+    }
+
+    /**
+     * Dynamically update allowed workspace/vault roots and invalidate directory caches.
+     */
+    updateAllowedRoots(allowedRoot: string | string[]): void {
+        const roots = Array.isArray(allowedRoot)
+            ? allowedRoot.filter((entry) => entry && entry.trim() !== '')
+            : allowedRoot && allowedRoot.trim() !== ''
+                ? [allowedRoot]
+                : [];
+        if (roots.length === 0) {
+            throw new Error('Allowed root directory cannot be empty');
+        }
+        this.validator = new PathValidator(roots);
+        this.clearCache();
+    }
+
+    private async validateLinkAwarePathOrThrow(filePath: string): Promise<string> {
+        this.validatePathOrThrow(filePath);
+        if (typeof fs.lstat === 'function') {
+            try {
+                const lstatInfo = await fs.lstat(path.resolve(filePath));
+                if (typeof lstatInfo.isSymbolicLink === 'function' && lstatInfo.isSymbolicLink()) {
+                    const linkCheck = await this.validator.validateParentCanonicalForLink(filePath);
+                    if (!linkCheck.valid || !linkCheck.canonicalLinkPath) {
+                        const errorCode =
+                            linkCheck.error === 'SYMLINK_ESCAPE'
+                                ? 'UNAUTHORIZED_ACCESS'
+                                : (linkCheck.error as 'PATH_TRAVERSAL' | 'UNAUTHORIZED_ACCESS' | 'INVALID_PATH');
+                        throw ErrorFactory.createFileSystemError(
+                            errorCode || 'UNAUTHORIZED_ACCESS',
+                            filePath,
+                            undefined,
+                            { details: linkCheck.details }
+                        );
+                    }
+                    return linkCheck.canonicalLinkPath;
+                }
+            } catch (error: unknown) {
+                if (getFsErrorCode(error) !== 'ENOENT') {
+                    // Propagate validation errors; let downstream fs operations handle OS-level errors cleanly
+                    if (error instanceof Error && error.name !== 'Error' && 'code' in error && (error as { code?: string }).code === 'UNAUTHORIZED_ACCESS') {
+                        throw error;
+                    }
+                }
+            }
+        }
+        return this.validateCanonicalPathOrThrow(filePath);
     }
 
     private async validateCanonicalPathOrThrow(filePath: string): Promise<string> {

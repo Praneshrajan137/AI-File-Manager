@@ -6,6 +6,8 @@ export interface ToastMessage {
   type: 'success' | 'error' | 'warning' | 'info';
   message: string;
   duration?: number;
+  actionLabel?: string;
+  onAction?: () => void;
 }
 
 interface UseToastReturn {

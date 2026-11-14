@@ -362,3 +362,11 @@ git tag v0.1.0-trie-complete
 **MAINTAINED BY**: Project Director
 
 **AI ASSISTANT**: Claude (Anthropic) via Cursor IDE
+
+---
+
+## 💻 HARDWARE & REMOTE-FIRST CI RULE (MANDATORY — 12 GB RAM / RTX 3050 LAPTOP)
+
+- **Never run heavy CI, full `npm run test:coverage`, full Playwright Electron E2E (`npm run test:e2e` / `test:all`), `npm run package`, heavy `10k` scale suites, or multi-model ONNX/Ollama benchmarks locally.**
+- **Locally:** Restrict verification to `npm run type-check`, targeted `npx eslint <files>`, and single/targeted fast unit test files (`npx jest <path> --runInBand --maxWorkers=1`).
+- **Remotely:** Run all heavy CI, full coverage, production builds, and cross-platform Playwright Electron E2E exclusively in **GitHub Actions** (`.github/workflows/`), wait for run completion via `gh run watch` / `gh run view`, and fix forward based on cloud logs.

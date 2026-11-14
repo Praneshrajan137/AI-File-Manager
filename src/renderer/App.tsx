@@ -26,6 +26,7 @@ import { FilePreviewDrawer } from './components/Preview/FilePreviewDrawer';
 import { Toast } from './components/common/Toast';
 import { RenameDialog } from './components/common/RenameDialog';
 import { CreateEntryDialog } from './components/common/CreateEntryDialog';
+import { DeleteConfirmDialog } from './components/common/DeleteConfirmDialog';
 import { useFileSystem } from './hooks/useFileSystem';
 import { useNavigation } from './hooks/useNavigation';
 import { useToast } from './hooks/useToast';
@@ -39,7 +40,14 @@ import {
   isPathInsideDirectory,
   normalizeComparablePath,
 } from './utils/pathHelpers';
-import { FileEvent, FileNode, FilePreviewResult } from '@shared/contracts';
+import {
+  FileDeleteMode,
+  FileEvent,
+  FileNode,
+  FilePreviewResult,
+  OperationJournalState,
+  VaultConfigSnapshot,
+} from '@shared/contracts';
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
@@ -116,6 +124,26 @@ const FileManagerApp: React.FC = () => {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const previewSeqRef = useRef(0);
   const previewOpenRef = useRef(false);
+  const [vaultConfig, setVaultConfig] = useState<VaultConfigSnapshot | null>(null);
+  const [journalState, setJournalState] = useState<OperationJournalState | null>(null);
+  const [pendingDeletePaths, setPendingDeletePaths] = useState<string[] | null>(null);
+
+  const refreshWorkspaceMetadata = useCallback(async (): Promise<void> => {
+    try {
+      const [vaultRes, journalRes] = await Promise.allSettled([
+        window.electronAPI.vault?.getConfig(),
+        window.electronAPI.fs?.getJournalState(),
+      ]);
+      if (vaultRes.status === 'fulfilled' && vaultRes.value) {
+        setVaultConfig(vaultRes.value);
+      }
+      if (journalRes.status === 'fulfilled' && journalRes.value) {
+        setJournalState(journalRes.value);
+      }
+    } catch {
+      // Safe fallback in partial test bridges
+    }
+  }, []);
 
   const selectedSingleFile = useMemo((): FileNode | null => {
     if (selectedFiles.length !== 1) return null;
@@ -150,27 +178,88 @@ const FileManagerApp: React.FC = () => {
   }, []);
 
   // Event handlers - wrapped in useCallback to create stable references
-  const handleDelete = useCallback(async (): Promise<void> => {
-    if (selectedFiles.length === 0) return;
-    const targets = [...selectedFiles];
+  const handleUndo = useCallback(async (): Promise<void> => {
+    try {
+      const result = await window.electronAPI.fs.undo();
+      if (result.state) {
+        setJournalState(result.state);
+      }
+      if (result.success) {
+        if (currentPath) {
+          await readDirectory(currentPath);
+        }
+        showToast({
+          type: 'success',
+          message: `Undid: ${result.operation?.description || 'last operation'}`,
+        });
+      }
+    } catch (err: unknown) {
+      showToast({
+        type: 'error',
+        message: getErrorMessage(err, 'Undo failed'),
+      });
+    }
+  }, [currentPath, readDirectory, showToast]);
+
+  const handleRedo = useCallback(async (): Promise<void> => {
+    try {
+      const result = await window.electronAPI.fs.redo();
+      if (result.state) {
+        setJournalState(result.state);
+      }
+      if (result.success) {
+        if (currentPath) {
+          await readDirectory(currentPath);
+        }
+        showToast({
+          type: 'success',
+          message: `Redid: ${result.operation?.description || 'operation'}`,
+        });
+      }
+    } catch (err: unknown) {
+      showToast({
+        type: 'error',
+        message: getErrorMessage(err, 'Redo failed'),
+      });
+    }
+  }, [currentPath, readDirectory, showToast]);
+
+  const executeDeletePaths = useCallback(async (
+    targets: string[],
+    mode: FileDeleteMode = 'vault'
+  ): Promise<void> => {
+    if (targets.length === 0) return;
 
     try {
       for (const filePath of targets) {
-        await deleteFile(filePath, true, true);
+        await deleteFile(filePath, true, true, mode);
       }
+      setSelectedFiles((prev) => prev.filter((p) => !targets.includes(p)));
+      if (currentPath) {
+        await readDirectory(currentPath);
+      }
+      await refreshWorkspaceMetadata();
       showToast({
         type: 'success',
-        message: `Deleted ${targets.length} file(s)`
+        message:
+          mode === 'vault'
+            ? `Moved ${targets.length} item(s) to Trash Vault`
+            : `Deleted ${targets.length} item(s)`,
+        actionLabel: mode === 'vault' ? 'Undo' : undefined,
+        onAction: mode === 'vault' ? (): void => { void handleUndo(); } : undefined,
       });
-      setSelectedFiles([]);
-      await readDirectory(currentPath);
     } catch (err: unknown) {
       showToast({
         type: 'error',
         message: getErrorMessage(err, 'Delete failed')
       });
     }
-  }, [selectedFiles, deleteFile, showToast, readDirectory, currentPath]);
+  }, [deleteFile, currentPath, readDirectory, refreshWorkspaceMetadata, showToast, handleUndo]);
+
+  const handleDelete = useCallback((): void => {
+    if (selectedFiles.length === 0) return;
+    setPendingDeletePaths([...selectedFiles]);
+  }, [selectedFiles]);
 
   const handleBack = useCallback(async (): Promise<void> => {
     const prevPath = await goBack();
@@ -202,7 +291,7 @@ const FileManagerApp: React.FC = () => {
 
   const handleDeleteShortcut = useCallback((): void => {
     if (selectedFiles.length > 0) {
-      void handleDelete();
+      handleDelete();
     }
   }, [selectedFiles.length, handleDelete]);
 
@@ -247,7 +336,10 @@ const FileManagerApp: React.FC = () => {
     'Alt+Right': handleForward,
     'Alt+P': handlePreviewShortcut,
     'Delete': handleDeleteShortcut,
-  }), [handleToggleChat, handleBack, handleForward, handlePreviewShortcut, handleDeleteShortcut]);
+    'Ctrl+Z': (): void => { void handleUndo(); },
+    'Ctrl+Y': (): void => { void handleRedo(); },
+    'Ctrl+Shift+Z': (): void => { void handleRedo(); },
+  }), [handleToggleChat, handleBack, handleForward, handlePreviewShortcut, handleDeleteShortcut, handleUndo, handleRedo]);
 
   useKeyboardShortcuts(shortcuts);
 
@@ -256,6 +348,7 @@ const FileManagerApp: React.FC = () => {
     // Async IIFE to handle the initial navigation
     (async (): Promise<void> => {
       try {
+        await refreshWorkspaceMetadata();
         // Fetch home directory from main process via IPC (not os-browserify polyfill)
         const systemPaths = await window.electronAPI.fs.getSystemPaths();
         const homeDir = systemPaths.home;
@@ -350,6 +443,63 @@ const FileManagerApp: React.FC = () => {
     }
   };
 
+  const handleAddVaultRoot = useCallback(async (): Promise<void> => {
+    try {
+      const res = await window.electronAPI.vault.addRoot({ pickDialog: true });
+      setVaultConfig(res.config);
+      if (!res.cancelled && res.addedPath) {
+        showToast({ type: 'success', message: `Added workspace: ${extractBasename(res.addedPath)}` });
+        await handleNavigate(res.addedPath);
+      }
+    } catch (err: unknown) {
+      showToast({ type: 'error', message: getErrorMessage(err, 'Failed to add workspace root') });
+    }
+  }, [showToast, handleNavigate]);
+
+  const handleRemoveVaultRoot = useCallback(async (rootPath: string): Promise<void> => {
+    try {
+      const updated = await window.electronAPI.vault.removeRoot(rootPath);
+      setVaultConfig(updated);
+      showToast({ type: 'info', message: `Removed workspace: ${extractBasename(rootPath)}` });
+    } catch (err: unknown) {
+      showToast({ type: 'error', message: getErrorMessage(err, 'Failed to remove workspace root') });
+    }
+  }, [showToast]);
+
+  const handleToggleIndexedRoot = useCallback(async (rootPath: string, enabled: boolean): Promise<void> => {
+    try {
+      const updated = await window.electronAPI.vault.setIndexed(rootPath, enabled);
+      setVaultConfig(updated);
+      showToast({
+        type: 'info',
+        message: enabled
+          ? `Enabled AI indexing for ${extractBasename(rootPath)}`
+          : `Disabled AI indexing for ${extractBasename(rootPath)}`,
+      });
+    } catch (err: unknown) {
+      showToast({ type: 'error', message: getErrorMessage(err, 'Failed to update AI index setting') });
+    }
+  }, [showToast]);
+
+  const handleToggleFavorite = useCallback(async (targetPath: string): Promise<void> => {
+    try {
+      const updated = await window.electronAPI.vault.toggleFavorite(targetPath);
+      setVaultConfig(updated);
+    } catch (err: unknown) {
+      showToast({ type: 'error', message: getErrorMessage(err, 'Failed to toggle favorite') });
+    }
+  }, [showToast]);
+
+  const handleEmptyTrashVault = useCallback(async (): Promise<void> => {
+    try {
+      const updatedState = await window.electronAPI.fs.emptyTrashVault();
+      setJournalState(updatedState);
+      showToast({ type: 'info', message: 'Trash Vault emptied' });
+    } catch (err: unknown) {
+      showToast({ type: 'error', message: getErrorMessage(err, 'Failed to empty Trash Vault') });
+    }
+  }, [showToast]);
+
   return (
     <div className="flex h-screen bg-gray-50" data-testid="app-container">
       {/* Sidebar */}
@@ -357,6 +507,13 @@ const FileManagerApp: React.FC = () => {
         width={sidebarWidth}
         onResize={setSidebarWidth}
         onNavigate={handleNavigate}
+        vaultConfig={vaultConfig}
+        journalState={journalState}
+        onAddVaultRoot={handleAddVaultRoot}
+        onRemoveVaultRoot={handleRemoveVaultRoot}
+        onToggleIndexedRoot={handleToggleIndexedRoot}
+        onToggleFavorite={handleToggleFavorite}
+        onEmptyTrashVault={handleEmptyTrashVault}
       />
 
       {/* Main Content */}
@@ -408,6 +565,12 @@ const FileManagerApp: React.FC = () => {
               void loadFilePreview(selectedSingleFile);
             }
           }}
+          canUndo={Boolean(journalState?.canUndo)}
+          canRedo={Boolean(journalState?.canRedo)}
+          undoDescription={journalState?.lastUndoDescription}
+          redoDescription={journalState?.lastRedoDescription}
+          onUndo={(): void => { void handleUndo(); }}
+          onRedo={(): void => { void handleRedo(); }}
           onOpenDiagnostics={(): void => setDiagnosticsOpen(true)}
           chatOpen={chatOpen}
           onToggleChat={handleToggleChat}
@@ -493,21 +656,18 @@ const FileManagerApp: React.FC = () => {
             setRenameFile(contextMenu.file);
             handleCloseContextMenu();
           }}
-          onDelete={async (): Promise<void> => {
-            try {
-              await deleteFile(contextMenu.file.path, true, true);
-              setSelectedFiles((prev) => prev.filter((p) => p !== contextMenu.file.path));
-              if (currentPath) {
-                await readDirectory(currentPath);
-              }
-            } catch (err: unknown) {
-              showToast({
-                type: 'error',
-                message: getErrorMessage(err, 'Delete failed'),
-              });
-            } finally {
-              handleCloseContextMenu();
-            }
+          isFavorite={Boolean(
+            vaultConfig?.favorites.some(
+              (f) => normalizeComparablePath(f) === normalizeComparablePath(contextMenu.file.path)
+            )
+          )}
+          onToggleFavorite={(): void => {
+            void handleToggleFavorite(contextMenu.file.path);
+            handleCloseContextMenu();
+          }}
+          onDelete={(): void => {
+            setPendingDeletePaths([contextMenu.file.path]);
+            handleCloseContextMenu();
           }}
           onCopyPath={async (): Promise<void> => {
             try {
@@ -521,8 +681,8 @@ const FileManagerApp: React.FC = () => {
         />
       )}
 
-      {/* Toast Container */}
-      <div className="fixed top-4 right-4 z-50 space-y-2">
+      {/* Toast Container (bottom-right so top toolbar Undo/Redo/Chat controls are never occluded) */}
+      <div className="fixed bottom-4 right-4 z-50 space-y-2">
         {toasts.map((toast) => (
           <Toast
             key={toast.id}
@@ -541,7 +701,13 @@ const FileManagerApp: React.FC = () => {
           try {
             const result = await window.electronAPI.fs.rename(renameFile.path, newName);
             if (result.success) {
-              showToast({ type: 'success', message: `Renamed to ${newName}` });
+              await refreshWorkspaceMetadata();
+              showToast({
+                type: 'success',
+                message: `Renamed to ${newName}`,
+                actionLabel: 'Undo',
+                onAction: (): void => { void handleUndo(); },
+              });
               await readDirectory(currentPath);
             } else {
               showToast({ type: 'error', message: 'Failed to rename file' });
@@ -563,11 +729,22 @@ const FileManagerApp: React.FC = () => {
           try {
             if (createEntryMode === 'file') {
               await window.electronAPI.fs.createFile(currentPath, entryName, '');
-              showToast({ type: 'success', message: `Created file ${entryName}` });
+              showToast({
+                type: 'success',
+                message: `Created file ${entryName}`,
+                actionLabel: 'Undo',
+                onAction: (): void => { void handleUndo(); },
+              });
             } else {
               await window.electronAPI.fs.createDirectory(currentPath, entryName);
-              showToast({ type: 'success', message: `Created folder ${entryName}` });
+              showToast({
+                type: 'success',
+                message: `Created folder ${entryName}`,
+                actionLabel: 'Undo',
+                onAction: (): void => { void handleUndo(); },
+              });
             }
+            await refreshWorkspaceMetadata();
             await readDirectory(currentPath);
             setCreateEntryMode(null);
           } catch (err: unknown) {
@@ -578,6 +755,19 @@ const FileManagerApp: React.FC = () => {
           }
         }}
         onCancel={(): void => setCreateEntryMode(null)}
+      />
+
+      {/* Delete Mode Confirmation Dialog (Trash Vault / OS Trash / Permanent) */}
+      <DeleteConfirmDialog
+        isOpen={pendingDeletePaths !== null}
+        targetPaths={pendingDeletePaths ?? []}
+        defaultMode={vaultConfig?.defaultDeleteMode ?? 'vault'}
+        onConfirm={(mode): void => {
+          const targets = pendingDeletePaths ?? [];
+          setPendingDeletePaths(null);
+          void executeDeletePaths(targets, mode);
+        }}
+        onCancel={(): void => setPendingDeletePaths(null)}
       />
 
       {/* Kernel Runtime Diagnostics Modal */}

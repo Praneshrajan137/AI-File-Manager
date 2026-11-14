@@ -5,6 +5,12 @@
 
 ---
 
+## Binding Operational Rule: Hardware & Remote-First CI (12 GB RAM + RTX 3050)
+- **Local laptop (lightweight only):** `npm run type-check`, targeted `npx eslint`, and single/targeted mocked unit tests (`npx jest <file> --runInBand --maxWorkers=1`).
+- **GitHub Actions ONLY (heavy CI):** Full `npm run test:coverage`, full production `npm run build`, RAG/scale benchmarks, packaging dry-runs, and full Playwright Electron E2E suites MUST run in GitHub Actions via `.github/workflows/`. Always wait for GitHub Actions results (`gh run watch` / `gh run view`) before proceeding or claiming completion.
+
+---
+
 ## Core Architectural Decisions & Rejected Alternatives
 
 | Decision | Choice | Rejected Alternatives & Why |

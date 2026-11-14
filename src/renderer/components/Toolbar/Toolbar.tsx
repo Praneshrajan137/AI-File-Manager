@@ -7,6 +7,8 @@ import {
   FilePlus,
   FolderPlus,
   MessageSquare,
+  Redo2,
+  Undo2,
 } from 'lucide-react';
 import { NavigationButtons } from './NavigationButtons';
 import { Breadcrumb } from './Breadcrumb';
@@ -34,6 +36,12 @@ interface ToolbarProps {
   onNewFolder?: () => void;
   canPreviewSelected?: boolean;
   onPreviewSelected?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
+  undoDescription?: string;
+  redoDescription?: string;
+  onUndo?: () => void;
+  onRedo?: () => void;
   onOpenDiagnostics?: () => void;
   chatOpen: boolean;
   onToggleChat: () => void;
@@ -58,6 +66,12 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onNewFolder,
   canPreviewSelected = false,
   onPreviewSelected,
+  canUndo = false,
+  canRedo = false,
+  undoDescription,
+  redoDescription,
+  onUndo,
+  onRedo,
   onOpenDiagnostics,
   chatOpen,
   onToggleChat
@@ -113,6 +127,32 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         title="Quick Preview Selected File (Alt+P)"
         aria-label="Quick Preview"
         data-testid="preview-button"
+      />
+    )}
+
+    {onUndo && (
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={<Undo2 className="w-4 h-4 text-primary-600" />}
+        onClick={onUndo}
+        disabled={!canUndo}
+        title={undoDescription ? `Undo: ${undoDescription} (Ctrl+Z)` : 'Undo (Ctrl+Z)'}
+        aria-label="Undo"
+        data-testid="undo-button"
+      />
+    )}
+
+    {onRedo && (
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={<Redo2 className="w-4 h-4 text-primary-600" />}
+        onClick={onRedo}
+        disabled={!canRedo}
+        title={redoDescription ? `Redo: ${redoDescription} (Ctrl+Y)` : 'Redo (Ctrl+Y)'}
+        aria-label="Redo"
+        data-testid="redo-button"
       />
     )}
 

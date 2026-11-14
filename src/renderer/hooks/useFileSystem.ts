@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
-import { FileNode, FileSystemError } from '@shared/contracts';
+import { FileDeleteMode, FileNode, FileSystemError } from '@shared/contracts';
 
 interface UseFileSystemReturn {
   // State
@@ -10,7 +10,7 @@ interface UseFileSystemReturn {
 
   // Actions
   readDirectory: (path: string) => Promise<boolean>;
-  deleteFile: (path: string, recursive?: boolean, skipRefresh?: boolean) => Promise<void>;
+  deleteFile: (path: string, recursive?: boolean, skipRefresh?: boolean, mode?: FileDeleteMode) => Promise<void>;
   moveFile: (source: string, destination: string) => Promise<void>;
   setSearchResults: (results: FileNode[]) => void;
 }
@@ -83,10 +83,11 @@ export function useFileSystem(options: UseFileSystemOptions = {}): UseFileSystem
   const deleteFile = useCallback(async (
     path: string,
     recursive: boolean = true,
-    skipRefresh: boolean = false
+    skipRefresh: boolean = false,
+    mode?: FileDeleteMode
   ) => {
     try {
-      await window.electronAPI.fs.delete(path, recursive);
+      await window.electronAPI.fs.delete(path, recursive, mode);
       onSuccess?.('File deleted successfully');
       if (!skipRefresh && currentPath) {
         await readDirectory(currentPath);

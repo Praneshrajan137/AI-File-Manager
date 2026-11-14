@@ -304,15 +304,34 @@ async function handleStartIndexing(
     indexedCount = 0;
     abortIndexing = false;
 
+    const canonicalDir = await validateCanonicalPathOrThrow(dirPath);
     const scanner = new DirectoryScanner(fileSystemService!);
-    const files = await scanner.scan(dirPath, {
+    const files = await scanner.scan(canonicalDir, {
       recursive: true,
+      skipErrors: true,
       extensions: [
         'txt', 'md', 'js', 'ts', 'jsx', 'tsx', 'py', 'java', 'cpp', 'c', 'h', 'json', 'yaml', 'yml', 'xml', 'html', 'css',
-        'pdf', 'docx', 'png', 'jpg', 'jpeg', 'gif', 'svg',
+        'pdf', 'docx', 'csv', 'ipynb',
       ],
       maxSize: 10 * 1024 * 1024,
     });
+
+    // Persist opt-in indexed root cleanly if not already covered
+    try {
+      const cm = ConfigManager.getInstance();
+      const existing = cm.getAll()?.fileSystem?.indexedRoots ?? [];
+      const cmp = (p: string): string => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p));
+      const dirKey = cmp(canonicalDir);
+      const alreadyCovered = existing.some((r) => {
+        const rk = cmp(r);
+        return dirKey === rk || dirKey.startsWith(rk.endsWith(path.sep) ? rk : `${rk}${path.sep}`);
+      });
+      if (!alreadyCovered) {
+        cm.set('fileSystem.indexedRoots', [...existing, canonicalDir], true);
+      }
+    } catch {
+      // Non-fatal in minimal test environments
+    }
 
     totalToIndex = files.length;
     LLMLogger.info('Files to index', { count: totalToIndex });
@@ -467,6 +486,26 @@ async function handleKernelIndexMutation(
     }
 
     const canonicalPath = await validateCanonicalPathOrThrow(filePath);
+
+    // Enforce opt-in Vault boundary for background incremental indexing
+    try {
+      const indexedRoots = ConfigManager.getInstance().getAll()?.fileSystem?.indexedRoots ?? [];
+      if (indexedRoots.length === 0) {
+        return;
+      }
+      const cmp = (p: string): string => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p));
+      const targetKey = cmp(canonicalPath);
+      const insideOptInRoot = indexedRoots.some((root) => {
+        const rootKey = cmp(root);
+        return targetKey === rootKey || targetKey.startsWith(rootKey.endsWith(path.sep) ? rootKey : `${rootKey}${path.sep}`);
+      });
+      if (!insideOptInRoot) {
+        return;
+      }
+    } catch {
+      return;
+    }
+
     const ext = path.extname(canonicalPath).toLowerCase();
     if (!INDEXABLE_WATCH_EXTENSIONS.has(ext)) {
       return;

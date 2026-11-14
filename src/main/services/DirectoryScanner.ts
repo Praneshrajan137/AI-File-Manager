@@ -1,4 +1,5 @@
 import { FileNode, FileSystemError } from '@shared/contracts';
+import { ConfigManager, DEFAULT_EXCLUDED_DIRS } from '@shared/config';
 import { FileSystemService } from './FileSystemService';
 
 /**
@@ -28,6 +29,12 @@ export interface ScanOptions {
 
     /** Abort signal for cancellation */
     signal?: AbortSignal;
+
+    /** Directory basenames excluded from recursive traversal (defaults to ConfigManager/DEFAULT_EXCLUDED_DIRS; pass [] to disable) */
+    excludedDirs?: string[];
+
+    /** Follow symlinked entries (default: false for loop/escape safety) */
+    followSymlinks?: boolean;
 }
 
 /**
@@ -90,6 +97,8 @@ export class DirectoryScanner {
             maxSize,
             skipErrors = false,
             signal,
+            excludedDirs,
+            followSymlinks = false,
         } = options;
 
         const results: FileNode[] = [];
@@ -106,6 +115,8 @@ export class DirectoryScanner {
                 maxSize,
                 skipErrors,
                 signal,
+                excludedDirs,
+                followSymlinks,
             },
             0 // current depth
         );
@@ -262,7 +273,33 @@ export class DirectoryScanner {
      * @param options - Filter options
      * @returns True if file matches all filters
      */
+    private resolveExcludedDirsSet(options: ScanOptions): Set<string> {
+        let configured: readonly string[] = options.excludedDirs ?? [];
+        if (options.excludedDirs === undefined) {
+            try {
+                const fromConfig = ConfigManager.getInstance().getAll()?.fileSystem?.excludedDirs;
+                configured = Array.isArray(fromConfig) && fromConfig.length > 0
+                    ? fromConfig
+                    : DEFAULT_EXCLUDED_DIRS;
+            } catch {
+                configured = DEFAULT_EXCLUDED_DIRS;
+            }
+        }
+        return new Set(configured.map((name) => name.trim().toLowerCase()).filter(Boolean));
+    }
+
     private matchesFilters(file: FileNode, options: ScanOptions): boolean {
+        // Never traverse excluded system/VCS/build/trash directories by default
+        const excludedSet = this.resolveExcludedDirsSet(options);
+        if (file.isDirectory && excludedSet.has(file.name.toLowerCase())) {
+            return false;
+        }
+
+        // Skip symlinks unless caller explicitly enables followSymlinks
+        if (!options.followSymlinks && (file as FileNode & { isSymbolicLink?: boolean }).isSymbolicLink) {
+            return false;
+        }
+
         // Hidden files filter
         if (!options.includeHidden && file.isHidden) {
             return false;

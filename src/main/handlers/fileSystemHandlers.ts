@@ -17,7 +17,17 @@ import {
   getReactiveWorkspaceKernel,
   resetReactiveWorkspaceKernelSync,
 } from '../services/ReactiveWorkspaceKernel';
-import { FileNode, FilePreviewResult, FileStats, SystemPaths } from '@shared/contracts';
+import { getOperationJournal, resetOperationJournal } from '../services/OperationJournal';
+import {
+  FileDeleteMode,
+  FileNode,
+  FilePreviewResult,
+  FileStats,
+  OperationJournalState,
+  OperationRecord,
+  SystemPaths,
+  UndoRedoResult,
+} from '@shared/contracts';
 import { FileSystemLogger, IPCLogger } from '@shared/logging';
 import { IPCChannel } from '@shared/ipc/contracts';
 import os from 'os';
@@ -35,6 +45,7 @@ export function getFileSystemService(): FileSystemService {
  * Reset shared FileSystemService / kernel state (used after config changes or in tests).
  */
 export function resetFileSystemService(): void {
+  resetOperationJournal();
   resetReactiveWorkspaceKernelSync();
 }
 
@@ -114,20 +125,23 @@ async function handleWriteFile(
 
 async function handleDelete(
   _event: IpcMainInvokeEvent,
-  input: { path: string; recursive?: boolean }
+  input: { path: string; recursive?: boolean; mode?: FileDeleteMode }
 ): Promise<{ success: boolean }> {
+  const mode: FileDeleteMode = input.mode ?? 'vault';
   FileSystemLogger.info('Deleting file/directory', {
     path: input.path,
-    recursive: input.recursive || false,
+    recursive: input.recursive ?? false,
+    mode,
   });
 
   const kernel = getReactiveWorkspaceKernel();
-  const result = await kernel.getFileSystemService().delete(input.path, input.recursive);
+  const journal = getOperationJournal();
+  await journal.delete(input.path, input.recursive ?? true, mode);
   kernel.notifyMutation('unlink', input.path);
 
-  FileSystemLogger.info('Delete successful', { path: input.path });
+  FileSystemLogger.info('Delete successful', { path: input.path, mode });
 
-  return result;
+  return { success: true };
 }
 
 async function handleMove(
@@ -140,7 +154,8 @@ async function handleMove(
   });
 
   const kernel = getReactiveWorkspaceKernel();
-  const result = await kernel.getFileSystemService().move(input.source, input.destination);
+  const journal = getOperationJournal();
+  const result = await journal.move(input.source, input.destination, 'move');
   kernel.notifyMutation('unlink', input.source);
   kernel.notifyMutation('create', result.newPath);
 
@@ -149,7 +164,7 @@ async function handleMove(
     destination: result.newPath,
   });
 
-  return result;
+  return { success: result.success, newPath: result.newPath };
 }
 
 async function handleCreateFile(
@@ -159,6 +174,7 @@ async function handleCreateFile(
   // Entry name already validated by safeEntryNameSchema; re-verify full joined canonical target
   const candidatePath = path.join(input.path, input.name);
   const fullPath = await validateCanonicalPathOrThrow(candidatePath);
+  const initialContent = input.content ?? '';
 
   FileSystemLogger.info('Creating file', {
     directory: input.path,
@@ -167,7 +183,8 @@ async function handleCreateFile(
   });
 
   const kernel = getReactiveWorkspaceKernel();
-  await kernel.getFileSystemService().writeFile(fullPath, input.content ?? '');
+  await kernel.getFileSystemService().writeFile(fullPath, initialContent);
+  await getOperationJournal().recordCreation(fullPath, false, Buffer.byteLength(initialContent, 'utf-8'));
   kernel.notifyMutation('create', fullPath);
 
   FileSystemLogger.info('File created successfully', { path: fullPath });
@@ -190,6 +207,7 @@ async function handleCreateDirectory(
 
   const kernel = getReactiveWorkspaceKernel();
   await kernel.getFileSystemService().createDirectory(fullPath);
+  await getOperationJournal().recordCreation(fullPath, true, 0);
   kernel.notifyMutation('create', fullPath);
 
   FileSystemLogger.info('Directory created successfully', { path: fullPath });
@@ -224,7 +242,7 @@ async function handleRename(
   });
 
   const kernel = getReactiveWorkspaceKernel();
-  const result = await kernel.getFileSystemService().move(input.oldPath, canonicalNewPath);
+  const result = await getOperationJournal().move(input.oldPath, canonicalNewPath, 'rename');
   kernel.notifyMutation('unlink', input.oldPath);
   kernel.notifyMutation('create', result.newPath);
 
@@ -233,7 +251,60 @@ async function handleRename(
     newPath: result.newPath,
   });
 
+  return { success: result.success, newPath: result.newPath };
+}
+
+function notifyRecordMutations(
+  record: OperationRecord | undefined,
+  direction: 'undo' | 'redo'
+): void {
+  if (!record) return;
+  if (record.children && record.children.length > 0) {
+    const seq = direction === 'undo' ? [...record.children].reverse() : record.children;
+    for (const child of seq) {
+      notifyRecordMutations(child, direction);
+    }
+    return;
+  }
+
+  const kernel = getReactiveWorkspaceKernel();
+  if (record.type === 'delete') {
+    kernel.notifyMutation(direction === 'undo' ? 'create' : 'unlink', record.sourcePath);
+  } else if (record.type === 'move' || record.type === 'rename') {
+    if (direction === 'undo') {
+      if (record.destinationPath) kernel.notifyMutation('unlink', record.destinationPath);
+      kernel.notifyMutation('create', record.sourcePath);
+    } else {
+      kernel.notifyMutation('unlink', record.sourcePath);
+      if (record.destinationPath) kernel.notifyMutation('create', record.destinationPath);
+    }
+  } else if (record.type === 'create_file' || record.type === 'create_dir') {
+    kernel.notifyMutation(direction === 'undo' ? 'unlink' : 'create', record.sourcePath);
+  }
+}
+
+async function handleUndo(_event: IpcMainInvokeEvent): Promise<UndoRedoResult> {
+  const result = await getOperationJournal().undo();
+  if (result.success) {
+    notifyRecordMutations(result.operation, 'undo');
+  }
   return result;
+}
+
+async function handleRedo(_event: IpcMainInvokeEvent): Promise<UndoRedoResult> {
+  const result = await getOperationJournal().redo();
+  if (result.success) {
+    notifyRecordMutations(result.operation, 'redo');
+  }
+  return result;
+}
+
+async function handleGetJournalState(_event: IpcMainInvokeEvent): Promise<OperationJournalState> {
+  return getOperationJournal().getState();
+}
+
+async function handleEmptyTrashVault(_event: IpcMainInvokeEvent): Promise<OperationJournalState> {
+  return getOperationJournal().emptyVault();
 }
 
 const FILE_SYSTEM_CHANNELS: IPCChannel[] = [
@@ -248,6 +319,10 @@ const FILE_SYSTEM_CHANNELS: IPCChannel[] = [
   'FS:GET_STATS',
   'FS:GET_SYSTEM_PATHS',
   'FS:RENAME',
+  'FS:UNDO',
+  'FS:REDO',
+  'FS:GET_JOURNAL_STATE',
+  'FS:EMPTY_TRASH_VAULT',
 ];
 
 /**
@@ -273,6 +348,10 @@ export function registerFileSystemHandlers(): IPCChannel[] {
     })
   );
   ipcMain.handle('FS:RENAME', withContract('FS:RENAME', handleRename));
+  ipcMain.handle('FS:UNDO', withContract('FS:UNDO', handleUndo));
+  ipcMain.handle('FS:REDO', withContract('FS:REDO', handleRedo));
+  ipcMain.handle('FS:GET_JOURNAL_STATE', withContract('FS:GET_JOURNAL_STATE', handleGetJournalState));
+  ipcMain.handle('FS:EMPTY_TRASH_VAULT', withContract('FS:EMPTY_TRASH_VAULT', handleEmptyTrashVault));
 
   IPCLogger.info('File system IPC handlers registered successfully');
   return [...FILE_SYSTEM_CHANNELS];

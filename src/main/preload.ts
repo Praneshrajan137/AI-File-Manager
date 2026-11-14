@@ -18,6 +18,7 @@ import {
   wrapIPCError,
   wrapIPCSuccess,
 } from '@shared/ipc/envelope';
+import type { FileDeleteMode } from '@shared/contracts';
 import type { IPCChannel, IPCResponse } from '@shared/ipc/contracts';
 
 let llmStreamCounter = 0;
@@ -72,8 +73,8 @@ const electronAPI = {
     createDirectory: (path: string, name: string) =>
       invokeContract('FS:CREATE_DIR', { path, name }),
 
-    delete: (path: string, recursive?: boolean) =>
-      invokeContract('FS:DELETE', { path, recursive }),
+    delete: (path: string, recursive?: boolean, mode?: FileDeleteMode) =>
+      invokeContract('FS:DELETE', { path, recursive, mode }),
 
     move: (source: string, destination: string) =>
       invokeContract('FS:MOVE', { source, destination }),
@@ -84,6 +85,31 @@ const electronAPI = {
 
     rename: (oldPath: string, newName: string) =>
       invokeContract('FS:RENAME', { oldPath, newName }),
+
+    undo: () => invokeContract('FS:UNDO'),
+
+    redo: () => invokeContract('FS:REDO'),
+
+    getJournalState: () => invokeContract('FS:GET_JOURNAL_STATE'),
+
+    emptyTrashVault: () => invokeContract('FS:EMPTY_TRASH_VAULT'),
+  },
+
+  /**
+   * Scoped Workspace (Vault) Configuration & Opt-In Indexing
+   */
+  vault: {
+    getConfig: () => invokeContract('VAULT:GET_CONFIG'),
+
+    addRoot: (options?: { path?: string; pickDialog?: boolean }) =>
+      invokeContract('VAULT:ADD_ROOT', options ?? { pickDialog: true }),
+
+    removeRoot: (path: string) => invokeContract('VAULT:REMOVE_ROOT', { path }),
+
+    setIndexed: (path: string, enabled: boolean) =>
+      invokeContract('VAULT:SET_INDEXED', { path, enabled }),
+
+    toggleFavorite: (path: string) => invokeContract('VAULT:TOGGLE_FAVORITE', { path }),
   },
 
   /**

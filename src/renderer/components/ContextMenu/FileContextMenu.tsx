@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Copy, Trash2, Edit, FolderOpen, Eye } from 'lucide-react';
+import { Copy, Trash2, Edit, FolderOpen, Eye, Star } from 'lucide-react';
 import { FileNode } from '@shared/contracts';
 
 interface FileContextMenuProps {
@@ -11,6 +11,8 @@ interface FileContextMenuProps {
   onRename: () => void;
   onDelete: () => void;
   onCopyPath: () => void;
+  onToggleFavorite?: () => void;
+  isFavorite?: boolean;
 }
 
 export const FileContextMenu: React.FC<FileContextMenuProps> = ({
@@ -21,7 +23,9 @@ export const FileContextMenu: React.FC<FileContextMenuProps> = ({
   onPreview,
   onRename,
   onDelete,
-  onCopyPath
+  onCopyPath,
+  onToggleFavorite,
+  isFavorite = false,
 }) => {
   useEffect(() => {
     const handleClickOutside = (): void => onClose();
@@ -51,6 +55,9 @@ export const FileContextMenu: React.FC<FileContextMenuProps> = ({
       ? [{ label: 'Quick Preview', icon: Eye, action: onPreview }]
       : []),
     { label: 'Rename', icon: Edit, action: onRename },
+    ...(onToggleFavorite
+      ? [{ label: isFavorite ? 'Unpin Favorite' : 'Pin to Favorites', icon: Star, action: onToggleFavorite }]
+      : []),
     { label: 'Delete', icon: Trash2, action: onDelete, danger: true },
     { label: 'Copy Path', icon: Copy, action: onCopyPath },
   ];

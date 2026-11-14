@@ -1,0 +1,102 @@
+name: Frontier Workspace OS CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'frontier/**'
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-and-unit:
+    name: Typecheck, Lint & Unit Tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npm run type-check
+
+      - name: ESLint check
+        run: npm run lint
+
+      - name: Run Jest test suite
+        run: npx jest --runInBand
+
+  build-and-e2e:
+    name: Build & Electron E2E (${{ matrix.os }})
+    needs: quality-and-unit
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium & Linux Xvfb deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libnotify4 libnss3 libxss1 libasound2t64 || sudo apt-get install -y xvfb libnotify4 libnss3 libxss1 libasound2
+          npx playwright install chromium
+          npx playwright install-deps chromium
+
+      - name: Install Playwright Chromium (Windows)
+        if: runner.os == 'Windows'
+        run: npx playwright install chromium
+
+      - name: Build Electron main, preload & renderer
+        run: npm run build
+
+      - name: Run Playwright Electron E2E tests (Linux Xvfb)
+        if: runner.os == 'Linux'
+        env:
+          CI: 'true'
+          ELECTRON_DISABLE_SECURITY_WARNINGS: 'true'
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x960x24" npx playwright test --reporter=list
+
+      - name: Run Playwright Electron E2E tests (Windows)
+        if: runner.os == 'Windows'
+        env:
+          CI: 'true'
+          ELECTRON_DISABLE_SECURITY_WARNINGS: 'true'
+        run: npx playwright test --reporter=list
+
+      - name: Upload Playwright report & failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failure-${{ matrix.os }}
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

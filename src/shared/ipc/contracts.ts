@@ -12,7 +12,10 @@ import type {
   FilePreviewResult,
   FileStats,
   IndexingStatus,
+  OperationJournalState,
   SystemPaths,
+  UndoRedoResult,
+  VaultConfigSnapshot,
 } from '../contracts';
 import type { RuntimeDiagnosticsSnapshot } from '../diagnostics';
 export {
@@ -94,7 +97,11 @@ export const IPC_SCHEMAS = {
     maxLines: z.number().int().min(1).max(100).optional(),
   }),
   'FS:WRITE_FILE': z.object({ path: z.string().min(1), content: z.string() }),
-  'FS:DELETE': z.object({ path: z.string().min(1), recursive: z.boolean().optional() }),
+  'FS:DELETE': z.object({
+    path: z.string().min(1),
+    recursive: z.boolean().optional(),
+    mode: z.enum(['vault', 'trash', 'permanent']).optional(),
+  }),
   'FS:MOVE': z.object({ source: z.string().min(1), destination: z.string().min(1) }),
   'FS:CREATE_FILE': z.object({
     path: z.string().min(1),
@@ -111,6 +118,18 @@ export const IPC_SCHEMAS = {
     oldPath: z.string().min(1),
     newName: safeEntryNameSchema,
   }),
+  'FS:UNDO': optionalEmptyObjectSchema,
+  'FS:REDO': optionalEmptyObjectSchema,
+  'FS:GET_JOURNAL_STATE': optionalEmptyObjectSchema,
+  'FS:EMPTY_TRASH_VAULT': optionalEmptyObjectSchema,
+  'VAULT:GET_CONFIG': optionalEmptyObjectSchema,
+  'VAULT:ADD_ROOT': z.object({
+    path: z.string().min(1).optional(),
+    pickDialog: z.boolean().optional(),
+  }),
+  'VAULT:REMOVE_ROOT': z.object({ path: z.string().min(1) }),
+  'VAULT:SET_INDEXED': z.object({ path: z.string().min(1), enabled: z.boolean() }),
+  'VAULT:TOGGLE_FAVORITE': z.object({ path: z.string().min(1) }),
   'NAV:BACK': optionalEmptyObjectSchema,
   'NAV:FORWARD': optionalEmptyObjectSchema,
   'NAV:PUSH': z.union([
@@ -168,6 +187,15 @@ export interface IPCResponseMap {
   'FS:GET_STATS': FileStats;
   'FS:GET_SYSTEM_PATHS': SystemPaths;
   'FS:RENAME': { success: boolean; newPath: string };
+  'FS:UNDO': UndoRedoResult;
+  'FS:REDO': UndoRedoResult;
+  'FS:GET_JOURNAL_STATE': OperationJournalState;
+  'FS:EMPTY_TRASH_VAULT': OperationJournalState;
+  'VAULT:GET_CONFIG': VaultConfigSnapshot;
+  'VAULT:ADD_ROOT': { cancelled: boolean; addedPath?: string; config: VaultConfigSnapshot };
+  'VAULT:REMOVE_ROOT': VaultConfigSnapshot;
+  'VAULT:SET_INDEXED': VaultConfigSnapshot;
+  'VAULT:TOGGLE_FAVORITE': VaultConfigSnapshot;
   'NAV:BACK': string | null;
   'NAV:FORWARD': string | null;
   'NAV:PUSH': { success: boolean };
@@ -192,7 +220,7 @@ export type IPCResponse<C extends IPCChannel> = IPCResponseMap[C];
 
 export interface IPCContractEntry<C extends IPCChannel = IPCChannel> {
   channel: C;
-  group: 'fileSystem' | 'navigation' | 'search' | 'llm' | 'shell' | 'runtime';
+  group: 'fileSystem' | 'vault' | 'navigation' | 'search' | 'llm' | 'shell' | 'runtime';
   schema: (typeof IPC_SCHEMAS)[C];
   pathFields: readonly string[];
   rateLimit?: IPCRateLimitPolicy;
@@ -273,6 +301,69 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     group: 'fileSystem',
     schema: IPC_SCHEMAS['FS:RENAME'],
     pathFields: ['oldPath'],
+    rateLimit: WRITE_RATE_LIMIT,
+  },
+  'FS:UNDO': {
+    channel: 'FS:UNDO',
+    group: 'fileSystem',
+    schema: IPC_SCHEMAS['FS:UNDO'],
+    pathFields: [],
+    rateLimit: WRITE_RATE_LIMIT,
+  },
+  'FS:REDO': {
+    channel: 'FS:REDO',
+    group: 'fileSystem',
+    schema: IPC_SCHEMAS['FS:REDO'],
+    pathFields: [],
+    rateLimit: WRITE_RATE_LIMIT,
+  },
+  'FS:GET_JOURNAL_STATE': {
+    channel: 'FS:GET_JOURNAL_STATE',
+    group: 'fileSystem',
+    schema: IPC_SCHEMAS['FS:GET_JOURNAL_STATE'],
+    pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
+  },
+  'FS:EMPTY_TRASH_VAULT': {
+    channel: 'FS:EMPTY_TRASH_VAULT',
+    group: 'fileSystem',
+    schema: IPC_SCHEMAS['FS:EMPTY_TRASH_VAULT'],
+    pathFields: [],
+    rateLimit: WRITE_RATE_LIMIT,
+  },
+  'VAULT:GET_CONFIG': {
+    channel: 'VAULT:GET_CONFIG',
+    group: 'vault',
+    schema: IPC_SCHEMAS['VAULT:GET_CONFIG'],
+    pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
+  },
+  'VAULT:ADD_ROOT': {
+    channel: 'VAULT:ADD_ROOT',
+    group: 'vault',
+    schema: IPC_SCHEMAS['VAULT:ADD_ROOT'],
+    pathFields: [],
+    rateLimit: WRITE_RATE_LIMIT,
+  },
+  'VAULT:REMOVE_ROOT': {
+    channel: 'VAULT:REMOVE_ROOT',
+    group: 'vault',
+    schema: IPC_SCHEMAS['VAULT:REMOVE_ROOT'],
+    pathFields: [],
+    rateLimit: WRITE_RATE_LIMIT,
+  },
+  'VAULT:SET_INDEXED': {
+    channel: 'VAULT:SET_INDEXED',
+    group: 'vault',
+    schema: IPC_SCHEMAS['VAULT:SET_INDEXED'],
+    pathFields: ['path'],
+    rateLimit: WRITE_RATE_LIMIT,
+  },
+  'VAULT:TOGGLE_FAVORITE': {
+    channel: 'VAULT:TOGGLE_FAVORITE',
+    group: 'vault',
+    schema: IPC_SCHEMAS['VAULT:TOGGLE_FAVORITE'],
+    pathFields: ['path'],
     rateLimit: WRITE_RATE_LIMIT,
   },
   'NAV:BACK': {

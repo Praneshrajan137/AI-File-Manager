@@ -2,16 +2,36 @@ import React, { useState, useEffect } from 'react';
 import { QuickAccess } from './QuickAccess';
 import { DirectoryTree } from './DirectoryTree';
 import { FavoritesList } from './FavoritesList';
+import { VaultSection } from './VaultSection';
 import { UI_CONSTANTS } from '@renderer/utils/constants';
+import { OperationJournalState, VaultConfigSnapshot } from '@shared/contracts';
 import { Shield } from 'lucide-react';
 
 interface SidebarProps {
   width: number;
   onResize: (width: number) => void;
   onNavigate: (path: string) => void;
+  vaultConfig?: VaultConfigSnapshot | null;
+  journalState?: OperationJournalState | null;
+  onAddVaultRoot?: () => Promise<void>;
+  onRemoveVaultRoot?: (rootPath: string) => Promise<void>;
+  onToggleIndexedRoot?: (rootPath: string, enabled: boolean) => Promise<void>;
+  onToggleFavorite?: (targetPath: string) => Promise<void>;
+  onEmptyTrashVault?: () => Promise<void>;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ width, onResize, onNavigate }) => {
+export const Sidebar: React.FC<SidebarProps> = ({
+  width,
+  onResize,
+  onNavigate,
+  vaultConfig = null,
+  journalState = null,
+  onAddVaultRoot,
+  onRemoveVaultRoot,
+  onToggleIndexedRoot,
+  onToggleFavorite,
+  onEmptyTrashVault,
+}) => {
   const [isResizing, setIsResizing] = useState(false);
 
   const handleMouseDown = () => {
@@ -63,8 +83,23 @@ export const Sidebar: React.FC<SidebarProps> = ({ width, onResize, onNavigate })
       {/* Content */}
       <div className="flex-1 overflow-y-auto py-3 scrollbar-thin">
         <QuickAccess onNavigate={onNavigate} />
+        {onAddVaultRoot && onRemoveVaultRoot && onToggleIndexedRoot && onEmptyTrashVault && (
+          <VaultSection
+            vaultConfig={vaultConfig}
+            journalState={journalState}
+            onNavigate={onNavigate}
+            onAddRoot={onAddVaultRoot}
+            onRemoveRoot={onRemoveVaultRoot}
+            onToggleIndexed={onToggleIndexedRoot}
+            onEmptyTrashVault={onEmptyTrashVault}
+          />
+        )}
         <DirectoryTree onNavigate={onNavigate} />
-        <FavoritesList onNavigate={onNavigate} />
+        <FavoritesList
+          favorites={vaultConfig?.favorites ?? []}
+          onNavigate={onNavigate}
+          onUnpin={onToggleFavorite}
+        />
       </div>
 
       {/* Resize handle */}

@@ -13,6 +13,10 @@ import { FileGrid } from '@renderer/components/FileExplorer/FileGrid';
 import { FilePreviewDrawer } from '@renderer/components/Preview/FilePreviewDrawer';
 import { FileContextMenu } from '@renderer/components/ContextMenu/FileContextMenu';
 import { CreateEntryDialog } from '@renderer/components/common/CreateEntryDialog';
+import { DeleteConfirmDialog } from '@renderer/components/common/DeleteConfirmDialog';
+import { Toast } from '@renderer/components/common/Toast';
+import { VaultSection } from '@renderer/components/Sidebar/VaultSection';
+import { FavoritesList } from '@renderer/components/Sidebar/FavoritesList';
 import { Toolbar } from '@renderer/components/Toolbar/Toolbar';
 import { DiagnosticsModal } from '@renderer/components/Diagnostics/DiagnosticsModal';
 import type { FileNode, FilePreviewResult } from '@shared/contracts';
@@ -279,6 +283,111 @@ describe('Renderer UI & M5 Control Upgrades', () => {
       expect(toolbarHtml).toContain('data-testid="diagnostics-button"');
       expect(modalHtml).toContain('Kernel Runtime Diagnostics');
       expect(modalHtml).toContain('data-testid="diagnostics-modal"');
+    });
+
+    it('renders M7 Stage 1 DeleteConfirmDialog, VaultSection, FavoritesList, Toast Undo action, and Toolbar Undo/Redo', () => {
+      const deleteHtml = renderToStaticMarkup(
+        React.createElement(DeleteConfirmDialog, {
+          isOpen: true,
+          targetPaths: ['C:\\Users\\alice\\alpha.txt'],
+          onConfirm: () => undefined,
+          onCancel: () => undefined,
+        })
+      );
+      const vaultHtml = renderToStaticMarkup(
+        React.createElement(VaultSection, {
+          vaultConfig: {
+            allowedRoots: ['C:\\Users\\alice\\docs', 'C:\\Users\\alice\\notes'],
+            indexedRoots: ['C:\\Users\\alice\\docs'],
+            excludedDirs: ['.git', 'node_modules'],
+            favorites: ['C:\\Users\\alice\\docs'],
+            defaultDeleteMode: 'vault',
+          },
+          journalState: {
+            canUndo: true,
+            canRedo: false,
+            undoCount: 1,
+            redoCount: 0,
+            lastUndoDescription: 'Move to Trash Vault: alpha.txt',
+            vaultItemCount: 1,
+            vaultTotalBytes: 2048,
+          },
+          onNavigate: () => undefined,
+          onAddRoot: async () => undefined,
+          onRemoveRoot: async () => undefined,
+          onToggleIndexed: async () => undefined,
+          onEmptyTrashVault: async () => undefined,
+        })
+      );
+      const favHtml = renderToStaticMarkup(
+        React.createElement(FavoritesList, {
+          favorites: ['C:\\Users\\alice\\docs'],
+          onNavigate: () => undefined,
+          onUnpin: () => undefined,
+        })
+      );
+      const favEmptyHtml = renderToStaticMarkup(
+        React.createElement(FavoritesList, {
+          favorites: [],
+          onNavigate: () => undefined,
+        })
+      );
+      const toastHtml = renderToStaticMarkup(
+        React.createElement(Toast, {
+          id: 1,
+          type: 'success',
+          message: 'Moved alpha.txt to Trash Vault',
+          actionLabel: 'Undo',
+          onAction: () => undefined,
+          onClose: () => undefined,
+        })
+      );
+      const toolbarUndoHtml = renderToStaticMarkup(
+        React.createElement(Toolbar, {
+          canGoBack: true,
+          canGoForward: false,
+          onBack: () => undefined,
+          onForward: () => undefined,
+          currentPath: 'C:\\Users\\alice',
+          onNavigate: () => undefined,
+          onSearch: () => undefined,
+          viewMode: 'list',
+          onViewModeChange: () => undefined,
+          sortBy: 'name',
+          onSortChange: () => undefined,
+          sortDirection: 'asc',
+          onSortDirectionToggle: () => undefined,
+          canUndo: true,
+          canRedo: true,
+          undoDescription: 'Move alpha.txt',
+          redoDescription: 'Rename alpha.txt',
+          onUndo: () => undefined,
+          onRedo: () => undefined,
+          chatOpen: false,
+          onToggleChat: () => undefined,
+        })
+      );
+
+      expect(deleteHtml).toContain('data-testid="delete-confirm-dialog"');
+      expect(deleteHtml).toContain('data-testid="delete-mode-vault"');
+      expect(deleteHtml).toContain('data-testid="delete-mode-trash"');
+      expect(deleteHtml).toContain('data-testid="delete-mode-permanent"');
+      expect(deleteHtml).toContain('Move to Trash Vault (Undoable)');
+      expect(vaultHtml).toContain('data-testid="vault-section"');
+      expect(vaultHtml).toContain('data-testid="vault-add-root-button"');
+      expect(vaultHtml).toContain('data-testid="vault-index-toggle-docs"');
+      expect(vaultHtml).toContain('AI On');
+      expect(vaultHtml).toContain('data-testid="vault-index-toggle-notes"');
+      expect(vaultHtml).toContain('AI Off');
+      expect(vaultHtml).toContain('data-testid="trash-vault-summary"');
+      expect(vaultHtml).toContain('data-testid="empty-trash-vault-button"');
+      expect(favHtml).toContain('data-testid="favorites-list"');
+      expect(favHtml).toContain('docs');
+      expect(favEmptyHtml).toContain('data-testid="favorites-empty"');
+      expect(toastHtml).toContain('data-testid="toast-action-button"');
+      expect(toastHtml).toContain('Undo');
+      expect(toolbarUndoHtml).toContain('data-testid="undo-button"');
+      expect(toolbarUndoHtml).toContain('data-testid="redo-button"');
     });
   });
 

@@ -4,6 +4,7 @@ node_modules/
 # Build outputs
 dist/
 build/
+!build/icon.*
 
 # Logs
 *.log
@@ -36,3 +37,9 @@ lancedb/
 # Temp files
 tmp/
 temp/
+
+# Workspace OS Vault & SQLite runtime artifacts
+trash-vault/
+*.db
+*.db-wal
+*.db-shm

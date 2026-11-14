@@ -174,6 +174,48 @@ export class PathValidator {
     }
 
     /**
+     * Validate the canonical parent directory for a path whose leaf may be a symbolic link.
+     * Ensures ancestor traversal/symlinks cannot escape allowed roots while allowing
+     * unlink/rename operations on an in-vault symlink without dereferencing its target.
+     */
+    async validateParentCanonicalForLink(requestedPath: string): Promise<ValidationResult & { canonicalLinkPath?: string }> {
+        const lexical = this.validate(requestedPath);
+        if (!lexical.valid) {
+            return lexical;
+        }
+
+        const decoded = this.decodeSafe(requestedPath);
+        const resolved = this.stripTrailingSep(path.resolve(path.normalize(decoded)));
+        const parentDir = path.dirname(resolved);
+        const leafName = path.basename(resolved);
+
+        const parentCanonical = await this.validateCanonical(parentDir);
+        if (!parentCanonical.valid) {
+            return parentCanonical;
+        }
+
+        try {
+            const realParent = await fs.promises.realpath(parentDir);
+            const canonicalLinkPath = path.join(realParent, leafName);
+            const linkCheck = this.validate(canonicalLinkPath);
+            if (!linkCheck.valid) {
+                return linkCheck;
+            }
+            return { valid: true, canonicalLinkPath };
+        } catch (err: unknown) {
+            const code = (err as { code?: string })?.code;
+            if (code === 'ENOENT') {
+                return { valid: true, canonicalLinkPath: resolved };
+            }
+            return {
+                valid: false,
+                error: 'INVALID_PATH',
+                details: err instanceof Error ? err.message : String(err),
+            };
+        }
+    }
+
+    /**
      * Resolve canonical path via fs.realpath while also catching dangling symlinks
      * and non-existent creation targets under existing symlinked ancestors.
      */
@@ -390,6 +432,77 @@ export class PathValidator {
      */
     getAllowedRoots(): string[] {
         return [...this.allowedRoots];
+    }
+
+    /**
+     * Validate a candidate new workspace/vault root before adding it to allowedRoots.
+     * Ensures the path is well-formed, resolves canonically to an existing directory,
+     * is not a filesystem drive root, and is not inside forbidden OS paths.
+     */
+    async validateNewRoot(requestedPath: string): Promise<ValidationResult> {
+        if (!requestedPath || requestedPath.trim() === '') {
+            return { valid: false, error: 'INVALID_PATH', details: 'Workspace path cannot be empty' };
+        }
+        if (requestedPath.includes('\0')) {
+            return { valid: false, error: 'INVALID_PATH', details: 'Workspace path contains null byte' };
+        }
+        const decoded = this.decodeSafe(requestedPath);
+        const driveRelativeMatch = /^[A-Za-z]:(?![\\/])/.test(decoded);
+        const colonRemainder = /^[A-Za-z]:/.test(decoded) ? decoded.slice(2) : decoded;
+        if (driveRelativeMatch || colonRemainder.includes(':') || decoded.includes('..')) {
+            return {
+                valid: false,
+                error: 'PATH_TRAVERSAL',
+                details: 'Invalid workspace path characters or traversal sequence',
+            };
+        }
+
+        const resolvedLexical = this.stripTrailingSep(path.resolve(path.normalize(decoded)));
+        let canonicalRoot: string;
+        try {
+            canonicalRoot = this.stripTrailingSep(await fs.promises.realpath(resolvedLexical));
+            const stats = await fs.promises.stat(canonicalRoot);
+            if (!stats.isDirectory()) {
+                return {
+                    valid: false,
+                    error: 'INVALID_PATH',
+                    details: 'Workspace root must be an existing directory',
+                };
+            }
+        } catch {
+            return {
+                valid: false,
+                error: 'INVALID_PATH',
+                details: `Workspace directory "${resolvedLexical}" does not exist or is inaccessible`,
+            };
+        }
+
+        const parsedCanonical = path.parse(canonicalRoot);
+        if (canonicalRoot === this.stripTrailingSep(parsedCanonical.root)) {
+            return {
+                valid: false,
+                error: 'UNAUTHORIZED_ACCESS',
+                details: 'Entire drive/filesystem root cannot be added as a workspace vault',
+            };
+        }
+
+        const canonicalForbidden = await Promise.all(
+            this.forbiddenPaths.map((p) => this.safeRealpathOrResolved(p))
+        );
+        for (const forbidden of canonicalForbidden) {
+            if (this.isWithinDirectory(canonicalRoot, forbidden)) {
+                return {
+                    valid: false,
+                    error: 'UNAUTHORIZED_ACCESS',
+                    details: `Workspace cannot point inside protected system path "${forbidden}"`,
+                };
+            }
+        }
+
+        return {
+            valid: true,
+            canonicalPath: canonicalRoot,
+        };
     }
 
     /**
