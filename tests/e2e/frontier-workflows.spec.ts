@@ -9,7 +9,9 @@ test.describe('Frontier Workflows E2E', () => {
   test('complete UI file lifecycle, bounded preview cache, live OS watcher refresh, and kernel diagnostics', async ({
     page,
   }) => {
-    const tempBase = path.join(os.tmpdir(), `e2e-frontier-${Date.now()}`);
+    const rawTempBase = path.join(os.tmpdir(), `e2e-frontier-${Date.now()}`);
+    await fs.mkdir(rawTempBase, { recursive: true });
+    const tempBase = await fs.realpath(rawTempBase);
     const frontierRoot = path.join(tempBase, 'frontier-root');
     const logFile = path.join(frontierRoot, 'service.log');
     const binaryFile = path.join(frontierRoot, 'blob.bin');

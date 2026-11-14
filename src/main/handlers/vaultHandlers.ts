@@ -1,4 +1,5 @@
 import { ipcMain, dialog, BrowserWindow, IpcMainInvokeEvent } from 'electron';
+import fsSync from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { VaultConfigSnapshot } from '@shared/contracts';
@@ -17,9 +18,27 @@ import { RuntimeDiagnostics } from '../services/RuntimeDiagnostics';
 import { resetSearchService } from './searchHandlers';
 import { resetOperationJournal } from '../services/OperationJournal';
 
-function normalizeCompare(targetPath: string): string {
+function canonicalizePathSync(targetPath: string): string {
   const resolved = path.resolve(targetPath);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  const realpathFn: ((p: string) => string) | null =
+    typeof fsSync.realpathSync?.native === 'function'
+      ? (p: string): string => fsSync.realpathSync.native(p)
+      : typeof fsSync.realpathSync === 'function'
+        ? (p: string): string => fsSync.realpathSync(p)
+        : null;
+  if (!realpathFn) {
+    return resolved;
+  }
+  try {
+    return realpathFn(resolved) || resolved;
+  } catch {
+    return resolved;
+  }
+}
+
+function normalizeCompare(targetPath: string): string {
+  const canonical = canonicalizePathSync(targetPath);
+  return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
 }
 
 function dedupePaths(pathsList: string[]): string[] {
@@ -28,11 +47,11 @@ function dedupePaths(pathsList: string[]): string[] {
   for (const entry of pathsList) {
     const cleaned = entry?.trim();
     if (!cleaned) continue;
-    const resolved = path.resolve(cleaned);
-    const key = normalizeCompare(resolved);
+    const canonical = canonicalizePathSync(cleaned);
+    const key = process.platform === 'win32' ? canonical.toLowerCase() : canonical;
     if (!seen.has(key)) {
       seen.add(key);
-      result.push(resolved);
+      result.push(canonical);
     }
   }
   return result;
