@@ -9,6 +9,9 @@ import { parentPort } from 'worker_threads';
 import { DEFAULT_EMBEDDING_MODEL } from '../../shared/contracts';
 import { suppressSqliteExperimentalWarning } from '../../shared/utils/processWarnings';
 import {
+  CrossEncoderRerankerFn,
+  DEFAULT_RERANKER_MODEL,
+  loadCrossEncoderReranker,
   loadFeatureExtractionPipeline,
   TransformersDevice,
   TransformersDtype,
@@ -16,13 +19,16 @@ import {
 
 suppressSqliteExperimentalWarning();
 
-// Type for active feature extraction pipeline
+// Type for active feature extraction & cross-encoder reranker pipelines
 let extractor:
   | ((input: string, options?: Record<string, unknown>) => Promise<{ data: ArrayLike<number> }>)
   | null = null;
+let reranker: CrossEncoderRerankerFn | null = null;
 
 let activeModelName = DEFAULT_EMBEDDING_MODEL;
+let activeRerankerModel = DEFAULT_RERANKER_MODEL;
 let activeDtype: TransformersDtype = 'q8';
+let activeDevice: TransformersDevice = 'cpu';
 const DIMENSIONS = 384;
 
 /**
@@ -32,12 +38,21 @@ async function initializeModel(options?: {
   modelName?: string;
   dtype?: TransformersDtype;
   device?: TransformersDevice;
+  rerankerModel?: string;
 }): Promise<void> {
   const requestedModel = options?.modelName || activeModelName;
   const requestedDtype = options?.dtype ?? activeDtype;
-  const requestedDevice = options?.device ?? 'cpu';
+  const requestedDevice = options?.device ?? activeDevice;
+  if (options?.rerankerModel) {
+    activeRerankerModel = options.rerankerModel;
+  }
 
-  if (extractor && requestedModel === activeModelName && requestedDtype === activeDtype) {
+  if (
+    extractor &&
+    requestedModel === activeModelName &&
+    requestedDtype === activeDtype &&
+    requestedDevice === activeDevice
+  ) {
     parentPort?.postMessage({ type: 'initialized' });
     return;
   }
@@ -50,12 +65,27 @@ async function initializeModel(options?: {
     });
     activeModelName = requestedModel;
     activeDtype = requestedDtype;
+    activeDevice = requestedDevice;
 
     parentPort?.postMessage({ type: 'initialized' });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     parentPort?.postMessage({ type: 'error', id: -1, message: `Model init failed: ${message}` });
   }
+}
+
+async function ensureRerankerLoaded(modelName?: string): Promise<CrossEncoderRerankerFn> {
+  const targetModel = modelName || activeRerankerModel || DEFAULT_RERANKER_MODEL;
+  if (reranker && targetModel === activeRerankerModel) {
+    return reranker;
+  }
+  reranker = await loadCrossEncoderReranker({
+    modelName: targetModel,
+    dtype: activeDtype,
+    device: activeDevice,
+  });
+  activeRerankerModel = targetModel;
+  return reranker;
 }
 
 /**
@@ -125,10 +155,13 @@ async function embedBatch(
  * Handle incoming messages from main thread.
  */
 parentPort?.on('message', async (message: {
-    type: 'init' | 'embed' | 'terminate';
+    type: 'init' | 'embed' | 'rerank' | 'terminate';
     id?: number;
     texts?: string[];
+    query?: string;
+    passages?: string[];
     modelName?: string;
+    rerankerModel?: string;
     dtype?: TransformersDtype;
     device?: TransformersDevice;
 }) => {
@@ -139,6 +172,7 @@ parentPort?.on('message', async (message: {
                     modelName: message.modelName,
                     dtype: message.dtype,
                     device: message.device,
+                    rerankerModel: message.rerankerModel,
                 });
                 break;
 
@@ -148,6 +182,7 @@ parentPort?.on('message', async (message: {
                         modelName: message.modelName,
                         dtype: message.dtype,
                         device: message.device,
+                        rerankerModel: message.rerankerModel,
                     });
                 }
 
@@ -161,9 +196,22 @@ parentPort?.on('message', async (message: {
                 }
                 break;
 
+            case 'rerank':
+                if (message.query !== undefined && message.passages && message.id !== undefined) {
+                    const model = await ensureRerankerLoaded(message.rerankerModel);
+                    const scores = await model(message.query, message.passages);
+                    parentPort?.postMessage({
+                        type: 'rerankResult',
+                        id: message.id,
+                        scores,
+                    });
+                }
+                break;
+
             case 'terminate':
                 // Cleanup and exit
                 extractor = null;
+                reranker = null;
                 process.exit(0);
                 break;
 

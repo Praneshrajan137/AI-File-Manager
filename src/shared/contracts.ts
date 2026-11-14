@@ -336,6 +336,15 @@ export interface TextChunk {
 
   /** Chunk number (0-indexed) */
   chunkIndex: number;
+
+  /** Optional 1-based start line in original file */
+  startLine?: number;
+
+  /** Optional 1-based end line in original file */
+  endLine?: number;
+
+  /** Optional active structural heading / symbol label */
+  heading?: string;
 }
 
 /**
@@ -379,6 +388,27 @@ export interface VectorRecord {
 
   /** Indexing timestamp */
   indexed_at: number;
+
+  /** Optional 1-based start line in source file */
+  start_line?: number;
+
+  /** Optional 1-based end line in source file */
+  end_line?: number;
+
+  /** Optional active structural heading / symbol label */
+  heading?: string;
+}
+
+/**
+ * Structured source citation for clickable inspector navigation (#Lx-Ly).
+ */
+export interface RetrievalSource {
+  filePath: string;
+  startLine?: number;
+  endLine?: number;
+  heading?: string;
+  score?: number;
+  snippet?: string;
 }
 
 /**
@@ -393,6 +423,9 @@ export interface RetrievalResult {
 
   /** Total token count of context */
   tokenCount: number;
+
+  /** Optional structured source citations with line ranges */
+  structuredSources?: RetrievalSource[];
 }
 
 /**
@@ -559,6 +592,11 @@ export interface IEmbeddingModel {
    * @returns Similarity score (-1 to 1, where 1 = identical)
    */
   similarity(a: Embedding, b: Embedding): number;
+
+  /**
+   * Optional cross-encoder reranking scores for `(query, passage)` pairs.
+   */
+  rerank?(query: string, passages: string[]): Promise<number[]>;
 }
 
 // ============================================================================
@@ -667,6 +705,9 @@ export interface RetrievalResult {
 
   /** Estimated token count of context */
   tokenCount: number;
+
+  /** Optional structured source citations with line ranges */
+  structuredSources?: RetrievalSource[];
 }
 
 // ============================================================================

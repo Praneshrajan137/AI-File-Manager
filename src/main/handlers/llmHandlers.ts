@@ -39,10 +39,11 @@ import path from 'path';
 import os from 'os';
 
 const INDEXABLE_WATCH_EXTENSIONS = new Set([
-  '.txt', '.md', '.markdown', '.rst',
+  '.txt', '.md', '.markdown', '.mdx', '.rst',
   '.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.c', '.cpp', '.h', '.hpp',
   '.cs', '.go', '.rs', '.rb', '.php', '.json', '.yaml', '.yml', '.toml',
-  '.xml', '.html', '.htm', '.css', '.sh', '.sql', '.log', '.csv', '.pdf', '.docx',
+  '.xml', '.html', '.htm', '.css', '.sh', '.sql', '.log', '.csv', '.tsv',
+  '.pdf', '.docx', '.ipynb',
 ]);
 
 /**
@@ -91,13 +92,22 @@ async function ensureServicesInitialized(): Promise<void> {
     return initPromise;
   }
 
-  initPromise = (async () => {
+  initPromise = (async (): Promise<void> => {
     LLMLogger.info('Initializing LLM services...');
     let localVectorStore: VectorStore | null = null;
     let localEmbeddingModel: EmbeddingWorkerPool | null = null;
 
     try {
-      localVectorStore = new VectorStore();
+      const configuredModel = (((): string | undefined => {
+        try {
+          return ConfigManager.getInstance().getAll()?.llm?.embeddingModel;
+        } catch {
+          return undefined;
+        }
+      })());
+      localVectorStore = new VectorStore({
+        modelId: configuredModel || undefined,
+      });
       const allowTestOverrides =
         process.env.NODE_ENV === 'test' || process.env.E2E_TEST === 'true';
       const overrideDbPath = allowTestOverrides ? process.env.FILE_MANAGER_VECTOR_DB_PATH : undefined;
@@ -109,7 +119,9 @@ async function ensureServicesInitialized(): Promise<void> {
       LLMLogger.info('VectorStore initialized', { dbPath });
 
       // Initialize embedding model (runs in worker thread to avoid blocking main process)
-      localEmbeddingModel = new EmbeddingWorkerPool();
+      localEmbeddingModel = new EmbeddingWorkerPool({
+        modelName: configuredModel || undefined,
+      });
       await localEmbeddingModel.initialize();
       LLMLogger.info('EmbeddingWorkerPool initialized (worker thread)');
 
@@ -299,8 +311,11 @@ async function handleStartIndexing(
       recursive: true,
       skipErrors: true,
       extensions: [
-        'txt', 'md', 'js', 'ts', 'jsx', 'tsx', 'py', 'java', 'cpp', 'c', 'h', 'json', 'yaml', 'yml', 'xml', 'html', 'css',
-        'pdf', 'docx', 'csv', 'ipynb',
+        'txt', 'md', 'markdown', 'mdx', 'rst',
+        'js', 'ts', 'jsx', 'tsx', 'py', 'java', 'cpp', 'c', 'h', 'hpp',
+        'cs', 'go', 'rs', 'rb', 'php', 'json', 'yaml', 'yml', 'toml',
+        'xml', 'html', 'htm', 'css', 'sh', 'ps1', 'sql', 'log',
+        'pdf', 'docx', 'csv', 'tsv', 'ipynb',
       ],
       maxSize: 10 * 1024 * 1024,
     });
@@ -370,7 +385,7 @@ async function indexFilesBackground(
       await new Promise(resolve => setTimeout(resolve, yieldDuration));
 
       const canonicalPath = await validateCanonicalPathOrThrow(filePath);
-      await indexingService!.indexFile(canonicalPath, false);
+      await indexingService!.indexFile(canonicalPath, false, { skipMetadataStubs: true });
       indexedCount++;
 
       if (!event.sender.isDestroyed()) {
@@ -638,8 +653,9 @@ export async function cleanupLLMServices(): Promise<void> {
     embeddingModel = null;
   }
 
-  // Close vector store
+  // Close vector store & Knowledge Graph SQLite handle
   if (vectorStore) {
+    await vectorStore.close().catch(() => undefined);
     vectorStore = null;
     LLMLogger.info('VectorStore closed');
   }

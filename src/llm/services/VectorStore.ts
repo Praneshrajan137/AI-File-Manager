@@ -19,7 +19,12 @@ import {
     Embedding,
     IndexStats,
 } from '../../shared/contracts';
-import { HybridLexicalIndex, LexicalSearchMatch } from './HybridLexicalIndex';
+import { LexicalSearchMatch } from './HybridLexicalIndex';
+import {
+    KnowledgeGraphChunkRecord,
+    WorkspaceKnowledgeGraph,
+} from '../../main/services/WorkspaceKnowledgeGraph';
+import { ExtractedLink, ExtractedSymbol } from './StructuralChunker';
 import { RuntimeDiagnostics } from '../../main/services/RuntimeDiagnostics';
 import fs from 'fs/promises';
 import path from 'path';
@@ -30,6 +35,8 @@ type LanceTable = Awaited<ReturnType<LanceConnection['openTable']>>;
 
 const VECTOR_SCHEMA_VERSION = 2;
 const VECTOR_META_FILENAME = 'vector-meta.json';
+const KNOWLEDGE_GRAPH_FILENAME = 'knowledge-graph.sqlite';
+const MAX_LEGACY_BACKFILL_ROWS = 500;
 
 interface VectorMetaFile {
     schemaVersion: number;
@@ -49,6 +56,17 @@ export interface VectorStoreOptions {
     modelId?: string;
     dimensions?: number;
     autoResetOnMismatch?: boolean;
+    knowledgeGraph?: WorkspaceKnowledgeGraph;
+    enableKnowledgeGraph?: boolean;
+}
+
+export interface ChunkIndexMetadata {
+    sha256?: string;
+    size?: number;
+    mtimeMs?: number;
+    fileType?: string;
+    symbols?: ExtractedSymbol[];
+    links?: ExtractedLink[];
 }
 
 // Record type for LanceDB storage (using Record for compatibility)
@@ -69,12 +87,15 @@ export class VectorStore implements IVectorStore {
     private readonly EMBEDDING_DIM: number;
     private readonly modelId: string;
     private readonly autoResetOnMismatch: boolean;
+    private readonly injectedKnowledgeGraph?: WorkspaceKnowledgeGraph;
+    private readonly enableKnowledgeGraph: boolean;
+    private knowledgeGraph: WorkspaceKnowledgeGraph | null = null;
+    private ownsKnowledgeGraph = false;
     private migrationNotice: VectorMigrationNotice;
 
     /** Batch write optimization: accumulate records before flushing */
     private pendingRecords: LanceRecord[] = [];
     private filesPendingReplace = new Set<string>();
-    private lexicalIndex = new HybridLexicalIndex();
     private opChain: Promise<void> = Promise.resolve();
     private readonly BATCH_WRITE_SIZE = 50;
 
@@ -82,6 +103,9 @@ export class VectorStore implements IVectorStore {
         this.modelId = options.modelId || DEFAULT_EMBEDDING_MODEL;
         this.EMBEDDING_DIM = options.dimensions ?? 384;
         this.autoResetOnMismatch = options.autoResetOnMismatch ?? true;
+        this.injectedKnowledgeGraph = options.knowledgeGraph;
+        this.enableKnowledgeGraph = options.enableKnowledgeGraph ?? true;
+        this.knowledgeGraph = options.knowledgeGraph ?? null;
         this.migrationNotice = {
             needsReindex: false,
             currentModelId: this.modelId,
@@ -153,6 +177,21 @@ export class VectorStore implements IVectorStore {
 
         try {
             await fs.mkdir(dbPath, { recursive: true });
+            if (this.enableKnowledgeGraph) {
+                if (this.ownsKnowledgeGraph && this.knowledgeGraph) {
+                    this.knowledgeGraph.close();
+                    this.knowledgeGraph = null;
+                }
+                if (this.injectedKnowledgeGraph) {
+                    this.knowledgeGraph = this.injectedKnowledgeGraph;
+                    this.ownsKnowledgeGraph = false;
+                } else {
+                    this.knowledgeGraph = new WorkspaceKnowledgeGraph(
+                        path.join(dbPath, KNOWLEDGE_GRAPH_FILENAME)
+                    );
+                    this.ownsKnowledgeGraph = true;
+                }
+            }
             this.db = await lancedb.connect(dbPath);
 
             const tableNames = await this.db.tableNames();
@@ -179,28 +218,35 @@ export class VectorStore implements IVectorStore {
                     if (this.autoResetOnMismatch) {
                         await this.db.dropTable(this.TABLE_NAME);
                         await this.createTable();
-                        this.lexicalIndex.clear();
+                        this.knowledgeGraph?.clear();
                         await this.writeMetaFile(dbPath);
                     } else {
-                        await this.rebuildLexicalIndexFromTable();
+                        await this.backfillSmallLegacyGraphIfEmpty(rowCount);
                     }
                 } else {
                     if (!existingMeta || mismatch) {
                         await this.writeMetaFile(dbPath);
                     }
-                    await this.rebuildLexicalIndexFromTable();
+                    await this.backfillSmallLegacyGraphIfEmpty(rowCount);
                 }
             } else {
                 await this.createTable();
                 await this.writeMetaFile(dbPath);
-                this.lexicalIndex.clear();
+                this.knowledgeGraph?.clear();
             }
+
+            const kgStats = this.knowledgeGraph?.getStats() ?? {
+                totalFiles: 0,
+                totalChunks: 0,
+                totalTokens: 0,
+                lastIndexed: 0,
+            };
 
             RuntimeDiagnostics.getInstance().setVectorStoreStats({
                 initialized: true,
-                totalChunks: this.lexicalIndex.size(),
-                indexedFiles: this.lexicalIndex.fileCount(),
-                lexicalDocs: this.lexicalIndex.size(),
+                totalChunks: kgStats.totalChunks,
+                indexedFiles: kgStats.totalFiles,
+                lexicalDocs: kgStats.totalChunks,
                 pendingBuffer: this.pendingRecords.length,
                 modelId: this.modelId,
                 needsReindex: this.migrationNotice.needsReindex,
@@ -212,28 +258,47 @@ export class VectorStore implements IVectorStore {
         }
     }
 
-    private async rebuildLexicalIndexFromTable(): Promise<void> {
-        if (!this.table) {
+    /**
+     * Bounded legacy migration helper: only runs if SQLite Knowledge Graph is empty
+     * AND existing LanceDB table is tiny (<= 500 rows), avoiding full-table OOM scans.
+     */
+    private async backfillSmallLegacyGraphIfEmpty(rowCount: number): Promise<void> {
+        if (!this.table || !this.knowledgeGraph || rowCount === 0 || rowCount > MAX_LEGACY_BACKFILL_ROWS) {
+            return;
+        }
+        const kgStats = this.knowledgeGraph.getStats();
+        if (kgStats.totalChunks > 0) {
             return;
         }
         try {
-            const count = await this.table.countRows();
-            if (count === 0) {
-                this.lexicalIndex.clear();
-                return;
+            const rows = (await this.table.query().limit(MAX_LEGACY_BACKFILL_ROWS).toArray()) as LanceRecord[];
+            const byFile = new Map<string, LanceRecord[]>();
+            for (const row of rows) {
+                const list = byFile.get(row.file_path) ?? [];
+                list.push(row);
+                byFile.set(row.file_path, list);
             }
-            const rows = (await this.table.query().toArray()) as LanceRecord[];
-            const vectorRecords: VectorRecord[] = rows.map((row) => ({
-                id: row.id,
-                chunk_text: row.chunk_text,
-                embedding: this.toPlainVector(row.vector),
-                file_path: row.file_path,
-                chunk_index: row.chunk_index,
-                indexed_at: row.indexed_at,
-            }));
-            this.lexicalIndex.rebuildFromRecords(vectorRecords);
+            for (const [filePath, fileRows] of byFile.entries()) {
+                fileRows.sort((a, b) => a.chunk_index - b.chunk_index);
+                let charCursor = 0;
+                this.knowledgeGraph.upsertDocument({
+                    filePath,
+                    indexedAt: Math.max(...fileRows.map((r) => Number(r.indexed_at) || 0)),
+                    chunks: fileRows.map((r) => {
+                        const startChar = charCursor;
+                        charCursor += r.chunk_text.length;
+                        return {
+                            id: r.id,
+                            chunkIndex: r.chunk_index,
+                            text: r.chunk_text,
+                            startChar,
+                            endChar: charCursor,
+                        };
+                    }),
+                });
+            }
         } catch {
-            this.lexicalIndex.clear();
+            // Best-effort bounded backfill; never crash initialization
         }
     }
 
@@ -260,10 +325,26 @@ export class VectorStore implements IVectorStore {
         }
     }
 
+    getKnowledgeGraph(): WorkspaceKnowledgeGraph | null {
+        return this.knowledgeGraph;
+    }
+
+    needsReindex(filePath: string, mtimeMs: number, size: number, sha256?: string): boolean {
+        if (!this.knowledgeGraph) {
+            return true;
+        }
+        return this.knowledgeGraph.needsReindex(filePath, mtimeMs, size, sha256);
+    }
+
+    getIndexedFiles(limit: number = 10000): string[] {
+        return this.knowledgeGraph?.getIndexedFiles(limit) ?? [];
+    }
+
     async addChunks(
         chunks: TextChunk[],
         embeddings: Embedding[],
-        filePath: string
+        filePath: string,
+        metadata?: ChunkIndexMetadata
     ): Promise<void> {
         this.ensureInitialized();
 
@@ -279,8 +360,18 @@ export class VectorStore implements IVectorStore {
 
         return this.withLock(async () => {
             const now = Date.now();
+            const seenChunkIds = new Set<string>();
+            const resolvedIds = chunks.map((chunk, i) => {
+                let candidateId = `${filePath}:${chunk.chunkIndex}`;
+                if (seenChunkIds.has(candidateId)) {
+                    candidateId = `${filePath}:${chunk.chunkIndex}#${i}`;
+                }
+                seenChunkIds.add(candidateId);
+                return candidateId;
+            });
+
             const records: LanceRecord[] = chunks.map((chunk, i) => ({
-                id: `${filePath}:${chunk.chunkIndex}`,
+                id: resolvedIds[i],
                 chunk_text: chunk.text,
                 vector: embeddings[i],
                 file_path: filePath,
@@ -292,25 +383,37 @@ export class VectorStore implements IVectorStore {
             this.pendingRecords = this.pendingRecords.filter((rec) => rec.file_path !== filePath);
             this.filesPendingReplace.add(filePath);
 
-            // Keep hybrid lexical BM25 index immediately synchronized
-            this.lexicalIndex.removeByFilePath(filePath);
-            this.lexicalIndex.upsertBatch(
-                records.map((r) => ({
-                    id: r.id,
-                    chunk_text: r.chunk_text,
-                    embedding: r.vector,
-                    file_path: r.file_path,
-                    chunk_index: r.chunk_index,
-                    indexed_at: r.indexed_at,
-                }))
-            );
+            // Upsert into disk-backed SQLite Knowledge Graph (FTS5 BM25 + SHA-256 + symbols/links)
+            this.knowledgeGraph?.upsertDocument({
+                filePath,
+                sha256: metadata?.sha256,
+                size: metadata?.size,
+                mtimeMs: metadata?.mtimeMs,
+                fileType: metadata?.fileType,
+                indexedAt: now,
+                chunks: chunks.map((c, i) => ({
+                    id: resolvedIds[i],
+                    chunkIndex: c.chunkIndex,
+                    text: c.text,
+                    startChar: c.startChar,
+                    endChar: c.endChar,
+                    startLine: c.startLine,
+                    endLine: c.endLine,
+                    heading: c.heading,
+                })),
+                symbols: metadata?.symbols,
+                links: metadata?.links,
+            });
 
             // Add to pending batch for optimized writes
             this.pendingRecords.push(...records);
 
+            const kgStats = this.knowledgeGraph?.getStats();
             RuntimeDiagnostics.getInstance().setVectorStoreStats({
                 initialized: true,
-                lexicalDocs: this.lexicalIndex.size(),
+                totalChunks: kgStats?.totalChunks ?? this.pendingRecords.length,
+                indexedFiles: kgStats?.totalFiles ?? 0,
+                lexicalDocs: kgStats?.totalChunks ?? this.pendingRecords.length,
                 pendingBuffer: this.pendingRecords.length,
             });
 
@@ -358,11 +461,12 @@ export class VectorStore implements IVectorStore {
             this.filesPendingReplace.clear();
             this.pendingRecords = [];
 
+            const kgStats = this.knowledgeGraph?.getStats();
             RuntimeDiagnostics.getInstance().setVectorStoreStats({
                 initialized: true,
-                totalChunks: this.lexicalIndex.size(),
-                indexedFiles: this.lexicalIndex.fileCount(),
-                lexicalDocs: this.lexicalIndex.size(),
+                totalChunks: kgStats?.totalChunks ?? 0,
+                indexedFiles: kgStats?.totalFiles ?? 0,
+                lexicalDocs: kgStats?.totalChunks ?? 0,
                 pendingBuffer: 0,
             });
 
@@ -394,14 +498,20 @@ export class VectorStore implements IVectorStore {
                 // LanceDB v0.4.20: Use vectorSearch() method
                 const results = await this.table!.vectorSearch(queryEmbedding).limit(topK).toArray() as LanceRecord[];
 
-                return results.map((row) => ({
-                    id: row.id,
-                    chunk_text: row.chunk_text,
-                    embedding: this.toPlainVector(row.vector),
-                    file_path: row.file_path,
-                    chunk_index: row.chunk_index,
-                    indexed_at: row.indexed_at,
-                }));
+                return results.map((row) => {
+                    const loc = this.knowledgeGraph?.getChunkLocation(row.id);
+                    return {
+                        id: row.id,
+                        chunk_text: row.chunk_text,
+                        embedding: this.toPlainVector(row.vector),
+                        file_path: row.file_path,
+                        chunk_index: row.chunk_index,
+                        indexed_at: row.indexed_at,
+                        start_line: loc?.startLine,
+                        end_line: loc?.endLine,
+                        heading: loc?.heading,
+                    };
+                });
             } catch (error: unknown) {
                 const msg = error instanceof Error ? error.message : String(error);
                 if (msg.includes('empty') || msg.includes('not found')) {
@@ -442,7 +552,24 @@ export class VectorStore implements IVectorStore {
     }
 
     searchLexical(query: string, topK: number = 10): LexicalSearchMatch[] {
-        return this.lexicalIndex.search(query, topK);
+        if (!this.knowledgeGraph) {
+            return [];
+        }
+        const rows: KnowledgeGraphChunkRecord[] = this.knowledgeGraph.searchLexical(query, topK);
+        return rows.map((row) => ({
+            record: {
+                id: row.id,
+                chunk_text: row.chunkText,
+                embedding: [],
+                file_path: row.filePath,
+                chunk_index: row.chunkIndex,
+                indexed_at: row.indexedAt,
+                start_line: row.startLine,
+                end_line: row.endLine,
+                heading: row.heading,
+            },
+            bm25Score: row.bm25Score,
+        }));
     }
 
     async deleteFile(filePath: string): Promise<number> {
@@ -453,7 +580,7 @@ export class VectorStore implements IVectorStore {
             this.pendingRecords = this.pendingRecords.filter((rec) => rec.file_path !== filePath);
             const removedPending = beforePendingCount - this.pendingRecords.length;
             this.filesPendingReplace.delete(filePath);
-            this.lexicalIndex.removeByFilePath(filePath);
+            this.knowledgeGraph?.removeFile(filePath);
 
             try {
                 const filterExpr = `file_path = '${this.escapeSql(filePath)}'`;
@@ -463,11 +590,12 @@ export class VectorStore implements IVectorStore {
                     await this.table!.delete(filterExpr);
                 }
 
+                const kgStats = this.knowledgeGraph?.getStats();
                 RuntimeDiagnostics.getInstance().setVectorStoreStats({
                     initialized: true,
-                    totalChunks: this.lexicalIndex.size(),
-                    indexedFiles: this.lexicalIndex.fileCount(),
-                    lexicalDocs: this.lexicalIndex.size(),
+                    totalChunks: kgStats?.totalChunks ?? 0,
+                    indexedFiles: kgStats?.totalFiles ?? 0,
+                    lexicalDocs: kgStats?.totalChunks ?? 0,
                     pendingBuffer: this.pendingRecords.length,
                 });
 
@@ -498,7 +626,7 @@ export class VectorStore implements IVectorStore {
                         initialized: true,
                         totalChunks: 0,
                         indexedFiles: 0,
-                        lexicalDocs: this.lexicalIndex.size(),
+                        lexicalDocs: 0,
                         pendingBuffer: this.pendingRecords.length,
                     });
                     return {
@@ -510,35 +638,41 @@ export class VectorStore implements IVectorStore {
                     };
                 }
 
-                const allRows = (await this.table!
-                    .query()
-                    .select(['file_path', 'chunk_text', 'indexed_at'])
-                    .toArray()) as Array<Pick<LanceRecord, 'file_path' | 'chunk_text' | 'indexed_at'>>;
+                const kgStats = this.knowledgeGraph?.getStats();
+                if (kgStats && kgStats.totalChunks > 0) {
+                    const indexSize = kgStats.totalChunks * (this.EMBEDDING_DIM * 4 + 200);
+                    RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                        initialized: true,
+                        totalChunks: kgStats.totalChunks,
+                        indexedFiles: kgStats.totalFiles,
+                        lexicalDocs: kgStats.totalChunks,
+                        pendingBuffer: this.pendingRecords.length,
+                    });
 
-                const uniqueFiles = new Set(allRows.map((r) => r.file_path));
-                const totalTokens = allRows.reduce(
-                    (sum, r) => sum + Math.ceil((r.chunk_text?.length ?? 0) / 4),
-                    0
-                );
-                const indexSize = allRows.length * (this.EMBEDDING_DIM * 4 + 200);
-                const lastIndexed = allRows.length > 0
-                    ? Math.max(...allRows.map((r) => Number(r.indexed_at) || 0))
-                    : 0;
+                    return {
+                        totalFiles: kgStats.totalFiles,
+                        totalChunks: kgStats.totalChunks,
+                        totalTokens: kgStats.totalTokens,
+                        indexSize,
+                        lastIndexed: kgStats.lastIndexed,
+                    };
+                }
 
+                // Fallback without loading table into memory when KnowledgeGraph is disabled
+                const estimatedSize = count * (this.EMBEDDING_DIM * 4 + 200);
                 RuntimeDiagnostics.getInstance().setVectorStoreStats({
                     initialized: true,
-                    totalChunks: allRows.length,
-                    indexedFiles: uniqueFiles.size,
-                    lexicalDocs: this.lexicalIndex.size(),
+                    totalChunks: count,
+                    indexedFiles: 0,
+                    lexicalDocs: 0,
                     pendingBuffer: this.pendingRecords.length,
                 });
-
                 return {
-                    totalFiles: uniqueFiles.size,
-                    totalChunks: allRows.length,
-                    totalTokens,
-                    indexSize,
-                    lastIndexed,
+                    totalFiles: 0,
+                    totalChunks: count,
+                    totalTokens: 0,
+                    indexSize: estimatedSize,
+                    lastIndexed: 0,
                 };
             } catch {
                 return {
@@ -559,7 +693,7 @@ export class VectorStore implements IVectorStore {
             try {
                 this.pendingRecords = [];
                 this.filesPendingReplace.clear();
-                this.lexicalIndex.clear();
+                this.knowledgeGraph?.clear();
                 await this.db!.dropTable(this.TABLE_NAME);
                 await this.createTable();
 
@@ -576,6 +710,19 @@ export class VectorStore implements IVectorStore {
                 const msg = error instanceof Error ? error.message : String(error);
                 throw new Error(`Clear failed: ${msg}`);
             }
+        });
+    }
+
+    async close(): Promise<void> {
+        return this.withLock(async () => {
+            if (this.ownsKnowledgeGraph && this.knowledgeGraph) {
+                this.knowledgeGraph.close();
+            }
+            this.knowledgeGraph = this.injectedKnowledgeGraph ?? null;
+            this.ownsKnowledgeGraph = false;
+            this.table = null;
+            this.db = null;
+            this.dbPath = '';
         });
     }
 

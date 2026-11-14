@@ -11,6 +11,7 @@
  * 
  * @implements IIndexingService
  */
+import fs from 'fs/promises';
 import {
     IIndexingService,
     IEmbeddingModel,
@@ -20,20 +21,31 @@ import {
 } from '../../shared/contracts';
 import { VectorStore } from './VectorStore';
 import { FileContentExtractor } from './FileContentExtractor';
+import { extractSymbolsAndLinks, StructuralChunker } from './StructuralChunker';
+import { computeBufferSha256 } from '../../main/services/WorkspaceKnowledgeGraph';
 import { LLMMetrics, MetricOperation } from './LLMMetrics';
 
+export interface IndexFileOptions {
+    forceReindex?: boolean;
+    signal?: AbortSignal;
+    skipMetadataStubs?: boolean;
+}
+
 export class IndexingService implements IIndexingService {
-    /** Chunk size in tokens */
-    private readonly CHUNK_SIZE = 500;
+    /** Target chunk size in tokens (fits BGE-small-en-v1.5 512-token window cleanly with headers) */
+    private readonly CHUNK_SIZE = 420;
 
     /** Overlap between chunks in tokens */
-    private readonly CHUNK_OVERLAP = 50;
+    private readonly CHUNK_OVERLAP = 48;
 
     /** Approximate characters per token for English */
     private readonly CHARS_PER_TOKEN = 4;
 
     /** Content extractor for various file types */
     private readonly contentExtractor: FileContentExtractor;
+
+    /** Structure-aware contextual chunker preserving line numbers & headings */
+    private readonly structuralChunker: StructuralChunker;
 
     constructor(
         private embeddingModel: IEmbeddingModel,
@@ -43,23 +55,53 @@ export class IndexingService implements IIndexingService {
             maxFileSize: 50 * 1024 * 1024, // 50MB
             maxCharacters: 500000,
         });
+        this.structuralChunker = new StructuralChunker({
+            maxTokens: this.CHUNK_SIZE,
+            overlapTokens: this.CHUNK_OVERLAP,
+            charsPerToken: this.CHARS_PER_TOKEN,
+            prependContextHeader: true,
+        });
     }
 
     /**
      * Index a single file.
-     * 
-     * Uses FileContentExtractor to handle PDFs, text files, and code.
-     * Falls back to metadata-only indexing for unsupported formats.
-     * 
-     * @param filePath - Absolute path to file
-     * @returns Indexing result
+     *
+     * Uses FileContentExtractor + StructuralChunker + SHA-256/stat change detection.
      */
     async indexFile(
         filePath: string,
-        flushImmediately: boolean = true
+        flushImmediately: boolean = true,
+        options?: IndexFileOptions
     ): Promise<IndexingResult> {
         const timer = LLMMetrics.getInstance().startTimer(MetricOperation.INDEX_FILE);
         try {
+            if (options?.signal?.aborted) {
+                return {
+                    filePath,
+                    chunksCreated: 0,
+                    totalTokens: 0,
+                    indexedAt: Date.now(),
+                    success: false,
+                    error: 'Indexing cancelled',
+                };
+            }
+
+            const fileStat = await fs.stat(filePath).catch(() => null);
+            if (
+                !options?.forceReindex &&
+                fileStat &&
+                typeof this.vectorStore.needsReindex === 'function' &&
+                !this.vectorStore.needsReindex(filePath, fileStat.mtimeMs, fileStat.size)
+            ) {
+                return {
+                    filePath,
+                    chunksCreated: 0,
+                    totalTokens: 0,
+                    indexedAt: Date.now(),
+                    success: true,
+                };
+            }
+
             // Extract content using specialized extractor
             const extraction = await this.contentExtractor.extract(filePath);
 
@@ -74,10 +116,38 @@ export class IndexingService implements IIndexingService {
                 };
             }
 
-            const content = extraction.content || '';
+            if (options?.skipMetadataStubs && extraction.contentType === 'metadata') {
+                return {
+                    filePath,
+                    chunksCreated: 0,
+                    totalTokens: 0,
+                    indexedAt: Date.now(),
+                    success: false,
+                    error: extraction.error || 'Skipped non-text metadata stub',
+                };
+            }
 
-            // Chunk content
-            const chunks = this.chunkText(content);
+            const content = extraction.content || '';
+            const sha256 = computeBufferSha256(content);
+
+            if (
+                !options?.forceReindex &&
+                fileStat &&
+                content.length > 0 &&
+                typeof this.vectorStore.needsReindex === 'function' &&
+                !this.vectorStore.needsReindex(filePath, fileStat.mtimeMs, fileStat.size, sha256)
+            ) {
+                return {
+                    filePath,
+                    chunksCreated: 0,
+                    totalTokens: 0,
+                    indexedAt: Date.now(),
+                    success: true,
+                };
+            }
+
+            // Structure-aware contextual chunking with line numbers
+            const chunks = this.structuralChunker.chunk(content, filePath);
 
             if (chunks.length === 0) {
                 return {
@@ -90,6 +160,8 @@ export class IndexingService implements IIndexingService {
                 };
             }
 
+            const { symbols, links } = extractSymbolsAndLinks(content, filePath);
+
             // Generate embeddings (batch for efficiency)
             const chunkTexts = chunks.map((c) => c.text);
             const embeddings = await this.embeddingModel.embedBatch(chunkTexts);
@@ -97,8 +169,15 @@ export class IndexingService implements IIndexingService {
             // Yield to event loop after embeddings
             await new Promise(resolve => setImmediate(resolve));
 
-            // Store in vector database
-            await this.vectorStore.addChunks(chunks, embeddings, filePath);
+            // Store in vector database & knowledge graph
+            await this.vectorStore.addChunks(chunks, embeddings, filePath, {
+                sha256,
+                size: fileStat?.size ?? content.length,
+                mtimeMs: fileStat?.mtimeMs ?? Date.now(),
+                fileType: extraction.fileType,
+                symbols,
+                links,
+            });
 
             // Flush immediately for single-file/small-batch writes unless batching
             if (
@@ -142,17 +221,20 @@ export class IndexingService implements IIndexingService {
      * @param filePaths - Array of paths
      * @returns Array of results
      */
-    async indexFiles(filePaths: string[]): Promise<IndexingResult[]> {
+    async indexFiles(filePaths: string[], options?: IndexFileOptions): Promise<IndexingResult[]> {
         const results: IndexingResult[] = [];
 
         try {
             // Process sequentially to avoid overwhelming system
             for (const filePath of filePaths) {
-                const result = await this.indexFile(filePath, false);
+                if (options?.signal?.aborted) {
+                    break;
+                }
+                const result = await this.indexFile(filePath, false, options);
                 results.push(result);
 
-                // Yield between files
-                await new Promise(resolve => setTimeout(resolve, 50));
+                // Yield between files without artificial fixed delay
+                await new Promise(resolve => setImmediate(resolve));
             }
         } finally {
             if (typeof this.vectorStore.flushPendingRecords === 'function') {
@@ -188,93 +270,10 @@ export class IndexingService implements IIndexingService {
     }
 
     /**
-     * Chunk text into overlapping segments.
-     * 
-     * Strategy:
-     * - Fixed size chunks (500 tokens ≈ 2000 chars)
-     * - Overlap prevents context loss (50 tokens ≈ 200 chars)
-     * - Prefer sentence boundaries when possible
-     * 
-     * @param text - Input text
-     * @returns Array of text chunks
+     * Chunk text into structure-aware overlapping segments.
      */
-    private chunkText(text: string): TextChunk[] {
-        const chunks: TextChunk[] = [];
-
-        if (!text || text.trim().length === 0) {
-            return chunks;
-        }
-
-        // Calculate characters per chunk
-        const charsPerChunk = this.CHUNK_SIZE * this.CHARS_PER_TOKEN;
-        const overlapChars = this.CHUNK_OVERLAP * this.CHARS_PER_TOKEN;
-        const stride = charsPerChunk - overlapChars;
-
-        let startChar = 0;
-        let chunkIndex = 0;
-
-        while (startChar < text.length) {
-            let endChar = Math.min(startChar + charsPerChunk, text.length);
-
-            // Try to find sentence boundary for cleaner chunks
-            if (endChar < text.length) {
-                const sentenceEnd = this.findSentenceBoundary(text, endChar, endChar + 100);
-                if (sentenceEnd > endChar) {
-                    endChar = sentenceEnd;
-                }
-            }
-
-            // Extract chunk
-            const chunkText = text.slice(startChar, endChar).trim();
-
-            if (chunkText.length > 0) {
-                chunks.push({
-                    text: chunkText,
-                    startChar,
-                    endChar,
-                    chunkIndex,
-                });
-                chunkIndex++;
-            }
-
-            // Move to next chunk with overlap
-            startChar += stride;
-
-            // Safety check to prevent infinite loop
-            if (stride <= 0) {
-                break;
-            }
-        }
-
-        return chunks;
-    }
-
-    /**
-     * Find sentence boundary near target position.
-     * 
-     * @param text - Full text
-     * @param start - Start search position
-     * @param end - End search position
-     * @returns Position of sentence boundary or start if not found
-     */
-    private findSentenceBoundary(
-        text: string,
-        start: number,
-        end: number
-    ): number {
-        const searchText = text.slice(start, Math.min(end, text.length));
-
-        // Look for sentence-ending punctuation followed by space or newline
-        const sentenceEnders = ['. ', '! ', '? ', '.\n', '!\n', '?\n'];
-
-        for (const ender of sentenceEnders) {
-            const index = searchText.indexOf(ender);
-            if (index !== -1) {
-                return start + index + ender.length;
-            }
-        }
-
-        return start;
+    private chunkText(text: string, filePath: string = 'document.txt'): TextChunk[] {
+        return this.structuralChunker.chunk(text, filePath);
     }
 
     /**
