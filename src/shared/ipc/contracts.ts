@@ -223,6 +223,7 @@ export interface IPCContractEntry<C extends IPCChannel = IPCChannel> {
   group: 'fileSystem' | 'vault' | 'navigation' | 'search' | 'llm' | 'shell' | 'runtime';
   schema: (typeof IPC_SCHEMAS)[C];
   pathFields: readonly string[];
+  linkSafePathFields?: readonly string[];
   rateLimit?: IPCRateLimitPolicy;
 }
 
@@ -259,14 +260,16 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     channel: 'FS:DELETE',
     group: 'fileSystem',
     schema: IPC_SCHEMAS['FS:DELETE'],
-    pathFields: ['path'],
+    pathFields: [],
+    linkSafePathFields: ['path'],
     rateLimit: WRITE_RATE_LIMIT,
   },
   'FS:MOVE': {
     channel: 'FS:MOVE',
     group: 'fileSystem',
     schema: IPC_SCHEMAS['FS:MOVE'],
-    pathFields: ['source', 'destination'],
+    pathFields: ['destination'],
+    linkSafePathFields: ['source'],
     rateLimit: WRITE_RATE_LIMIT,
   },
   'FS:CREATE_FILE': {

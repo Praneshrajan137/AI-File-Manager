@@ -363,5 +363,27 @@ describe('PathValidator', () => {
                 await fs.promises.rm(sandbox, { recursive: true, force: true });
             }
         });
+
+        it('expands 8.3 short-path root aliases via fs.realpathSync.native when plain realpathSync omits them', () => {
+            const shortRoot = path.join(os.tmpdir(), 'short-alias-root');
+            const longRoot = path.join(os.tmpdir(), 'long-canonical-root');
+            const syncSpy = jest
+                .spyOn(fs, 'realpathSync')
+                .mockImplementation((p) => String(p));
+            const nativeMock = jest.fn((p: fs.PathLike) =>
+                String(p) === shortRoot ? longRoot : String(p)
+            );
+            (fs.realpathSync as unknown as { native: typeof nativeMock }).native = nativeMock;
+
+            try {
+                const shortValidator = new PathValidator(shortRoot);
+                expect(syncSpy).toHaveBeenCalledWith(shortRoot);
+                expect(nativeMock).toHaveBeenCalledWith(shortRoot);
+                expect(shortValidator.validate(path.join(shortRoot, 'file.txt')).valid).toBe(true);
+                expect(shortValidator.validate(path.join(longRoot, 'file.txt')).valid).toBe(true);
+            } finally {
+                syncSpy.mockRestore();
+            }
+        });
     });
 });

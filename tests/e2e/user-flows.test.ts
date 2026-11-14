@@ -21,9 +21,10 @@ let testDir: string;
 
 test.describe('Critical User Journeys', () => {
     test.beforeAll(async () => {
-        // Create test directory with sample files
-        testDir = path.join(os.tmpdir(), `e2e-user-flows-${Date.now()}`);
-        await fs.mkdir(testDir, { recursive: true });
+        // Create test directory with sample files (use canonical realpath for Windows 8.3/symlink parity)
+        const rawTestDir = path.join(os.tmpdir(), `e2e-user-flows-${Date.now()}`);
+        await fs.mkdir(rawTestDir, { recursive: true });
+        testDir = await fs.realpath(rawTestDir);
 
         // Create sample file structure
         await fs.writeFile(

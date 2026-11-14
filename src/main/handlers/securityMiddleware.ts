@@ -152,6 +152,34 @@ export async function validateCanonicalPathOrThrow(
 }
 
 /**
+ * Validate a path whose leaf may legitimately be a symbolic link or NTFS junction
+ * (e.g. unlink/move of an in-vault symlink) by verifying its ancestor directory canonically
+ * without dereferencing the symlink target itself.
+ */
+export async function validateParentCanonicalPathOrThrow(
+  requestedPath: string,
+  customValidator?: PathValidator
+): Promise<string> {
+  const validator = customValidator || getPathValidator();
+  const result = await validator.validateParentCanonicalForLink(requestedPath);
+
+  if (!result.valid) {
+    SecurityLogger.error('Link-aware canonical path validation failed', {
+      path: requestedPath,
+      error: result.error,
+      details: result.details,
+    });
+
+    throw createPathSecurityError(
+      result.error,
+      result.details || `Invalid path: ${result.error}`
+    );
+  }
+
+  return result.canonicalLinkPath ?? requestedPath;
+}
+
+/**
  * Validate multiple paths lexically and throw if any are invalid.
  */
 export function validatePathsOrThrow(
@@ -249,6 +277,24 @@ export function serializeIPCError(error: unknown): IPCSerializedErrorPayload {
  * Validate input against registered contract schema, canonicalize path fields,
  * enforce rate limit, execute handler, record telemetry, and return IPCEnvelope.
  */
+async function sanitizeContractFields(
+  target: Record<string, unknown>,
+  fields: readonly string[],
+  validatorFn: (candidate: string) => Promise<string>
+): Promise<void> {
+  for (const pathField of fields) {
+    const candidate = target[pathField];
+    if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+      throw new ValidationError(
+        'MISSING_REQUIRED_FIELD',
+        `Request missing required path field: ${pathField}`,
+        { field: pathField }
+      );
+    }
+    target[pathField] = await validatorFn(candidate);
+  }
+}
+
 export async function validateAndInvokeContract<C extends IPCChannel>(
   channel: C,
   event: IpcMainInvokeEvent,
@@ -275,19 +321,15 @@ export async function validateAndInvokeContract<C extends IPCChannel>(
 
     let validatedInput = parsed.data as IPCRequest<C>;
 
-    if (contract.pathFields.length > 0 && validatedInput && typeof validatedInput === 'object') {
+    const linkSafeFields = contract.linkSafePathFields ?? [];
+    if ((contract.pathFields.length > 0 || linkSafeFields.length > 0) && validatedInput && typeof validatedInput === 'object') {
       const mutableCopy = { ...(validatedInput as Record<string, unknown>) };
-      for (const pathField of contract.pathFields) {
-        const candidate = mutableCopy[pathField];
-        if (typeof candidate !== 'string' || candidate.trim().length === 0) {
-          throw new ValidationError(
-            'MISSING_REQUIRED_FIELD',
-            `Request missing required path field: ${pathField}`,
-            { field: pathField }
-          );
-        }
-        mutableCopy[pathField] = await validateCanonicalPathOrThrow(candidate);
-      }
+      await sanitizeContractFields(mutableCopy, contract.pathFields, (p) =>
+        validateCanonicalPathOrThrow(p)
+      );
+      await sanitizeContractFields(mutableCopy, linkSafeFields, (p) =>
+        validateParentCanonicalPathOrThrow(p)
+      );
       validatedInput = mutableCopy as IPCRequest<C>;
     }
 

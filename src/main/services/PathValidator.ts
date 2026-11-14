@@ -51,10 +51,18 @@ export class PathValidator {
      */
     private expandCanonicalAliases(entries: string[]): string[] {
         const expanded = new Set<string>(entries);
+        const realpathFns: Array<(p: string) => string> = [];
+        if (typeof fs.realpathSync?.native === 'function') {
+            realpathFns.push((p) => fs.realpathSync.native(p));
+        }
         if (typeof fs.realpathSync === 'function') {
-            for (const entry of entries) {
+            realpathFns.push((p) => fs.realpathSync(p));
+        }
+
+        for (const entry of entries) {
+            for (const resolveFn of realpathFns) {
                 try {
-                    const real = this.stripTrailingSep(fs.realpathSync(entry));
+                    const real = this.stripTrailingSep(resolveFn(entry));
                     if (real) {
                         expanded.add(real);
                     }
