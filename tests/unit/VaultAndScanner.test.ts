@@ -10,6 +10,7 @@ import { ConfigManager } from '@shared/config';
 import { registerAllHandlers, unregisterAllHandlers, getRegisteredChannels } from '@main/handlers/ipcHandlers';
 import { ALL_IPC_CHANNELS } from '@shared/ipc/contracts';
 import { resetPathValidator } from '@main/handlers/securityMiddleware';
+import { PathValidator } from '@main/services/PathValidator';
 
 jest.mock('electron', () => ({
   ipcMain: {
@@ -173,5 +174,45 @@ describe('Stage 1 (M7): DirectoryScanner Exclusions & Vault IPC Kernel Reload', 
 
     const removeLastRes = (await removeRootHandler(fakeEvent, { path: rootA })) as { ok: boolean };
     expect(removeLastRes.ok).toBe(false);
+  });
+
+  it('accepts non-symlink short-path aliases under canonical roots while blocking external symlinks into roots', () => {
+    const fakeCanonicalRoot = path.join(path.parse(sandboxDir).root, 'Users', 'runneradmin', 'vault-a');
+    const fakeShortPath = path.join(path.parse(sandboxDir).root, 'Users', 'RUNNER~1', 'vault-a', 'note.txt');
+    const fakeOutsideSymlinkTarget = path.join(path.parse(sandboxDir).root, 'outside', 'link-to-vault', 'note.txt');
+
+    const lstatSpy = jest.spyOn(fsSync, 'lstatSync').mockImplementation(((p: fsSync.PathLike) => {
+      const target = String(p).toLowerCase();
+      if (target.endsWith('link-to-vault')) {
+        return { isSymbolicLink: () => true } as fsSync.Stats;
+      }
+      return { isSymbolicLink: () => false } as fsSync.Stats;
+    }) as typeof fsSync.lstatSync);
+
+    const resolveMockAlias = (p: fsSync.PathLike): string => {
+      const s = String(p).replace(/RUNNER~1/gi, 'runneradmin');
+      return s.toLowerCase().includes('link-to-vault') ? fakeCanonicalRoot : s;
+    };
+
+    const nativeSpy = jest
+      .spyOn(fsSync.realpathSync, 'native')
+      .mockImplementation(resolveMockAlias as typeof fsSync.realpathSync.native);
+
+    const realpathSpy = jest
+      .spyOn(fsSync, 'realpathSync')
+      .mockImplementation(resolveMockAlias as typeof fsSync.realpathSync);
+
+    try {
+      const validator = new PathValidator([fakeCanonicalRoot]);
+      expect(validator.validate(fakeShortPath).valid).toBe(true);
+      expect(validator.validate(fakeOutsideSymlinkTarget)).toMatchObject({
+        valid: false,
+        error: 'UNAUTHORIZED_ACCESS',
+      });
+    } finally {
+      lstatSpy.mockRestore();
+      nativeSpy.mockRestore();
+      realpathSpy.mockRestore();
+    }
   });
 });

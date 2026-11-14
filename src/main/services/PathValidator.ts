@@ -106,6 +106,57 @@ export class PathValidator {
     }
 
     /**
+     * Resolve OS short/8.3 or case aliases along real, non-symlink ancestor components.
+     * Stops strictly before any symbolic link/junction so outside symlinks never bypass lexical containment.
+     */
+    private resolveNonSymlinkCanonicalSync(resolvedPath: string): string | null {
+        if (typeof fs.lstatSync !== 'function' || typeof fs.realpathSync !== 'function') {
+            return null;
+        }
+        const parsed = path.parse(resolvedPath);
+        const remainder = resolvedPath.slice(parsed.root.length);
+        if (!remainder) {
+            return null;
+        }
+
+        const parts = remainder.split(/[\\/]+/).filter(Boolean);
+        let prefix = parsed.root;
+        let consumed = 0;
+
+        for (let i = 0; i < parts.length; i += 1) {
+            const candidate = path.join(prefix, parts[i]);
+            try {
+                const stats = fs.lstatSync(candidate);
+                if (typeof stats.isSymbolicLink === 'function' && stats.isSymbolicLink()) {
+                    break;
+                }
+                prefix = candidate;
+                consumed = i + 1;
+            } catch {
+                break;
+            }
+        }
+
+        if (consumed === 0) {
+            return null;
+        }
+
+        const realpathFn: ((p: string) => string) =
+            typeof fs.realpathSync.native === 'function'
+                ? (p: string): string => fs.realpathSync.native(p)
+                : (p: string): string => fs.realpathSync(p);
+
+        try {
+            const canonicalPrefix = realpathFn(prefix);
+            const tail = parts.slice(consumed);
+            const combined = tail.length > 0 ? path.join(canonicalPrefix, ...tail) : canonicalPrefix;
+            return this.stripTrailingSep(path.resolve(combined));
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * Validate path for security (lexical validation).
      */
     validate(requestedPath: string): ValidationResult {
@@ -165,25 +216,56 @@ export class PathValidator {
         const resolved = this.stripTrailingSep(path.resolve(path.normalize(decoded)));
 
         // Step 7: Check against forbidden paths FIRST (exact match or nested child, case-safe on Windows)
-        for (const forbidden of this.forbiddenPaths) {
-            if (this.isWithinDirectory(resolved, forbidden)) {
-                SecurityLogger.error('Forbidden path access attempt', {
-                    requestedPath,
-                    resolvedPath: resolved,
-                    forbiddenPath: forbidden,
-                });
-                return {
-                    valid: false,
-                    error: 'UNAUTHORIZED_ACCESS',
-                    details: `Access to system path "${forbidden}" is forbidden`,
-                };
+        let nonSymlinkAlias: string | null | undefined;
+        const getNonSymlinkAlias = (): string | null => {
+            if (nonSymlinkAlias === undefined) {
+                nonSymlinkAlias = this.resolveNonSymlinkCanonicalSync(resolved);
+            }
+            return nonSymlinkAlias;
+        };
+
+        const pathsToCheckForbidden = [resolved];
+        if (process.platform === 'win32' && resolved.includes('~')) {
+            const alias = getNonSymlinkAlias();
+            if (alias && alias !== resolved) {
+                pathsToCheckForbidden.push(alias);
             }
         }
 
-        // Step 8: Ensure within at least one allowed root
-        const insideAllowedRoot = this.lexicalAllowedRoots.some((root) =>
+        for (const candidate of pathsToCheckForbidden) {
+            for (const forbidden of this.forbiddenPaths) {
+                if (this.isWithinDirectory(candidate, forbidden)) {
+                    SecurityLogger.error('Forbidden path access attempt', {
+                        requestedPath,
+                        resolvedPath: resolved,
+                        forbiddenPath: forbidden,
+                    });
+                    return {
+                        valid: false,
+                        error: 'UNAUTHORIZED_ACCESS',
+                        details: `Access to system path "${forbidden}" is forbidden`,
+                    };
+                }
+            }
+        }
+
+        // Step 8: Ensure within at least one allowed root (supporting non-symlink OS short-path aliases)
+        let insideAllowedRoot = this.lexicalAllowedRoots.some((root) =>
             this.isWithinDirectory(resolved, root)
         );
+        if (!insideAllowedRoot) {
+            const alias = getNonSymlinkAlias();
+            if (alias) {
+                const hitsForbidden = this.forbiddenPaths.some((forbidden) =>
+                    this.isWithinDirectory(alias, forbidden)
+                );
+                if (!hitsForbidden) {
+                    insideAllowedRoot = this.lexicalAllowedRoots.some((root) =>
+                        this.isWithinDirectory(alias, root)
+                    );
+                }
+            }
+        }
         if (!insideAllowedRoot) {
             SecurityLogger.error('Unauthorized directory access attempt', {
                 requestedPath,
