@@ -320,5 +320,48 @@ describe('PathValidator', () => {
                 realpathSpy.mockRestore();
             }
         });
+
+        it('validates both alias roots and canonical realpath targets without loosening escape checks', async () => {
+            const sandbox = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pv-alias-'));
+            const realRoot = path.join(sandbox, 'real-root');
+            const aliasRoot = path.join(sandbox, 'alias-root');
+            const outsideDir = path.join(sandbox, 'outside');
+            const escapeLink = path.join(realRoot, 'escape-link');
+            const symlinkType = process.platform === 'win32' ? 'junction' : 'dir';
+
+            try {
+                await fs.promises.mkdir(realRoot, { recursive: true });
+                await fs.promises.mkdir(outsideDir, { recursive: true });
+                await fs.promises.writeFile(path.join(realRoot, 'inside.txt'), 'ok', 'utf-8');
+                await fs.promises.writeFile(path.join(outsideDir, 'secret.txt'), 'nope', 'utf-8');
+                await fs.promises.symlink(realRoot, aliasRoot, symlinkType);
+                await fs.promises.symlink(outsideDir, escapeLink, symlinkType);
+
+                const canonicalRealRoot = await fs.promises.realpath(realRoot);
+                const canonicalInside = await fs.promises.realpath(path.join(realRoot, 'inside.txt'));
+                const aliasValidator = new PathValidator(aliasRoot);
+
+                expect(aliasValidator.getAllowedRoots()).toEqual([path.resolve(aliasRoot)]);
+                expect(aliasValidator.validate(canonicalInside).valid).toBe(true);
+
+                const viaAlias = await aliasValidator.validateCanonical(path.join(aliasRoot, 'inside.txt'));
+                expect(viaAlias.valid).toBe(true);
+                expect(viaAlias.canonicalPath).toBe(canonicalInside);
+
+                const viaCanonical = await aliasValidator.validateCanonical(
+                    path.join(canonicalRealRoot, 'inside.txt')
+                );
+                expect(viaCanonical.valid).toBe(true);
+                expect(viaCanonical.canonicalPath).toBe(canonicalInside);
+
+                const escapeAttempt = await aliasValidator.validateCanonical(
+                    path.join(aliasRoot, 'escape-link', 'secret.txt')
+                );
+                expect(escapeAttempt.valid).toBe(false);
+                expect(escapeAttempt.error).toBe('SYMLINK_ESCAPE');
+            } finally {
+                await fs.promises.rm(sandbox, { recursive: true, force: true });
+            }
+        });
     });
 });

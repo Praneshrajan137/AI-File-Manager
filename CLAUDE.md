@@ -368,5 +368,6 @@ git tag v0.1.0-trie-complete
 ## 💻 HARDWARE & REMOTE-FIRST CI RULE (MANDATORY — 12 GB RAM / RTX 3050 LAPTOP)
 
 - **Never run heavy CI, full `npm run test:coverage`, full Playwright Electron E2E (`npm run test:e2e` / `test:all`), `npm run package`, heavy `10k` scale suites, or multi-model ONNX/Ollama benchmarks locally.**
-- **Locally:** Restrict verification to `npm run type-check`, targeted `npx eslint <files>`, and single/targeted fast unit test files (`npx jest <path> --runInBand --maxWorkers=1`).
-- **Remotely:** Run all heavy CI, full coverage, production builds, and cross-platform Playwright Electron E2E exclusively in **GitHub Actions** (`.github/workflows/`), wait for run completion via `gh run watch` / `gh run view`, and fix forward based on cloud logs.
+- **Locally:** Restrict verification to `npm run type-check`, targeted `npx eslint <files>`, and single/targeted fast unit test files (`npx jest <path> --runInBand`).
+- **Remotely:** Run all heavy CI, full coverage, production builds, and cross-platform Playwright Electron E2E exclusively in **GitHub Actions** (`.github/workflows/`), monitor strictly via `node scripts/ci-watch.mjs watch` / `logs` (never un-bounded `gh run watch` or `gh run view --log-failed`), and fix forward based on cloud logs.
+- **Anti-Hang Discipline:** Enforce `GH_PAGER=cat`, `GH_NO_UPDATE_NOTIFIER=1`, `GIT_TERMINAL_PROMPT=0`, stream-safe truncated log parsing (`<=280` chars/line), hard per-call timeouts (`<=30s` API / `<=900s` CI watch), and scratch `.mjs` files instead of complex `node -e` PowerShell quoting.

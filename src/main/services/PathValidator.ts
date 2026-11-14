@@ -21,6 +21,7 @@ import { ConfigManager } from '@shared/config';
 export class PathValidator {
     private allowedRoot: string;
     private allowedRoots: string[];
+    private lexicalAllowedRoots: string[];
     private forbiddenPaths: string[];
 
     constructor(allowedRoots: string | string[]) {
@@ -34,11 +35,35 @@ export class PathValidator {
             ? Array.from(new Set(normalized))
             : [this.stripTrailingSep(path.resolve(os.homedir()))];
         this.allowedRoot = this.allowedRoots[0];
+        this.lexicalAllowedRoots = this.expandCanonicalAliases(this.allowedRoots);
 
-        // Initialize OS-specific forbidden paths
-        this.forbiddenPaths = this.getForbiddenPaths().map((entry) =>
+        // Initialize OS-specific forbidden paths (including canonical aliases for OS 8.3/symlink equivalence)
+        const baseForbidden = this.getForbiddenPaths().map((entry) =>
             this.stripTrailingSep(path.resolve(path.normalize(entry)))
         );
+        this.forbiddenPaths = this.expandCanonicalAliases(baseForbidden);
+    }
+
+    /**
+     * Include canonical realpath aliases alongside configured paths for existing directories
+     * so OS short-path aliases (e.g. Windows RUNNER~1 <-> runneradmin) and symlinked roots
+     * (/tmp <-> /private/tmp) remain consistent between lexical and canonical checks.
+     */
+    private expandCanonicalAliases(entries: string[]): string[] {
+        const expanded = new Set<string>(entries);
+        if (typeof fs.realpathSync === 'function') {
+            for (const entry of entries) {
+                try {
+                    const real = this.stripTrailingSep(fs.realpathSync(entry));
+                    if (real) {
+                        expanded.add(real);
+                    }
+                } catch {
+                    // Entry may not exist on disk yet; keep lexical entry only
+                }
+            }
+        }
+        return Array.from(expanded);
     }
 
     private stripTrailingSep(targetPath: string): string {
@@ -148,7 +173,7 @@ export class PathValidator {
         }
 
         // Step 8: Ensure within at least one allowed root
-        const insideAllowedRoot = this.allowedRoots.some((root) =>
+        const insideAllowedRoot = this.lexicalAllowedRoots.some((root) =>
             this.isWithinDirectory(resolved, root)
         );
         if (!insideAllowedRoot) {

@@ -633,6 +633,6 @@ await table.delete({ field: input }).execute();
 
 - Host machine constraint: **12 GB RAM + RTX 3050 GPU**.
 - **NEVER run heavy CI, full `jest --coverage`, full Playwright E2E (`npm run test:e2e` / `npm run test:all`), `npm run package`, `10k`-file scale benchmarks, or heavy real ONNX/Ollama evaluations locally.**
-- **Local checks MUST remain lightweight:** `npm run type-check`, targeted `npx eslint <changed-files>`, and single/targeted unit test runs (`npx jest <single-file> --runInBand --maxWorkers=1`).
-- **Run ALL heavy builds, coverage gates, benchmarks, and Playwright Electron E2E in GitHub Actions (`.github/workflows/`)**, monitor with `gh run watch` / `gh run view`, wait for results, and iterate from cloud logs.
+- **Local checks MUST remain lightweight:** `npm run type-check`, targeted `npx eslint <changed-files>`, and single/targeted unit test runs (`npx jest <single-file> --runInBand`).
+- **Run ALL heavy builds, coverage gates, benchmarks, and Playwright Electron E2E in GitHub Actions (`.github/workflows/`)**, monitor strictly via `node scripts/ci-watch.mjs` (never bare `gh run watch` or `gh run view --log-failed`), enforce `GH_PAGER=cat`/`GIT_TERMINAL_PROMPT=0`, write `.mjs` files instead of inline `node -e` quotes, and always enforce hard per-call timeouts.
 
