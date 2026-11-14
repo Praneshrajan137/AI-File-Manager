@@ -3,6 +3,10 @@ import os from 'os';
 import path from 'path';
 import { DEFAULT_EMBEDDING_MODEL, Embedding, TextChunk } from '../../src/shared/contracts';
 import { EmbeddingModel } from '../../src/llm/models/EmbeddingModel';
+import {
+    _resetTransformersCacheForTesting,
+    loadFeatureExtractionPipeline,
+} from '../../src/llm/models/transformersLoader';
 import { VectorStore } from '../../src/llm/services/VectorStore';
 import { FileContentExtractor } from '../../src/llm/services/FileContentExtractor';
 
@@ -15,16 +19,17 @@ describe('Stage 2 (M8) Runtime & AI Stack Upgrades', () => {
 
     afterEach(async () => {
         EmbeddingModel._setMockPipeline(null);
+        _resetTransformersCacheForTesting();
         jest.restoreAllMocks();
         jest.resetModules();
         await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
     });
 
     describe('EmbeddingModel M8 defaults & context window', () => {
-        it('defaults to BAAI/bge-small-en-v1.5 with 512-token context window', () => {
+        it('defaults to Xenova/bge-small-en-v1.5 with 512-token context window', () => {
             const model = new EmbeddingModel();
             expect(model.getModelName()).toBe(DEFAULT_EMBEDDING_MODEL);
-            expect(model.getModelName()).toBe('BAAI/bge-small-en-v1.5');
+            expect(model.getModelName()).toBe('Xenova/bge-small-en-v1.5');
             expect(model.getMaxContextTokens()).toBe(512);
         });
 
@@ -32,6 +37,36 @@ describe('Stage 2 (M8) Runtime & AI Stack Upgrades', () => {
             const legacy = new EmbeddingModel({ modelName: 'Xenova/all-MiniLM-L6-v2' });
             expect(legacy.getModelName()).toBe('Xenova/all-MiniLM-L6-v2');
             expect(legacy.getMaxContextTokens()).toBe(256);
+        });
+
+        it('falls back from q8 to fp32 when Hugging Face repo lacks quantized ONNX weights', async () => {
+            const fakePipelineFn = jest.fn(async () => ({ data: new Float32Array(384).fill(0.1) }));
+            const mockPipelineFactory = jest
+                .fn()
+                .mockRejectedValueOnce(new Error('ModelFileNotFoundError: Could not locate file: "onnx/model_quantized.onnx"'))
+                .mockResolvedValueOnce(fakePipelineFn);
+
+            jest.doMock('@huggingface/transformers', () => ({
+                env: { useBrowserCache: true, useFSCache: false },
+                pipeline: mockPipelineFactory,
+            }));
+
+            const extractor = await loadFeatureExtractionPipeline({
+                modelName: 'BAAI/bge-small-en-v1.5',
+                dtype: 'q8',
+                device: 'cpu',
+            });
+
+            expect(extractor).toBe(fakePipelineFn);
+            expect(mockPipelineFactory).toHaveBeenCalledTimes(2);
+            expect(mockPipelineFactory).toHaveBeenNthCalledWith(1, 'feature-extraction', 'BAAI/bge-small-en-v1.5', {
+                dtype: 'q8',
+                device: 'cpu',
+            });
+            expect(mockPipelineFactory).toHaveBeenNthCalledWith(2, 'feature-extraction', 'BAAI/bge-small-en-v1.5', {
+                dtype: 'fp32',
+                device: 'cpu',
+            });
         });
     });
 

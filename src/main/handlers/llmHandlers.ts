@@ -117,18 +117,7 @@ async function ensureServicesInitialized(): Promise<void> {
       const kernel = getReactiveWorkspaceKernel();
       fileSystemService = kernel.getFileSystemService();
 
-      let configuredOllamaUrl: string | undefined;
-      try {
-        configuredOllamaUrl = ConfigManager.getInstance().get('llm')?.ollamaUrl;
-      } catch {
-        configuredOllamaUrl = undefined;
-      }
-      const ollamaUrl =
-        process.env.OLLAMA_URL && process.env.OLLAMA_URL.trim().length > 0
-          ? process.env.OLLAMA_URL.trim()
-          : configuredOllamaUrl;
-
-      const localLlm = new LLMInterface(ollamaUrl);
+      const localLlm = new LLMInterface(resolveOllamaUrl());
       const contextManager = new ContextManager(localLlm);
 
       vectorStore = localVectorStore;
@@ -529,16 +518,27 @@ async function handleKernelIndexMutation(
 
 /**
  * Handler: LLM:CHECK_OLLAMA
- * Check if Ollama is running.
+ * Check if Ollama is running without blocking on ONNX embedding downloads.
  */
+function resolveOllamaUrl(): string | undefined {
+  if (process.env.OLLAMA_URL && process.env.OLLAMA_URL.trim().length > 0) {
+    return process.env.OLLAMA_URL.trim();
+  }
+  try {
+    return ConfigManager.getInstance().get('llm')?.ollamaUrl;
+  } catch {
+    return undefined;
+  }
+}
+
 async function handleCheckOllama(
   _event: IpcMainInvokeEvent,
   _input: Record<string, never>
 ): Promise<{ available: boolean; models: string[] }> {
   try {
-    await ensureServicesInitialized();
-    const available = await llmInterface!.checkConnection();
-    const models = available ? await llmInterface!.getAvailableModels() : [];
+    const client = llmInterface ?? new LLMInterface(resolveOllamaUrl());
+    const available = await client.checkConnection();
+    const models = available ? await client.getAvailableModels() : [];
 
     return { available, models };
   } catch {

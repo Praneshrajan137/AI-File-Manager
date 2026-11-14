@@ -487,7 +487,7 @@ export interface ILLMService {
 /**
  * Default local AI embedding and reranking model identifiers.
  */
-export const DEFAULT_EMBEDDING_MODEL = 'BAAI/bge-small-en-v1.5';
+export const DEFAULT_EMBEDDING_MODEL = 'Xenova/bge-small-en-v1.5';
 export const FALLBACK_EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
 export const DEFAULT_RERANKER_MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2';
 
@@ -500,7 +500,7 @@ export type Embedding = number[];
  * Embedding generation options
  */
 export interface EmbeddingOptions {
-  /** Model name (default: 'BAAI/bge-small-en-v1.5') */
+  /** Model name (default: 'Xenova/bge-small-en-v1.5') */
   model?: string;
 
   /** Normalize embeddings (default: true) */

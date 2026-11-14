@@ -112,7 +112,7 @@ export const defaultConfig: AppConfig = {
     maxTokens: 2048,
     temperature: 0.7,
     embeddingDimensions: 384,
-    embeddingModel: process.env.EMBEDDING_MODEL || 'BAAI/bge-small-en-v1.5',
+    embeddingModel: process.env.EMBEDDING_MODEL || 'Xenova/bge-small-en-v1.5',
     embeddingDtype: 'q8',
     rerankerModel: 'Xenova/ms-marco-MiniLM-L-6-v2',
     enableWebGPU: false,

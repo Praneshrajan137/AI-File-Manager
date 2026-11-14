@@ -1,7 +1,7 @@
 /**
  * embeddingWorker.ts - Worker Thread for Embedding Operations
  *
- * Uses `@huggingface/transformers` v4 (`BAAI/bge-small-en-v1.5`, quantized `q8` on CPU
+ * Uses `@huggingface/transformers` v4 (`Xenova/bge-small-en-v1.5`, quantized `q8` on CPU
  * by default) inside an isolated worker thread to keep the main event loop responsive.
  */
 
@@ -9,7 +9,7 @@ import { parentPort } from 'worker_threads';
 import { DEFAULT_EMBEDDING_MODEL } from '../../shared/contracts';
 import { suppressSqliteExperimentalWarning } from '../../shared/utils/processWarnings';
 import {
-  loadTransformers,
+  loadFeatureExtractionPipeline,
   TransformersDevice,
   TransformersDtype,
 } from '../models/transformersLoader';
@@ -43,8 +43,8 @@ async function initializeModel(options?: {
   }
 
   try {
-    const transformers = await loadTransformers();
-    extractor = await transformers.pipeline('feature-extraction', requestedModel, {
+    extractor = await loadFeatureExtractionPipeline({
+      modelName: requestedModel,
       dtype: requestedDtype,
       device: requestedDevice,
     });

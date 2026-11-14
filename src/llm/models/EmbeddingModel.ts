@@ -2,7 +2,7 @@
  * EmbeddingModel - Local Text-to-Vector Conversion
  *
  * Uses `@huggingface/transformers` v4 with quantized INT8 (`q8`) CPU execution.
- * Defaults to `BAAI/bge-small-en-v1.5` (384 dimensions, 512-token context)
+ * Defaults to `Xenova/bge-small-en-v1.5` (384 dimensions, 512-token context)
  * with optional fallback to `Xenova/all-MiniLM-L6-v2` (384 dimensions, 256 tokens).
  *
  * @implements IEmbeddingModel
@@ -13,7 +13,7 @@ import {
   IEmbeddingModel,
 } from '../../shared/contracts';
 import {
-  loadTransformers,
+  loadFeatureExtractionPipeline,
   TransformersDevice,
   TransformersDtype,
 } from './transformersLoader';
@@ -80,8 +80,8 @@ export class EmbeddingModel implements IEmbeddingModel {
     }
 
     try {
-      const transformers = await loadTransformers();
-      this.extractor = (await transformers.pipeline('feature-extraction', this.modelName, {
+      this.extractor = (await loadFeatureExtractionPipeline({
+        modelName: this.modelName,
         dtype: this.dtype,
         device: this.device,
       })) as unknown as FeatureExtractionPipeline;
