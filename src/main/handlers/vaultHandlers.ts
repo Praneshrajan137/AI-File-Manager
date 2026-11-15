@@ -1,6 +1,5 @@
 import { ipcMain, dialog, BrowserWindow, IpcMainInvokeEvent } from 'electron';
 import fsSync from 'fs';
-import fs from 'fs/promises';
 import path from 'path';
 import { UIPreferencesSnapshot, VaultConfigSnapshot } from '@shared/contracts';
 import { IPCChannel } from '@shared/ipc/contracts';
@@ -14,6 +13,7 @@ import {
   validateCanonicalPathOrThrow,
 } from './securityMiddleware';
 import { getReactiveWorkspaceKernel } from '../services/ReactiveWorkspaceKernel';
+import { PathValidator } from '../services/PathValidator';
 import { RuntimeDiagnostics } from '../services/RuntimeDiagnostics';
 import { resetSearchService } from './searchHandlers';
 import { resetOperationJournal } from '../services/OperationJournal';
@@ -138,24 +138,22 @@ async function handleAddVaultRoot(
     );
   }
 
-  const resolvedPath = path.resolve(targetPath);
-  let stats: Awaited<ReturnType<typeof fs.stat>>;
-  try {
-    stats = await fs.stat(resolvedPath);
-  } catch (err) {
-    throw ErrorFactory.fromFsError(err, resolvedPath);
-  }
-  if (!stats.isDirectory()) {
-    throw ErrorFactory.createValidationError(
-      'INVALID_INPUT',
-      'path',
-      resolvedPath,
-      'Vault root must be an existing directory'
-    );
+  const current = buildVaultSnapshot();
+  const rootValidator = new PathValidator(current.allowedRoots);
+  const rootValidation = await rootValidator.validateNewRoot(targetPath);
+  if (!rootValidation.valid || !rootValidation.canonicalPath) {
+    const code =
+      rootValidation.error === 'PATH_TRAVERSAL'
+        ? 'PATH_TRAVERSAL'
+        : rootValidation.error === 'UNAUTHORIZED_ACCESS'
+          ? 'UNAUTHORIZED_ACCESS'
+          : 'INVALID_PATH';
+    throw ErrorFactory.createFileSystemError(code, targetPath, 'addVaultRoot', {
+      details: rootValidation.details || 'Invalid workspace root path',
+    });
   }
 
-  const canonicalRoot = await fs.realpath(resolvedPath);
-  const current = buildVaultSnapshot();
+  const canonicalRoot = rootValidation.canonicalPath;
   const nextRoots = dedupePaths([...current.allowedRoots, canonicalRoot]);
 
   ConfigManager.getInstance().set('fileSystem.allowedRoots', nextRoots, true);

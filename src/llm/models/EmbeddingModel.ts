@@ -29,6 +29,7 @@ export interface EmbeddingModelOptions {
   dtype?: TransformersDtype;
   device?: TransformersDevice;
   dimensions?: number;
+  allowRemoteModels?: boolean;
 }
 
 export class EmbeddingModel implements IEmbeddingModel {
@@ -37,6 +38,7 @@ export class EmbeddingModel implements IEmbeddingModel {
   private readonly modelName: string;
   private readonly dtype: TransformersDtype;
   private readonly device: TransformersDevice;
+  private readonly allowRemoteModels: boolean | undefined;
 
   /** Testing hook: allows injecting a mock pipeline for tests */
   private static mockPipeline: FeatureExtractionPipeline | null = null;
@@ -46,6 +48,7 @@ export class EmbeddingModel implements IEmbeddingModel {
     this.dtype = options.dtype ?? 'q8';
     this.device = options.device ?? 'cpu';
     this.dimensions = options.dimensions ?? 384;
+    this.allowRemoteModels = options.allowRemoteModels;
   }
 
   /**
@@ -84,6 +87,7 @@ export class EmbeddingModel implements IEmbeddingModel {
         modelName: this.modelName,
         dtype: this.dtype,
         device: this.device,
+        allowRemoteModels: this.allowRemoteModels,
       })) as unknown as FeatureExtractionPipeline;
     } catch (error) {
       throw new Error(
@@ -165,8 +169,8 @@ export class EmbeddingModel implements IEmbeddingModel {
                 await new Promise(resolve => setImmediate(resolve));
             }
 
-            // Longer yield between batches
-            await new Promise(resolve => setTimeout(resolve, 50));
+            // Cooperative event-loop yield between batches without artificial wall-clock delay
+            await new Promise(resolve => setImmediate(resolve));
         }
 
         return embeddings;

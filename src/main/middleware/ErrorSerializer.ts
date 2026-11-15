@@ -18,6 +18,7 @@
  */
 
 import { BaseError } from '@shared/errors';
+import { redactSensitiveText } from '@shared/security/SecretGuard';
 
 /**
  * Serialized error format for IPC.
@@ -132,15 +133,24 @@ export class ErrorSerializer {
     const metadata = error.metadata 
       ? this.sanitizeMetadata(error.metadata, options)
       : undefined;
+    const sanitizedMessage = redactSensitiveText(
+      options.sanitizePaths ? this.sanitizeText(error.message) : error.message
+    ).sanitizedText;
+    const sanitizedStack =
+      options.includeStack && error.stack
+        ? redactSensitiveText(
+            options.sanitizePaths ? this.sanitizeText(error.stack) : error.stack
+          ).sanitizedText
+        : undefined;
 
     return {
       name: error.name,
       code: error.code,
-      message: error.message,
+      message: sanitizedMessage,
       timestamp: error.timestamp,
       isOperational: error.isOperational,
       metadata,
-      stack: options.includeStack ? error.stack : undefined,
+      stack: sanitizedStack,
     };
   }
 
@@ -155,14 +165,24 @@ export class ErrorSerializer {
     error: Error,
     options: Required<SerializationOptions>
   ): SerializedError {
+    const sanitizedMessage = redactSensitiveText(
+      options.sanitizePaths ? this.sanitizeText(error.message) : error.message
+    ).sanitizedText;
+    const sanitizedStack =
+      options.includeStack && error.stack
+        ? redactSensitiveText(
+            options.sanitizePaths ? this.sanitizeText(error.stack) : error.stack
+          ).sanitizedText
+        : undefined;
+
     return {
       name: error.name,
       code: 'UNKNOWN',
-      message: error.message,
+      message: sanitizedMessage,
       timestamp: Date.now(),
       isOperational: false,
       metadata: undefined,
-      stack: options.includeStack ? error.stack : undefined,
+      stack: sanitizedStack,
     };
   }
 

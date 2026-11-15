@@ -12,6 +12,7 @@ import {
   RetrievalSource,
 } from '@shared/contracts';
 import { formatUntrustedWorkspaceData } from '../services/ContextManager';
+import { isSensitiveSecretFile, redactSensitiveText } from '@shared/security/SecretGuard';
 import {
   LocalChatMessage,
   LocalLLMProvider,
@@ -516,6 +517,7 @@ export class WorkspaceReActAgent {
             typeof args.rootPath === 'string' && args.rootPath.trim()
               ? args.rootPath.trim()
               : defaultRoot;
+          let resolvedSearchRoot: string | undefined;
           if (requestedRoot) {
             const check = await this.deps.validatePath(requestedRoot);
             if (!check.valid || !check.canonicalPath) {
@@ -526,12 +528,16 @@ export class WorkspaceReActAgent {
                 summary: blocked,
               };
             }
+            resolvedSearchRoot = check.canonicalPath;
           }
-          const hits = (await this.deps.searchFiles(query, requestedRoot)).slice(0, 25);
+          const rawHits = await this.deps.searchFiles(query, resolvedSearchRoot);
+          const hits = rawHits
+            .filter((hit) => !isSensitiveSecretFile(hit).blocked)
+            .slice(0, 25);
           const body = hits.length > 0 ? hits.join('\n') : 'No matching paths found.';
           return {
             allowed: true,
-            observation: formatUntrustedWorkspaceData(requestedRoot || 'workspace', 'search_files', body),
+            observation: formatUntrustedWorkspaceData(resolvedSearchRoot || 'workspace', 'search_files', body),
             summary: `search_files("${query}") -> ${hits.length} matches`,
           };
         }
@@ -556,7 +562,9 @@ export class WorkspaceReActAgent {
             }
             validatedRoot = check.canonicalPath;
           }
-          const matches = this.deps.searchContent(query, topK, validatedRoot);
+          const matches = this.deps
+            .searchContent(query, topK, validatedRoot)
+            .filter((m) => !isSensitiveSecretFile(m.filePath).blocked);
           if (matches.length === 0) {
             return {
               allowed: true,
@@ -566,6 +574,7 @@ export class WorkspaceReActAgent {
           }
           const fenced = matches
             .map((m) => {
+              const sanitizedSnippet = redactSensitiveText(m.snippet).sanitizedText;
               const lineTag = m.startLine
                 ? `#L${m.startLine}${m.endLine && m.endLine > m.startLine ? `-L${m.endLine}` : ''}`
                 : '';
@@ -576,9 +585,9 @@ export class WorkspaceReActAgent {
                 endLine: m.endLine,
                 heading: m.heading,
                 score: m.score,
-                snippet: m.snippet,
+                snippet: sanitizedSnippet,
               });
-              return formatUntrustedWorkspaceData(m.filePath, citation, m.snippet, m.heading);
+              return formatUntrustedWorkspaceData(m.filePath, citation, sanitizedSnippet, m.heading);
             })
             .join('\n\n');
           return {
@@ -599,6 +608,15 @@ export class WorkspaceReActAgent {
               summary: blocked,
             };
           }
+          const secretCheck = isSensitiveSecretFile(check.canonicalPath);
+          if (secretCheck.blocked) {
+            const blocked = `[SECURITY_BLOCKED] SecretGuard blocked "${path.basename(check.canonicalPath)}": ${secretCheck.reason || 'sensitive credential file'}`;
+            return {
+              allowed: false,
+              observation: formatUntrustedWorkspaceData(check.canonicalPath, 'read_file_range', blocked),
+              summary: blocked,
+            };
+          }
           const startLine = Math.max(1, Math.floor(Number(args.startLine ?? 1) || 1));
           const endLine =
             args.endLine !== undefined
@@ -606,7 +624,9 @@ export class WorkspaceReActAgent {
               : startLine + 40;
           const result = await this.deps.readFileRange(check.canonicalPath, startLine, endLine);
           const citation = `${path.basename(result.path)}#L${result.startLine}-L${result.endLine}`;
-          const textBody = result.lines.map((l) => `${l.lineNumber}: ${l.text}`).join('\n');
+          const textBody = result.lines
+            .map((l) => `${l.lineNumber}: ${redactSensitiveText(l.text).sanitizedText}`)
+            .join('\n');
           recordSource({
             filePath: result.path,
             startLine: result.startLine,
@@ -672,7 +692,15 @@ export class WorkspaceReActAgent {
             };
           }
           const strategyRaw = typeof args.strategy === 'string' ? args.strategy : 'auto';
-          const strategy = (['auto', 'smart_category', 'by_type', 'by_date', 'ai_suggested'].includes(strategyRaw)
+          const strategy = ([
+            'auto',
+            'smart_category',
+            'by_type',
+            'by_date',
+            'ai_suggested',
+            'deduplicate',
+            'semantic_cluster',
+          ].includes(strategyRaw)
             ? strategyRaw
             : 'auto') as OrganizeStrategy;
           const plan = await this.deps.proposeOrganizePlan(check.canonicalPath, strategy);

@@ -405,6 +405,75 @@ describe('Stage 3 (M9) Knowledge Graph, Chunker, Dual-Lane Pool & Retrieval', ()
 
       await pool.terminate();
     });
+
+    it('enforces single-flight physical worker serialization on in-flight aborts and forwards allowRemoteModels=false', async () => {
+      const pool = new EmbeddingWorkerPool({
+        modelName: 'Xenova/bge-small-en-v1.5',
+        dtype: 'q8',
+        device: 'cpu',
+        allowRemoteModels: false,
+        abortGraceMs: 25,
+      });
+
+      await pool.initialize();
+      const worker = mockWorkers[0];
+      expect(worker.postedMessages[0]).toMatchObject({
+        type: 'init',
+        allowRemoteModels: false,
+      });
+
+      worker.responseDelayMs = 40;
+      const ac = new AbortController();
+      const abortedEmbed = pool.embed('slow in-flight query', { signal: ac.signal });
+      // Allow await this.initialize() microtasks inside embedBatch() to dispatch to worker
+      await new Promise((r) => setTimeout(r, 5));
+
+      // Task 1 was already posted to worker thread; abort it while still physically running
+      ac.abort();
+      await expect(abortedEmbed).rejects.toThrow(/cancelled/i);
+
+      // Enqueue follow-up work while worker is still physically occupied with aborted task 1
+      const followupEmbed = pool.embed('queued follow-up query');
+      await new Promise((r) => setTimeout(r, 5));
+      const dispatchedBeforeFinish = worker.postedMessages.filter((m) => m.type === 'embed');
+      expect(dispatchedBeforeFinish).toHaveLength(1);
+      expect(dispatchedBeforeFinish[0].texts).toEqual(['slow in-flight query']);
+
+      // Once the physical worker completes aborted task 1, task 2 dispatches and resolves
+      const vec = await followupEmbed;
+      expect(vec).toHaveLength(384);
+      const dispatchedAfterFinish = worker.postedMessages.filter((m) => m.type === 'embed');
+      expect(dispatchedAfterFinish).toHaveLength(2);
+      expect(dispatchedAfterFinish[1]).toMatchObject({
+        type: 'embed',
+        texts: ['queued follow-up query'],
+        allowRemoteModels: false,
+      });
+
+      // Verify rerank forwards allowRemoteModels=false too
+      await pool.rerank('q', ['p1']);
+      const rerankMsg = worker.postedMessages.find((m) => m.type === 'rerank');
+      expect(rerankMsg).toMatchObject({
+        type: 'rerank',
+        allowRemoteModels: false,
+      });
+
+      // Simulate physically wedged worker on an aborted in-flight task -> watchdog recycles worker
+      worker.autoRespond = false;
+      const wedgedAc = new AbortController();
+      const wedgedReq = pool.embed('wedged request', { signal: wedgedAc.signal });
+      await new Promise((r) => setTimeout(r, 5));
+      wedgedAc.abort();
+      await expect(wedgedReq).rejects.toThrow(/cancelled/i);
+
+      const recoveredPromise = pool.embed('post-recycle request');
+      const recoveredVec = await recoveredPromise;
+      expect(recoveredVec).toHaveLength(384);
+      expect(mockWorkers.length).toBeGreaterThanOrEqual(2);
+      expect(worker.terminated).toBe(true);
+
+      await pool.terminate();
+    });
   });
 
   describe('RetrievalService, ContextManager & LLMInterface injection isolation', () => {

@@ -27,8 +27,14 @@ import {
 } from '../../main/services/WorkspaceKnowledgeGraph';
 import { ExtractedLink, ExtractedSymbol } from './StructuralChunker';
 import { RuntimeDiagnostics } from '../../main/services/RuntimeDiagnostics';
+import { LLMLogger } from '../../shared/logging';
+import { atomicWriteFile } from '../../shared/utils/atomicFs';
 import fs from 'fs/promises';
 import path from 'path';
+
+function normalizeVectorPathKey(filePath: string): string {
+    return process.platform === 'win32' ? path.resolve(filePath).toLowerCase() : path.resolve(filePath);
+}
 
 // Type definitions for LanceDB
 type LanceConnection = Awaited<ReturnType<typeof lancedb.connect>>;
@@ -155,10 +161,10 @@ export class VectorStore implements IVectorStore {
             dimensions: this.EMBEDDING_DIM,
             updatedAt: Date.now(),
         };
-        await fs.writeFile(
+        await atomicWriteFile(
             path.join(dbPath, VECTOR_META_FILENAME),
             JSON.stringify(payload, null, 2),
-            'utf-8'
+            { ensureDir: true }
         );
     }
 
@@ -382,10 +388,14 @@ export class VectorStore implements IVectorStore {
             }));
 
             // Eliminate any older pending records & schedule persisted delete-before-upsert
-            this.pendingRecords = this.pendingRecords.filter((rec) => rec.file_path !== filePath);
+            const targetPathKey = normalizeVectorPathKey(filePath);
+            this.pendingRecords = this.pendingRecords.filter(
+                (rec) => normalizeVectorPathKey(rec.file_path) !== targetPathKey
+            );
             this.filesPendingReplace.add(filePath);
 
             // Upsert into disk-backed SQLite Knowledge Graph (FTS5 BM25 + SHA-256 + symbols/links)
+            // Marks outbox state as 'pending' until LanceDB flush commits cleanly.
             this.knowledgeGraph?.upsertDocument({
                 filePath,
                 sha256: metadata?.sha256,
@@ -393,6 +403,7 @@ export class VectorStore implements IVectorStore {
                 mtimeMs: metadata?.mtimeMs,
                 fileType: metadata?.fileType,
                 indexedAt: now,
+                vectorSyncStatus: 'pending',
                 chunks: chunks.map((c, i) => ({
                     id: resolvedIds[i],
                     chunkIndex: c.chunkIndex,
@@ -411,7 +422,10 @@ export class VectorStore implements IVectorStore {
             this.pendingRecords.push(...records);
 
             const kgStats = this.knowledgeGraph?.getStats();
-            RuntimeDiagnostics.getInstance().setVectorStoreStats({
+            const outboxPending = this.knowledgeGraph?.getPendingSyncCount() ?? this.filesPendingReplace.size;
+            const diagnostics = RuntimeDiagnostics.getInstance();
+            diagnostics.setVectorOutboxPending(outboxPending);
+            diagnostics.setVectorStoreStats({
                 initialized: true,
                 totalChunks: kgStats?.totalChunks ?? this.pendingRecords.length,
                 indexedFiles: kgStats?.totalFiles ?? 0,
@@ -479,8 +493,19 @@ export class VectorStore implements IVectorStore {
             this.filesPendingReplace.clear();
             this.pendingRecords = [];
 
+            const flushedFilePaths = Array.from(
+                new Set([
+                    ...filesToDelete,
+                    ...recordsToAdd.map((r) => r.file_path),
+                ])
+            );
+            this.knowledgeGraph?.markFilesVectorSynced(flushedFilePaths);
+
             const kgStats = this.knowledgeGraph?.getStats();
-            RuntimeDiagnostics.getInstance().setVectorStoreStats({
+            const outboxPending = this.knowledgeGraph?.getPendingSyncCount() ?? 0;
+            const diagnostics = RuntimeDiagnostics.getInstance();
+            diagnostics.setVectorOutboxPending(outboxPending);
+            diagnostics.setVectorStoreStats({
                 initialized: true,
                 totalChunks: kgStats?.totalChunks ?? 0,
                 indexedFiles: kgStats?.totalFiles ?? 0,
@@ -590,14 +615,43 @@ export class VectorStore implements IVectorStore {
                     usedSqlPredicate = true;
                 }
 
-                const fetchLimit = scope.allowedCanonicalSet && !usedSqlPredicate ? Math.max(topK * 8, 80) : topK;
-                const rawResults = (await queryBuilder.limit(fetchLimit).toArray()) as LanceRecord[];
-
                 const canonicalKey = (p: string): string =>
                     process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
-                const filtered = scope.allowedCanonicalSet
-                    ? rawResults.filter((row) => scope.allowedCanonicalSet!.has(canonicalKey(row.file_path))).slice(0, topK)
-                    : rawResults.slice(0, topK);
+
+                let filtered: LanceRecord[];
+                if (scope.allowedCanonicalSet && !usedSqlPredicate) {
+                    // Progressive expanding window retrieval: preserves bounded latency when top-80 has hits
+                    // while scaling up cleanly for dense workspaces (>250 scoped files) without false empties.
+                    const windows = [
+                        Math.max(topK * 8, 80),
+                        Math.max(topK * 32, 320),
+                        Math.max(topK * 128, 1280),
+                        count,
+                    ];
+                    let matchedRows: LanceRecord[] = [];
+                    for (const candidateLimit of windows) {
+                        const clampedLimit = Math.min(count, candidateLimit);
+                        let windowedQuery = this.table!.vectorSearch(queryEmbedding) as typeof queryBuilder;
+                        if (typeof windowedQuery.distanceType === 'function') {
+                            windowedQuery = windowedQuery.distanceType('cosine') as typeof windowedQuery;
+                        }
+                        const batchRows = (await windowedQuery.limit(clampedLimit).toArray()) as LanceRecord[];
+                        matchedRows = batchRows.filter((row) =>
+                            scope.allowedCanonicalSet!.has(canonicalKey(row.file_path))
+                        );
+                        if (matchedRows.length >= topK || clampedLimit >= count) {
+                            break;
+                        }
+                    }
+                    filtered = matchedRows.slice(0, topK);
+                } else {
+                    const rawResults = (await queryBuilder.limit(topK).toArray()) as LanceRecord[];
+                    filtered = scope.allowedCanonicalSet
+                        ? rawResults
+                              .filter((row) => scope.allowedCanonicalSet!.has(canonicalKey(row.file_path)))
+                              .slice(0, topK)
+                        : rawResults.slice(0, topK);
+                }
 
                 return filtered.map((row) => {
                     const loc = this.knowledgeGraph?.getChunkLocation(row.id);
@@ -695,9 +749,16 @@ export class VectorStore implements IVectorStore {
             this.ensureInitialized();
 
             const beforePendingCount = this.pendingRecords.length;
-            this.pendingRecords = this.pendingRecords.filter((rec) => rec.file_path !== filePath);
+            const deleteKey = normalizeVectorPathKey(filePath);
+            this.pendingRecords = this.pendingRecords.filter(
+                (rec) => normalizeVectorPathKey(rec.file_path) !== deleteKey
+            );
             const removedPending = beforePendingCount - this.pendingRecords.length;
-            this.filesPendingReplace.delete(filePath);
+            for (const queued of Array.from(this.filesPendingReplace)) {
+                if (normalizeVectorPathKey(queued) === deleteKey) {
+                    this.filesPendingReplace.delete(queued);
+                }
+            }
             this.knowledgeGraph?.removeFile(filePath);
 
             try {
@@ -709,7 +770,11 @@ export class VectorStore implements IVectorStore {
                 }
 
                 const kgStats = this.knowledgeGraph?.getStats();
-                RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                const diagnostics = RuntimeDiagnostics.getInstance();
+                diagnostics.setVectorOutboxPending(
+                    this.knowledgeGraph?.getPendingSyncCount() ?? this.filesPendingReplace.size
+                );
+                diagnostics.setVectorStoreStats({
                     initialized: true,
                     totalChunks: kgStats?.totalChunks ?? 0,
                     indexedFiles: kgStats?.totalFiles ?? 0,
@@ -833,6 +898,20 @@ export class VectorStore implements IVectorStore {
 
     async close(): Promise<void> {
         return this.withLock(async () => {
+            if (this.table && (this.pendingRecords.length > 0 || this.filesPendingReplace.size > 0)) {
+                try {
+                    await this.flushPendingRecordsUnlocked();
+                } catch (flushErr: unknown) {
+                    const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
+                    LLMLogger.warn(
+                        'Failed to flush pending vector records during close; SQLite outbox stays pending for restart recovery',
+                        {
+                            error: msg,
+                            pendingCount: this.pendingRecords.length,
+                        }
+                    );
+                }
+            }
             if (this.ownsKnowledgeGraph && this.knowledgeGraph) {
                 this.knowledgeGraph.close();
             }

@@ -8,8 +8,10 @@ import {
   MCP_PROTOCOL_VERSION,
   MCP_SERVER_INFO,
   parseCliArgs,
+  resolveDefaultGraphDbPath,
   WorkspaceMcpServer,
 } from '../../src/mcp/WorkspaceMcpServer';
+import { ErrorSerializer } from '@main/middleware/ErrorSerializer';
 
 describe('Stage 5 (MCP Server): Read-Only JSON-RPC 2.0 Stdio Server with PathValidator & SecretGuard', () => {
   let sandboxDir: string;
@@ -327,5 +329,72 @@ describe('Stage 5 (MCP Server): Read-Only JSON-RPC 2.0 Stdio Server with PathVal
     expect(receivedFrames).toHaveLength(2);
     expect(JSON.parse(receivedFrames[0])).toEqual({ jsonrpc: '2.0', id: 100, result: {} });
     expect(JSON.parse(receivedFrames[1]).id).toBe(101);
+  });
+
+  it('filters out-of-vault symlinks in list_directory, filters topHubs in stats, resolves knowledge-graph.sqlite, and sanitizes serialized errors', async () => {
+    // 1. Out-of-vault symlink should be omitted by list_directory via canonical check
+    const outsideSecretFile = path.join(outsideRoot, 'secret-note.txt');
+    const symlinkPath = path.join(workspaceRoot, 'escape-link.txt');
+    let symlinkCreated = false;
+    try {
+      await fs.symlink(outsideSecretFile, symlinkPath);
+      symlinkCreated = true;
+    } catch {
+      symlinkCreated = false;
+    }
+
+    if (symlinkCreated) {
+      const listRes = await server.handleMessage({
+        jsonrpc: '2.0',
+        id: 201,
+        method: 'tools/call',
+        params: { name: 'list_directory', arguments: { path: workspaceRoot } },
+      });
+      const listData = JSON.parse(
+        (listRes?.result as { content: Array<{ text: string }> }).content[0].text
+      ) as { entries: Array<{ name: string }> };
+      expect(listData.entries.some((e) => e.name === 'escape-link.txt')).toBe(false);
+    }
+
+    // 2. topHubs in stats should exclude absolute outside paths and secret files while keeping safe wikilinks
+    const evilAbsHub = path.join(outsideRoot, 'leak.md');
+    graph.upsertDocument({
+      filePath: path.join(workspaceRoot, 'README.md'),
+      chunks: [{ id: 'hub-test:0', chunkIndex: 0, text: '# Home', startChar: 0, endChar: 6 }],
+      links: [
+        { targetRef: evilAbsHub, kind: 'mdlink', lineNumber: 1 },
+        { targetRef: '.env', kind: 'mdlink', lineNumber: 1 },
+        { targetRef: 'architecture-overview', kind: 'wikilink', lineNumber: 1 },
+      ],
+    });
+
+    const statsRes = await server.handleMessage({
+      jsonrpc: '2.0',
+      id: 202,
+      method: 'tools/call',
+      params: { name: 'graph_lookup', arguments: { kind: 'stats', query: '' } },
+    });
+    const statsData = JSON.parse(
+      (statsRes?.result as { content: Array<{ text: string }> }).content[0].text
+    ) as { topHubs: Array<{ targetRef: string }> };
+    const hubRefs = statsData.topHubs.map((h) => h.targetRef);
+    expect(hubRefs).not.toContain(evilAbsHub);
+    expect(hubRefs).not.toContain('.env');
+    expect(hubRefs).toContain('architecture-overview');
+
+    // 3. Default DB path resolver prioritizes ~/.file-manager/vectordb/knowledge-graph.sqlite
+    const resolvedDb = resolveDefaultGraphDbPath();
+    expect(path.basename(resolvedDb)).toBe('knowledge-graph.sqlite');
+
+    // 4. ErrorSerializer strips secrets/paths on standard Errors even outside securityMiddleware
+    const leakedErr = new Error(
+      `Failed reading ${path.join(os.homedir(), 'secret.txt')} with Bearer super_secret_token_999999`
+    );
+    const serialized = ErrorSerializer.serialize(leakedErr, {
+      includeStack: false,
+      sanitizePaths: true,
+    });
+    expect(serialized.message).not.toContain('super_secret_token_999999');
+    expect(serialized.message).toContain('[REDACTED_BEARER_TOKEN]');
   });
 });

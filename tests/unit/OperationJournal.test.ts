@@ -1,9 +1,10 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { OperationJournal } from '@main/services/OperationJournal';
+import { BatchRollbackError, OperationJournal } from '@main/services/OperationJournal';
 import { PathValidator } from '@main/services/PathValidator';
 import { FileSystemService } from '@main/services/FileSystemService';
+import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
 
 describe('OperationJournal (Recoverable Safety Kernel)', () => {
   let sandboxDir: string;
@@ -200,5 +201,91 @@ describe('OperationJournal (Recoverable Safety Kernel)', () => {
 
     await reloaded.emptyVault();
     expect((await reloaded.getState()).vaultItemCount).toBe(0);
+  });
+
+  it('recovers interrupted wal-pending.json batches on startup and throws BatchRollbackError loudly when rollback fails', async () => {
+    RuntimeDiagnostics.resetForTesting();
+
+    // 1. Simulated crash leaving wal-pending.json on disk after step 1 moved src -> dest
+    const srcFile = path.join(workspaceRoot, 'crash-src.txt');
+    const destDir = path.join(workspaceRoot, 'crash-dest');
+    const destFile = path.join(destDir, 'crash-src.txt');
+    await fs.mkdir(destDir, { recursive: true });
+    await fs.writeFile(destFile, 'important-payload', 'utf-8');
+
+    const crashVault = path.join(sandboxDir, 'crash-vault');
+    await fs.mkdir(path.join(crashVault, 'payloads'), { recursive: true });
+    await fs.writeFile(
+      path.join(crashVault, 'wal-pending.json'),
+      JSON.stringify(
+        {
+          batchId: 'crash-batch-1',
+          description: 'Interrupted organize batch',
+          status: 'pending',
+          startedAt: Date.now(),
+          completed: [
+            {
+              id: 'child-1',
+              type: 'move',
+              timestamp: Date.now(),
+              sourcePath: srcFile,
+              destinationPath: destFile,
+              isDirectory: false,
+              size: 17,
+              undoable: true,
+              description: 'Move crash-src.txt',
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      'utf-8'
+    );
+
+    const recoveredJournal = new OperationJournal({
+      vaultDir: crashVault,
+      validator,
+      fileSystemService: fsService,
+    });
+    const recoveredState = await recoveredJournal.getState();
+    expect(recoveredState.canUndo).toBe(false);
+    expect(await fs.readFile(srcFile, 'utf-8')).toBe('important-payload');
+    await expect(fs.stat(destFile)).rejects.toThrow();
+    await expect(fs.stat(path.join(crashVault, 'wal-pending.json'))).rejects.toThrow();
+    expect(RuntimeDiagnostics.getInstance().getSnapshot().resilience?.walRecoveries).toBe(1);
+
+    // 2. Loud BatchRollbackError when forward failure occurs AND reverse rollback encounters collision
+    const liveSrc = path.join(workspaceRoot, 'live-a.txt');
+    const liveDest = path.join(destDir, 'live-a.txt');
+    const triggerSrc = path.join(workspaceRoot, 'live-b.txt');
+    const triggerDest = path.join(destDir, 'live-b.txt');
+    await fs.writeFile(liveSrc, 'ALPHA', 'utf-8');
+    await fs.writeFile(triggerSrc, 'BETA', 'utf-8');
+
+    const origMove = fsService.move.bind(fsService);
+    const moveSpy = jest.spyOn(fsService, 'move').mockImplementation(async (s, d) => {
+      if (path.resolve(s) === path.resolve(triggerSrc)) {
+        // Plant collision at liveSrc so reverse compensation of step 1 fails loudly
+        await fs.writeFile(liveSrc, 'CONFLICT', 'utf-8');
+        throw new Error('Injected step 2 move failure');
+      }
+      return origMove(s, d);
+    });
+
+    try {
+      await expect(
+        journal.executeBatch('Failing Batch With Collision', [
+          { type: 'move', source: liveSrc, destination: liveDest },
+          { type: 'move', source: triggerSrc, destination: triggerDest },
+        ])
+      ).rejects.toThrow(BatchRollbackError);
+
+      expect(RuntimeDiagnostics.getInstance().getSnapshot().resilience?.walRollbackFailures).toBe(1);
+      const vaultEntries = await fs.readdir(vaultDir);
+      expect(vaultEntries.some((name) => name.startsWith('wal-failed-'))).toBe(true);
+    } finally {
+      moveSpy.mockRestore();
+    }
   });
 });

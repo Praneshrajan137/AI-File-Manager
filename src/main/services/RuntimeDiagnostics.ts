@@ -4,6 +4,7 @@ import {
   IpcChannelMetric,
   LlmPipelineDiagnostics,
   PathTrieDiagnostics,
+  ResilienceDiagnostics,
   RingBufferPreviewDiagnostics,
   RuntimeDiagnosticsSnapshot,
   VectorStoreDiagnostics,
@@ -86,6 +87,15 @@ export class RuntimeDiagnostics {
     avgRetrievalMs: 0,
     avgGenerationMs: 0,
     lastError: null,
+  };
+
+  private resilience: ResilienceDiagnostics = {
+    walRecoveries: 0,
+    walRollbackFailures: 0,
+    vectorOutboxPending: 0,
+    secretGuardBlocks: 0,
+    workerRestarts: 0,
+    retryRenameCount: 0,
   };
 
   private totalRetrievalMs = 0;
@@ -173,6 +183,30 @@ export class RuntimeDiagnostics {
     this.llm.avgGenerationMs = Math.round(this.totalGenerationMs / this.llm.queriesExecuted);
   }
 
+  recordWalRecovery(): void {
+    this.resilience.walRecoveries += 1;
+  }
+
+  recordWalRollbackFailure(): void {
+    this.resilience.walRollbackFailures += 1;
+  }
+
+  setVectorOutboxPending(count: number): void {
+    this.resilience.vectorOutboxPending = Math.max(0, Math.floor(count));
+  }
+
+  recordSecretGuardBlock(): void {
+    this.resilience.secretGuardBlocks += 1;
+  }
+
+  recordWorkerRestart(): void {
+    this.resilience.workerRestarts += 1;
+  }
+
+  recordRenameRetry(): void {
+    this.resilience.retryRenameCount += 1;
+  }
+
   recordIpcCall(channel: string, durationMs: number, succeeded: boolean): void {
     const existing = this.ipcCounters.get(channel) ?? {
       calls: 0,
@@ -223,6 +257,7 @@ export class RuntimeDiagnostics {
       preview: { ...this.preview },
       vectorStore: { ...this.vectorStore },
       llm: { ...this.llm },
+      resilience: { ...this.resilience },
       ipc: {
         registeredChannels: this.registeredChannels,
         totalCalls,

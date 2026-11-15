@@ -12,5 +12,5 @@
 
 export { ConfigManager, type ConfigManagerOptions } from './ConfigManager';
 export { type AppConfig, type PartialAppConfig } from './schema';
-export { defaultConfig, DEFAULT_EXCLUDED_DIRS } from './defaults';
+export { defaultConfig, DEFAULT_EXCLUDED_DIRS, getDefaultForbiddenPaths } from './defaults';
 export { validateConfig, validateConfigOrThrow, type ConfigValidationResult } from './validator';

@@ -168,6 +168,7 @@ export async function loadFeatureExtractionPipeline(options: {
   });
   const requestedDtype: TransformersDtype = options.dtype ?? 'q8';
   const requestedDevice: TransformersDevice = options.device ?? 'cpu';
+  const localFilesOnly = options.allowRemoteModels === false ? true : undefined;
   const candidates = resolveExecutionDeviceCandidates(requestedDevice, options.platform);
 
   let fallbackReason: string | undefined;
@@ -178,6 +179,7 @@ export async function loadFeatureExtractionPipeline(options: {
       const fn = await transformers.pipeline('feature-extraction', options.modelName, {
         dtype: requestedDtype,
         device: candidateDevice,
+        ...(localFilesOnly !== undefined ? { local_files_only: localFilesOnly } : {}),
       });
       if (requestedDevice === 'auto') {
         cachedResolvedDevice = candidateDevice;
@@ -190,6 +192,7 @@ export async function loadFeatureExtractionPipeline(options: {
           const fnFp32 = await transformers.pipeline('feature-extraction', options.modelName, {
             dtype: 'fp32',
             device: candidateDevice,
+            ...(localFilesOnly !== undefined ? { local_files_only: localFilesOnly } : {}),
           });
           if (requestedDevice === 'auto') {
             cachedResolvedDevice = candidateDevice;
@@ -241,9 +244,13 @@ export async function loadCrossEncoderReranker(options: {
   const modelName = options.modelName || DEFAULT_RERANKER_MODEL;
   const requestedDtype: TransformersDtype = options.dtype ?? 'q8';
   const requestedDevice: TransformersDevice = options.device ?? 'cpu';
+  const localFilesOnly = options.allowRemoteModels === false ? true : undefined;
   const candidates = resolveExecutionDeviceCandidates(requestedDevice);
 
-  const tokenizer = await transformers.AutoTokenizer.from_pretrained(modelName);
+  const tokenizer = await transformers.AutoTokenizer.from_pretrained(
+    modelName,
+    localFilesOnly !== undefined ? { local_files_only: localFilesOnly } : undefined
+  );
   let model: ((inputs: Record<string, unknown>) => Promise<{ logits: { data: ArrayLike<number> } }>) | null = null;
   let fallbackReason: string | undefined;
   let lastError: unknown;
@@ -253,6 +260,7 @@ export async function loadCrossEncoderReranker(options: {
       model = await transformers.AutoModelForSequenceClassification.from_pretrained(modelName, {
         dtype: requestedDtype,
         device: candidateDevice,
+        ...(localFilesOnly !== undefined ? { local_files_only: localFilesOnly } : {}),
       });
       options.onResolved?.({ device: candidateDevice, dtype: requestedDtype, fallbackReason });
       break;
@@ -262,6 +270,7 @@ export async function loadCrossEncoderReranker(options: {
           model = await transformers.AutoModelForSequenceClassification.from_pretrained(modelName, {
             dtype: 'fp32',
             device: candidateDevice,
+            ...(localFilesOnly !== undefined ? { local_files_only: localFilesOnly } : {}),
           });
           options.onResolved?.({ device: candidateDevice, dtype: 'fp32', fallbackReason });
           break;

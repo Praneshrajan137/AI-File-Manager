@@ -43,6 +43,8 @@ export interface EmbeddingWorkerPoolOptions {
     device?: TransformersDevice;
     rerankerModel?: string;
     microBatchSize?: number;
+    allowRemoteModels?: boolean;
+    abortGraceMs?: number;
 }
 
 export interface EmbeddingRequestOptions {
@@ -64,6 +66,7 @@ interface WorkerRequest {
     rerankerModel?: string;
     dtype?: TransformersDtype;
     device?: TransformersDevice;
+    allowRemoteModels?: boolean;
 }
 
 interface WorkerResponse {
@@ -113,6 +116,10 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
     private highQueue: QueuedTask[] = [];
     private lowQueue: QueuedTask[] = [];
     private activeTask: QueuedTask | null = null;
+    private workerBusyRequestId: number | null = null;
+    private readonly supersededRequestIds = new Set<number>();
+    private abortWatchdogTimer: NodeJS.Timeout | null = null;
+    private terminating = false;
     private pendingRequests = new Map<number, QueuedTask>();
 
     private readonly dimensions = 384;
@@ -121,6 +128,8 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
     private readonly device: TransformersDevice;
     private readonly rerankerModel: string;
     private readonly microBatchSize: number;
+    private readonly allowRemoteModels: boolean;
+    private readonly abortGraceMs: number;
     private activeExecutionProvider: string = 'cpu';
     private supportedDevices: string[] = ['cpu'];
 
@@ -131,11 +140,15 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
     constructor(options: EmbeddingWorkerPoolOptions = {}) {
         let configuredModel = DEFAULT_EMBEDDING_MODEL;
         let configuredDevice: TransformersDevice = 'auto';
+        let configuredAllowRemoteModels = true;
         try {
             const llmCfg = ConfigManager.getInstance().getAll()?.llm;
             configuredModel = llmCfg?.embeddingModel || DEFAULT_EMBEDDING_MODEL;
             if (llmCfg?.embeddingDevice) {
                 configuredDevice = llmCfg.embeddingDevice;
+            }
+            if (llmCfg?.allowRemoteModels !== undefined) {
+                configuredAllowRemoteModels = llmCfg.allowRemoteModels;
             }
         } catch {
             // Optional when instantiated standalone in unit tests
@@ -145,6 +158,8 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
         this.device = options.device ?? configuredDevice;
         this.rerankerModel = options.rerankerModel || DEFAULT_RERANKER_MODEL;
         this.microBatchSize = Math.max(1, options.microBatchSize ?? 8);
+        this.allowRemoteModels = options.allowRemoteModels ?? configuredAllowRemoteModels;
+        this.abortGraceMs = Math.max(10, options.abortGraceMs ?? 5000);
     }
 
     getExecutionProvider(): string {
@@ -191,6 +206,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
      * Downloads model on first run (~100MB, cached thereafter).
      */
     async initialize(): Promise<void> {
+        this.terminating = false;
         if (this.worker && this.workerReady) {
             return; // Already initialized
         }
@@ -213,6 +229,9 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
      * Internal initialization logic.
      */
     private async _initialize(): Promise<void> {
+        if (this.terminating) {
+            throw new Error('Worker terminating');
+        }
         return new Promise<void>((resolve, reject) => {
             let settled = false;
             const settleResolve = (): void => {
@@ -234,15 +253,22 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                 // In production: dist/main/embeddingWorker.js
                 const workerPath = this.getWorkerPath();
 
-                this.worker = new Worker(workerPath);
+                const workerInstance = new Worker(workerPath);
+                this.worker = workerInstance;
 
                 // Set up message handler
-                this.worker.on('message', (response: WorkerResponse) => {
+                workerInstance.on('message', (response: WorkerResponse) => {
+                    if (this.worker !== workerInstance) {
+                        return;
+                    }
                     this.handleWorkerMessage(response, settleResolve, settleReject);
                 });
 
                 // Handle worker errors
-                this.worker.on('error', (error) => {
+                workerInstance.on('error', (error) => {
+                    if (this.worker !== workerInstance) {
+                        return;
+                    }
                     LLMLogger.error('[EmbeddingWorkerPool] Worker error', {
                         error: error instanceof Error ? error.message : String(error),
                     });
@@ -253,13 +279,19 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                 });
 
                 // Handle worker exit
-                this.worker.on('exit', (code) => {
+                workerInstance.on('exit', (code) => {
+                    if (this.worker !== workerInstance) {
+                        return;
+                    }
                     if (code !== 0) {
                         LLMLogger.error('[EmbeddingWorkerPool] Worker exited unexpectedly', { code });
                     }
                     const wasReady = this.workerReady;
                     this.workerReady = false;
                     this.worker = null;
+                    this.clearAbortWatchdog();
+                    this.workerBusyRequestId = null;
+                    this.supersededRequestIds.clear();
 
                     if (!wasReady) {
                         settleReject(new Error(`Worker exited before initialization with code ${code}`));
@@ -270,12 +302,13 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                 });
 
                 // Send init message with active config
-                this.worker.postMessage({
+                workerInstance.postMessage({
                     type: 'init',
                     modelName: this.modelName,
                     dtype: this.dtype,
                     device: this.device,
                     rerankerModel: this.rerankerModel,
+                    allowRemoteModels: this.allowRemoteModels,
                 } as WorkerRequest);
 
             } catch (error) {
@@ -338,13 +371,14 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
 
             case 'result':
                 if (response.id !== undefined) {
-                    const request = this.pendingRequests.get(response.id);
+                    const { request, wasBusyOrSuperseded } = this.takePendingRequest(response.id);
                     if (request && request.kind === 'embed' && response.embeddings) {
-                        this.pendingRequests.delete(response.id);
-                        if (this.activeTask?.id === response.id) {
-                            this.activeTask = null;
-                        }
                         request.resolve(response.embeddings as Embedding[]);
+                        this.pumpQueue();
+                    } else if (request) {
+                        request.reject(new Error('Invalid embed response from worker'));
+                        this.pumpQueue();
+                    } else if (wasBusyOrSuperseded) {
                         this.pumpQueue();
                     }
                 }
@@ -352,13 +386,14 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
 
             case 'rerankResult':
                 if (response.id !== undefined) {
-                    const request = this.pendingRequests.get(response.id);
+                    const { request, wasBusyOrSuperseded } = this.takePendingRequest(response.id);
                     if (request && request.kind === 'rerank' && response.scores) {
-                        this.pendingRequests.delete(response.id);
-                        if (this.activeTask?.id === response.id) {
-                            this.activeTask = null;
-                        }
                         request.resolve(response.scores);
+                        this.pumpQueue();
+                    } else if (request) {
+                        request.reject(new Error('Invalid rerank response from worker'));
+                        this.pumpQueue();
+                    } else if (wasBusyOrSuperseded) {
                         this.pumpQueue();
                     }
                 }
@@ -384,13 +419,11 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                 if (response.id === -1 && initReject) {
                     initReject(new Error(response.message || 'Worker initialization failed'));
                 } else if (response.id !== undefined && response.id >= 0) {
-                    const request = this.pendingRequests.get(response.id);
+                    const { request, wasBusyOrSuperseded } = this.takePendingRequest(response.id);
                     if (request) {
-                        this.pendingRequests.delete(response.id);
-                        if (this.activeTask?.id === response.id) {
-                            this.activeTask = null;
-                        }
                         request.reject(new Error(response.message || 'Unknown worker error'));
+                        this.pumpQueue();
+                    } else if (wasBusyOrSuperseded) {
                         this.pumpQueue();
                     }
                 }
@@ -398,7 +431,94 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
         }
     }
 
+    private clearAbortWatchdog(): void {
+        if (this.abortWatchdogTimer) {
+            clearTimeout(this.abortWatchdogTimer);
+            this.abortWatchdogTimer = null;
+        }
+    }
+
+    private scheduleAbortWatchdog(requestId: number): void {
+        this.clearAbortWatchdog();
+        this.abortWatchdogTimer = setTimeout(() => {
+            this.abortWatchdogTimer = null;
+            if (this.terminating || this.workerBusyRequestId !== requestId || !this.worker) {
+                return;
+            }
+            const deadWorker = this.worker;
+            this.worker = null;
+            this.workerReady = false;
+            this.workerBusyRequestId = null;
+            if (this.activeTask?.id === requestId) {
+                this.activeTask = null;
+            }
+            this.supersededRequestIds.clear();
+            LLMLogger.warn('[EmbeddingWorkerPool] Recycling wedged worker after cancelled request', {
+                requestId,
+                abortGraceMs: this.abortGraceMs,
+            });
+            RuntimeDiagnostics.getInstance().recordWorkerRestart();
+            void deadWorker.terminate().catch(() => undefined);
+
+            if (!this.terminating && (this.highQueue.length > 0 || this.lowQueue.length > 0)) {
+                void this.initialize()
+                    .then(() => this.pumpQueue())
+                    .catch((err) => {
+                        this.rejectAllTasks(err instanceof Error ? err : new Error(String(err)));
+                    });
+            }
+        }, this.abortGraceMs);
+        if (typeof this.abortWatchdogTimer.unref === 'function') {
+            this.abortWatchdogTimer.unref();
+        }
+    }
+
+    private takePendingRequest(id: number): {
+        request: QueuedTask | undefined;
+        wasBusyOrSuperseded: boolean;
+    } {
+        const wasSuperseded = this.supersededRequestIds.delete(id);
+        const wasBusy = this.workerBusyRequestId === id;
+        if (wasBusy) {
+            this.workerBusyRequestId = null;
+            this.clearAbortWatchdog();
+        }
+        const request = this.pendingRequests.get(id);
+        if (request) {
+            this.pendingRequests.delete(id);
+            if (this.activeTask?.id === id) {
+                this.activeTask = null;
+            }
+        } else if (wasBusy && this.activeTask?.id === id) {
+            this.activeTask = null;
+        }
+        return { request, wasBusyOrSuperseded: wasBusy || wasSuperseded };
+    }
+
+    private cancelTaskById(
+        id: number,
+        reason: string,
+        reject: (error: Error) => void
+    ): void {
+        this.highQueue = this.highQueue.filter((t) => t.id !== id);
+        this.lowQueue = this.lowQueue.filter((t) => t.id !== id);
+        this.pendingRequests.delete(id);
+        if (this.activeTask?.id === id) {
+            this.activeTask = null;
+        }
+        if (this.workerBusyRequestId === id) {
+            // Keep physical worker occupancy locked until worker replies or watchdog recycles it
+            this.supersededRequestIds.add(id);
+            this.scheduleAbortWatchdog(id);
+        }
+        reject(new Error(reason));
+        this.pumpQueue();
+    }
+
     private rejectAllTasks(error: Error): void {
+        this.clearAbortWatchdog();
+        this.workerBusyRequestId = null;
+        this.supersededRequestIds.clear();
         if (this.activeTask) {
             const active = this.activeTask;
             this.activeTask = null;
@@ -429,7 +549,12 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
     }
 
     private pumpQueue(): void {
-        if (this.activeTask || !this.worker || !this.workerReady) {
+        if (
+            this.activeTask ||
+            this.workerBusyRequestId !== null ||
+            !this.worker ||
+            !this.workerReady
+        ) {
             return;
         }
 
@@ -445,6 +570,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
             }
 
             this.activeTask = next;
+            this.workerBusyRequestId = next.id;
             this.pendingRequests.set(next.id, next);
 
             if (next.kind === 'embed') {
@@ -455,6 +581,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                     modelName: this.modelName,
                     dtype: this.dtype,
                     device: this.device,
+                    allowRemoteModels: this.allowRemoteModels,
                 } as WorkerRequest);
             } else {
                 this.worker.postMessage({
@@ -465,6 +592,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                     rerankerModel: next.rerankerModel ?? this.rerankerModel,
                     dtype: this.dtype,
                     device: this.device,
+                    allowRemoteModels: this.allowRemoteModels,
                 } as WorkerRequest);
             }
             return;
@@ -498,14 +626,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
             };
 
             const onAbort = (): void => {
-                this.highQueue = this.highQueue.filter((t) => t.id !== id);
-                this.lowQueue = this.lowQueue.filter((t) => t.id !== id);
-                this.pendingRequests.delete(id);
-                if (this.activeTask?.id === id) {
-                    this.activeTask = null;
-                }
-                reject(new Error('Embedding task cancelled'));
-                this.pumpQueue();
+                this.cancelTaskById(id, 'Embedding task cancelled', cleanupReject);
             };
 
             if (signal) {
@@ -550,7 +671,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
         return {
             high: this.highQueue.length,
             low: this.lowQueue.length,
-            active: this.activeTask !== null,
+            active: this.activeTask !== null || this.workerBusyRequestId !== null,
         };
     }
 
@@ -638,13 +759,15 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
         const id = ++this.requestId;
         return new Promise<number[]>((resolve, reject) => {
             const onAbort = (): void => {
-                this.highQueue = this.highQueue.filter((t) => t.id !== id);
-                this.pendingRequests.delete(id);
-                if (this.activeTask?.id === id) {
-                    this.activeTask = null;
-                }
-                reject(new Error('Rerank cancelled'));
-                this.pumpQueue();
+                this.cancelTaskById(id, 'Rerank cancelled', cleanupReject);
+            };
+            const cleanupResolve = (scores: number[]): void => {
+                options?.signal?.removeEventListener('abort', onAbort);
+                resolve(scores);
+            };
+            const cleanupReject = (err: Error): void => {
+                options?.signal?.removeEventListener('abort', onAbort);
+                reject(err);
             };
             if (options?.signal) {
                 options.signal.addEventListener('abort', onAbort, { once: true });
@@ -658,14 +781,8 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                 passages,
                 rerankerModel: options?.rerankerModel ?? this.rerankerModel,
                 signal: options?.signal,
-                resolve: (scores) => {
-                    options?.signal?.removeEventListener('abort', onAbort);
-                    resolve(scores);
-                },
-                reject: (err) => {
-                    options?.signal?.removeEventListener('abort', onAbort);
-                    reject(err);
-                },
+                resolve: cleanupResolve,
+                reject: cleanupReject,
             };
 
             this.highQueue.push(task);
@@ -716,6 +833,8 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
      * Call this on app shutdown to clean up resources.
      */
     async terminate(): Promise<void> {
+        this.terminating = true;
+        this.clearAbortWatchdog();
         this.cancelLowPriority('Worker terminating');
         while (this.highQueue.length > 0) {
             const task = this.highQueue.shift()!;
@@ -728,35 +847,32 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
             this.pendingRequests.delete(active.id);
             active.reject(new Error('Worker terminating'));
         }
+        this.workerBusyRequestId = null;
+        this.supersededRequestIds.clear();
 
         if (this.worker) {
+            const workerToClose = this.worker;
             // Send terminate message
             try {
-                this.worker.postMessage({ type: 'terminate' } as WorkerRequest);
+                workerToClose.postMessage({ type: 'terminate' } as WorkerRequest);
             } catch {
                 // Worker channel may already be closed during teardown
             }
 
             // Wait briefly for graceful worker exit before forcing termination
             await new Promise<void>((resolve) => {
-                if (!this.worker) {
-                    resolve();
-                    return;
-                }
                 let done = false;
                 const forceTimer = setTimeout(async () => {
                     if (done) return;
                     done = true;
-                    if (this.worker) {
-                        await this.worker.terminate().catch(() => undefined);
-                    }
+                    await workerToClose.terminate().catch(() => undefined);
                     resolve();
                 }, 1500);
                 if (typeof forceTimer.unref === 'function') {
                     forceTimer.unref();
                 }
 
-                this.worker.once('exit', () => {
+                workerToClose.once('exit', () => {
                     if (done) return;
                     done = true;
                     clearTimeout(forceTimer);
@@ -764,8 +880,10 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                 });
             });
 
-            this.worker = null;
-            this.workerReady = false;
+            if (this.worker === workerToClose) {
+                this.worker = null;
+                this.workerReady = false;
+            }
         }
     }
 

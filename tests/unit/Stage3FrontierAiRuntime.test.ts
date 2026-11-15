@@ -135,6 +135,66 @@ describe('Stage 3 Frontier Local AI Runtime & Spatial Associative Retrieval', ()
       expect(typeof loadFeatureExtractionPipeline).toBe('function');
       expect(typeof loadCrossEncoderReranker).toBe('function');
     });
+
+    it('enforces local_files_only and env.allowRemoteModels=false when allowRemoteModels is disabled', async () => {
+      const pipelineOpts: Array<Record<string, unknown> | undefined> = [];
+      const tokenizerOpts: Array<Record<string, unknown> | undefined> = [];
+      const rerankerModelOpts: Array<Record<string, unknown> | undefined> = [];
+      const mockEnv = {
+        useBrowserCache: true,
+        useFSCache: false,
+        allowRemoteModels: true,
+        backends: { onnx: { supportedDevices: ['cpu'] } },
+      };
+
+      jest.doMock('@huggingface/transformers', () => ({
+        env: mockEnv,
+        pipeline: jest.fn(async (_task: string, _model: string, opts?: Record<string, unknown>) => {
+          pipelineOpts.push(opts);
+          return async (): Promise<{ data: Float32Array }> => ({ data: new Float32Array(384) });
+        }),
+        AutoTokenizer: {
+          from_pretrained: jest.fn(async (_model: string, opts?: Record<string, unknown>) => {
+            tokenizerOpts.push(opts);
+            return async (): Promise<Record<string, unknown>> => ({});
+          }),
+        },
+        AutoModelForSequenceClassification: {
+          from_pretrained: jest.fn(async (_model: string, opts?: Record<string, unknown>) => {
+            rerankerModelOpts.push(opts);
+            return async (): Promise<{ logits: { data: Float32Array } }> => ({
+              logits: { data: new Float32Array([0.1, 0.9]) },
+            });
+          }),
+        },
+      }));
+
+      try {
+        await jest.isolateModulesAsync(async () => {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const mod = require('../../src/llm/models/transformersLoader') as typeof import('../../src/llm/models/transformersLoader');
+          await mod.loadFeatureExtractionPipeline({
+            modelName: 'Xenova/bge-small-en-v1.5',
+            dtype: 'q8',
+            device: 'cpu',
+            allowRemoteModels: false,
+          });
+          await mod.loadCrossEncoderReranker({
+            modelName: 'Xenova/ms-marco-MiniLM-L-6-v2',
+            dtype: 'q8',
+            device: 'cpu',
+            allowRemoteModels: false,
+          });
+        });
+
+        expect(mockEnv.allowRemoteModels).toBe(false);
+        expect(pipelineOpts[0]).toMatchObject({ dtype: 'q8', device: 'cpu', local_files_only: true });
+        expect(tokenizerOpts[0]).toEqual({ local_files_only: true });
+        expect(rerankerModelOpts[0]).toMatchObject({ dtype: 'q8', device: 'cpu', local_files_only: true });
+      } finally {
+        jest.dontMock('@huggingface/transformers');
+      }
+    });
   });
 
   describe('LocalModelTransport (Ollama + OpenAI-Compatible /v1 SSE + SSRF Loopback Guard)', () => {

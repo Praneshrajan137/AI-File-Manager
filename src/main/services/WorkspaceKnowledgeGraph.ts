@@ -54,6 +54,7 @@ export interface KnowledgeGraphUpsertInput {
   mtimeMs?: number;
   fileType?: string;
   indexedAt?: number;
+  vectorSyncStatus?: 'pending' | 'synced';
   chunks: Array<{
     id: string;
     chunkIndex: number;
@@ -142,7 +143,8 @@ export class WorkspaceKnowledgeGraph {
         file_type TEXT NOT NULL,
         chunk_count INTEGER NOT NULL,
         token_estimate INTEGER NOT NULL,
-        indexed_at INTEGER NOT NULL
+        indexed_at INTEGER NOT NULL,
+        vector_sync_status TEXT NOT NULL DEFAULT 'synced'
       );
 
       CREATE INDEX IF NOT EXISTS idx_files_sha256 ON files(sha256);
@@ -194,7 +196,13 @@ export class WorkspaceKnowledgeGraph {
       CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_path);
     `);
 
-    // Idempotent schema migration for pre-existing databases adding canonical target_path
+    // Idempotent schema migration for pre-existing databases adding canonical target_path & outbox state
+    const fileColumns = db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>;
+    if (!fileColumns.some((c) => c.name === 'vector_sync_status')) {
+      db.exec("ALTER TABLE files ADD COLUMN vector_sync_status TEXT NOT NULL DEFAULT 'synced';");
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_files_vector_sync ON files(vector_sync_status);');
+
     const linkColumns = db.prepare('PRAGMA table_info(links)').all() as Array<{ name: string }>;
     if (!linkColumns.some((c) => c.name === 'target_path')) {
       db.exec('ALTER TABLE links ADD COLUMN target_path TEXT;');
@@ -288,14 +296,62 @@ export class WorkspaceKnowledgeGraph {
   needsReindex(filePath: string, mtimeMs: number, size: number, sha256?: string): boolean {
     const db = this.getDb();
     const row = db
-      .prepare('SELECT sha256, size, mtime_ms FROM files WHERE path = ?')
-      .get(filePath) as { sha256: string; size: number; mtime_ms: number } | undefined;
+      .prepare('SELECT sha256, size, mtime_ms, vector_sync_status FROM files WHERE path = ?')
+      .get(filePath) as
+      | { sha256: string; size: number; mtime_ms: number; vector_sync_status?: string }
+      | undefined;
 
     if (!row) return true;
+    if (row.vector_sync_status && row.vector_sync_status !== 'synced') {
+      return true;
+    }
     if (sha256) {
       return row.sha256 !== sha256;
     }
     return row.size !== size || Math.round(row.mtime_ms) !== Math.round(mtimeMs);
+  }
+
+  markFilesVectorSynced(filePaths: string[]): number {
+    if (!Array.isArray(filePaths) || filePaths.length === 0) {
+      return 0;
+    }
+    const unique = Array.from(new Set(filePaths.filter(Boolean)));
+    if (unique.length === 0) {
+      return 0;
+    }
+    return this.withTransaction((db) => {
+      const stmt = db.prepare("UPDATE files SET vector_sync_status = 'synced' WHERE path = ?");
+      const caseStmt =
+        process.platform === 'win32'
+          ? db.prepare("UPDATE files SET vector_sync_status = 'synced' WHERE LOWER(path) = LOWER(?)")
+          : null;
+      let changed = 0;
+      for (const filePath of unique) {
+        const res = stmt.run(filePath);
+        let rowChanges = Number(res.changes ?? 0);
+        if (rowChanges === 0 && caseStmt) {
+          rowChanges = Number(caseStmt.run(filePath).changes ?? 0);
+        }
+        changed += rowChanges;
+      }
+      return changed;
+    });
+  }
+
+  getFilesWithPendingSync(limit: number = 1000): string[] {
+    const db = this.getDb();
+    const rows = db
+      .prepare("SELECT path FROM files WHERE vector_sync_status != 'synced' LIMIT ?")
+      .all(limit) as Array<{ path: string }>;
+    return rows.map((r) => r.path);
+  }
+
+  getPendingSyncCount(): number {
+    const db = this.getDb();
+    const row = db
+      .prepare("SELECT COUNT(*) as cnt FROM files WHERE vector_sync_status != 'synced'")
+      .get() as { cnt: number } | undefined;
+    return Number(row?.cnt ?? 0);
   }
 
   upsertDocument(input: KnowledgeGraphUpsertInput): void {
@@ -314,8 +370,8 @@ export class WorkspaceKnowledgeGraph {
       db.prepare('DELETE FROM links WHERE source_path = ?').run(input.filePath);
 
       db.prepare(`
-        INSERT INTO files (path, sha256, size, mtime_ms, file_type, chunk_count, token_estimate, indexed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO files (path, sha256, size, mtime_ms, file_type, chunk_count, token_estimate, indexed_at, vector_sync_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(path) DO UPDATE SET
           sha256 = excluded.sha256,
           size = excluded.size,
@@ -323,7 +379,8 @@ export class WorkspaceKnowledgeGraph {
           file_type = excluded.file_type,
           chunk_count = excluded.chunk_count,
           token_estimate = excluded.token_estimate,
-          indexed_at = excluded.indexed_at
+          indexed_at = excluded.indexed_at,
+          vector_sync_status = excluded.vector_sync_status
       `).run(
         input.filePath,
         computedSha,
@@ -332,7 +389,8 @@ export class WorkspaceKnowledgeGraph {
         fileType || 'unknown',
         input.chunks.length,
         tokenEstimate,
-        indexedAt
+        indexedAt,
+        input.vectorSyncStatus ?? 'synced'
       );
 
       const insertChunk = db.prepare(`

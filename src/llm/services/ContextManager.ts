@@ -39,19 +39,33 @@ const DEFAULT_OPTIONS: Required<CompressionOptions> = {
  * Format passive workspace content inside explicit untrusted_workspace_data isolation
  * fences so embedded instructions cannot override system or tool boundaries.
  */
+/**
+ * Neutralize XML boundary injection tokens inside untrusted workspace content
+ * so attacker-controlled files cannot break out of `<untrusted_workspace_data>`.
+ */
+export function escapePromptFenceText(value: string): string {
+    return value.replace(/<(\/?\s*untrusted_workspace_data\b)/gi, '&lt;$1');
+}
+
+function escapePromptFenceAttr(value: string): string {
+    return value.replace(/"/g, '&quot;').replace(/[<>]/g, (ch) => (ch === '<' ? '&lt;' : '&gt;'));
+}
+
 export function formatUntrustedWorkspaceData(
     source: string,
     citation: string,
     content: string,
     heading?: string
 ): string {
-    const safeSource = source.replace(/"/g, '&quot;');
-    const safeCitation = citation.replace(/"/g, '&quot;');
+    const safeSource = escapePromptFenceAttr(source);
+    const safeCitation = escapePromptFenceAttr(citation);
+    const safeHeading = heading ? ` (${escapePromptFenceText(heading)})` : '';
+    const safeBody = escapePromptFenceText(content);
     return `<untrusted_workspace_data source="${safeSource}" citation="${safeCitation}">
-📄 **FILE: ${citation}**${heading ? ` (${heading})` : ''}
-📍 PATH: ${source}
+📄 **FILE: ${safeCitation}**${safeHeading}
+📍 PATH: ${safeSource}
 ---
-${content}
+${safeBody}
 ---
 </untrusted_workspace_data>`;
 }
@@ -184,8 +198,10 @@ export class ContextManager {
                 }
             }
 
-            const snippet = bestLine.slice(0, 180).replace(/\s+/g, ' ');
-            const entry = `<untrusted_workspace_data source="${r.file_path}" citation="${fileName}${lineTag}">• ${fileName}${lineTag}: ${snippet}</untrusted_workspace_data>`;
+            const snippet = escapePromptFenceText(bestLine.slice(0, 180).replace(/\s+/g, ' '));
+            const safeSource = escapePromptFenceAttr(r.file_path);
+            const safeCitation = escapePromptFenceAttr(`${fileName}${lineTag}`);
+            const entry = `<untrusted_workspace_data source="${safeSource}" citation="${safeCitation}">• ${safeCitation}: ${snippet}</untrusted_workspace_data>`;
 
             if (usedChars + entry.length + 1 > maxChars) {
                 break;

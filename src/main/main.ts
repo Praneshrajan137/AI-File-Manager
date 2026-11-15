@@ -115,6 +115,13 @@ function initializeSystems(): void {
     },
   });
 
+  ErrorHandler.registerShutdownHook(async () => {
+    await Promise.allSettled([
+      resetReactiveWorkspaceKernel(),
+      import('./handlers/llmHandlers').then(({ cleanupLLMServices }) => cleanupLLMServices()),
+    ]);
+  });
+
   logger.info('Core systems initialized', {
     config: 'ready',
     logging: 'ready',

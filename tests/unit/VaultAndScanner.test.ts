@@ -6,8 +6,10 @@ import { ipcMain, dialog } from 'electron';
 import { DirectoryScanner } from '@main/services/DirectoryScanner';
 import { FileSystemService } from '@main/services/FileSystemService';
 import { FileNode } from '@shared/contracts';
-import { ConfigManager } from '@shared/config';
+import { ConfigManager, getDefaultForbiddenPaths } from '@shared/config';
 import { registerAllHandlers, unregisterAllHandlers, getRegisteredChannels } from '@main/handlers/ipcHandlers';
+import { searchWorkspacePaths } from '@main/handlers/searchHandlers';
+import { getReactiveWorkspaceKernel } from '@main/services/ReactiveWorkspaceKernel';
 import { ALL_IPC_CHANNELS } from '@shared/ipc/contracts';
 import { resetPathValidator } from '@main/handlers/securityMiddleware';
 import { PathValidator } from '@main/services/PathValidator';
@@ -214,5 +216,72 @@ describe('Stage 1 (M7): DirectoryScanner Exclusions & Vault IPC Kernel Reload', 
       nativeSpy.mockRestore();
       realpathSpy.mockRestore();
     }
+  });
+
+  it('rejects drive roots/forbidden paths on VAULT:ADD_ROOT, retains default forbiddenPaths, and keeps FS:READ_DIR visible while excluding .env from search', async () => {
+    // 1. User config attempting to empty security.forbiddenPaths must still retain OS defaults
+    const customConfigPath = path.join(sandboxDir, 'override-config.json');
+    await fs.writeFile(
+      customConfigPath,
+      JSON.stringify({
+        fileSystem: { allowedRoots: [rootA] },
+        security: { forbiddenPaths: [] },
+      }),
+      'utf-8'
+    );
+    ConfigManager.resetForTesting();
+    ConfigManager.initialize({ configPath: customConfigPath });
+    const configuredForbidden = ConfigManager.getInstance().get('security').forbiddenPaths;
+    expect(configuredForbidden).toEqual(expect.arrayContaining(getDefaultForbiddenPaths()));
+
+    // Restore test config path before handler registration
+    ConfigManager.resetForTesting();
+    ConfigManager.initialize({ configPath });
+    ConfigManager.getInstance().set('fileSystem.allowedRoots', [rootA], true);
+
+    const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+    (ipcMain.handle as jest.Mock).mockImplementation((channel: string, handler: (...args: unknown[]) => Promise<unknown>) => {
+      handlers.set(channel, handler);
+    });
+    registerAllHandlers();
+    const fakeEvent = { sender: { id: 2 } } as never;
+
+    const addRootHandler = handlers.get('VAULT:ADD_ROOT')!;
+    const driveRoot = path.parse(sandboxDir).root;
+    const driveReject = (await addRootHandler(fakeEvent, {
+      pickDialog: false,
+      path: driveRoot,
+    })) as { ok: boolean; error?: { code: string } };
+    expect(driveReject.ok).toBe(false);
+
+    const traversalReject = (await addRootHandler(fakeEvent, {
+      pickDialog: false,
+      path: path.join(sandboxDir, '..', 'escape-attempt'),
+    })) as { ok: boolean };
+    expect(traversalReject.ok).toBe(false);
+
+    // 2. .env stays visible in human explorer (FS:READ_DIR) while hidden from SEARCH:QUERY & PathTrie
+    const envPath = path.join(rootA, '.env');
+    await fs.writeFile(envPath, 'OPENAI_API_KEY=sk-proj-testsecret1234567890123456\n', 'utf-8');
+    getReactiveWorkspaceKernel().getFileSystemService().invalidatePath(rootA);
+
+    const readDirHandler = handlers.get('FS:READ_DIR')!;
+    const explorerRes = (await readDirHandler(fakeEvent, { path: rootA })) as {
+      ok: boolean;
+      data: FileNode[];
+    };
+    expect(explorerRes.ok).toBe(true);
+    expect(explorerRes.data.some((f) => f.name === '.env')).toBe(true);
+
+    const searchQueryHandler = handlers.get('SEARCH:QUERY')!;
+    const searchRes = (await searchQueryHandler(fakeEvent, {
+      query: 'env',
+      searchRoot: rootA,
+    })) as { ok: boolean; data: FileNode[] };
+    expect(searchRes.ok).toBe(true);
+    expect(searchRes.data.some((f) => f.name === '.env')).toBe(false);
+
+    const agentSearchHits = await searchWorkspacePaths('env', rootA);
+    expect(agentSearchHits.some((p) => p.endsWith('.env'))).toBe(false);
   });
 });

@@ -191,6 +191,24 @@ describe('M2 Canonical Security Boundary & Declarative IPC Contracts', () => {
     })) as IPCEnvelope<{ success: boolean; path: string }>;
     expect(goodCreate.ok).toBe(true);
     expect(fs.existsSync(path.join(allowedRoot, 'created.txt'))).toBe(true);
+
+    // Symlink in allowedRoot pointing outside should be link-safely renameable without dereferencing target
+    const linkOld = path.join(allowedRoot, 'alias-link.txt');
+    const linkTarget = path.join(outsideRoot, 'secret.txt');
+    try {
+      await fs.promises.symlink(linkTarget, linkOld, 'file');
+      const renameSymRes = (await rename(mockEvent, {
+        oldPath: linkOld,
+        newName: 'alias-renamed.txt',
+      })) as IPCEnvelope<{ success: boolean; newPath: string }>;
+      expect(renameSymRes.ok).toBe(true);
+      expect(fs.existsSync(path.join(allowedRoot, 'alias-renamed.txt'))).toBe(true);
+    } catch (err: unknown) {
+      // Windows developer mode disabled environments may throw EPERM creating file symlinks
+      if ((err as { code?: string })?.code !== 'EPERM') {
+        throw err;
+      }
+    }
   });
 
   it('eliminates path bypasses in SEARCH:QUERY, LLM:START_INDEXING, LLM:INDEX_FILE, SHELL:OPEN_PATH, and LLM:QUERY channel', async () => {

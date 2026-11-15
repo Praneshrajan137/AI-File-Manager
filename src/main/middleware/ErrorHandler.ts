@@ -43,6 +43,7 @@ export interface ErrorHandlerOptions {
  */
 export class ErrorHandler {
   private static instance: ErrorHandler | null = null;
+  private static shutdownHooks: Set<() => Promise<void>> = new Set();
   private options: Required<ErrorHandlerOptions>;
   private isShuttingDown: boolean = false;
 
@@ -214,8 +215,15 @@ export class ErrorHandler {
     }
   }
 
+  static registerShutdownHook(hook: () => Promise<void>): () => void {
+    ErrorHandler.shutdownHooks.add(hook);
+    return () => {
+      ErrorHandler.shutdownHooks.delete(hook);
+    };
+  }
+
   /**
-   * Graceful shutdown.
+   * Graceful shutdown with bounded async hook flushing (e.g. VectorStore & Kernel drain).
    * 
    * @param exitCode - Process exit code (0 = success, 1 = error)
    */
@@ -226,10 +234,29 @@ export class ErrorHandler {
 
     this.isShuttingDown = true;
 
-    // Give ongoing operations time to complete
-    setTimeout(() => {
+    const hooks = Array.from(ErrorHandler.shutdownHooks);
+    let exited = false;
+    const finalize = (): void => {
+      if (exited) {
+        return;
+      }
+      exited = true;
       process.exit(exitCode);
-    }, 1000);
+    };
+
+    const guardTimer = setTimeout(finalize, 1200);
+    if (typeof guardTimer.unref === 'function') {
+      guardTimer.unref();
+    }
+
+    if (hooks.length === 0) {
+      return;
+    }
+
+    Promise.allSettled(hooks.map((hook) => Promise.resolve().then(hook))).finally(() => {
+      clearTimeout(guardTimer);
+      finalize();
+    });
   }
 
   /**

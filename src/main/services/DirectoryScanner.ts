@@ -187,7 +187,8 @@ export class DirectoryScanner {
         results: FileNode[],
         options: ScanOptions,
         currentDepth: number,
-        onFile?: (file: FileNode) => void
+        onFile?: (file: FileNode) => void,
+        excludedDirsSet?: Set<string>
     ): Promise<void> {
         // Check for cancellation (BUG FIX: Proper error handling)
         if (options.signal?.aborted) {
@@ -207,6 +208,8 @@ export class DirectoryScanner {
         try {
             // Read directory contents
             const entries = await this.fileSystemService.readDirectory(dirPath);
+            // Resolve exclusion config once per scan invocation rather than per directory entry
+            const effectiveExcludedDirs = excludedDirsSet ?? this.resolveExcludedDirsSet(options);
 
             for (const entry of entries) {
                 // Check for cancellation again
@@ -220,7 +223,7 @@ export class DirectoryScanner {
                 }
 
                 // Apply filters
-                if (!this.matchesFilters(entry, options)) {
+                if (!this.matchesFilters(entry, options, effectiveExcludedDirs)) {
                     continue;
                 }
 
@@ -240,7 +243,8 @@ export class DirectoryScanner {
                             results,
                             options,
                             currentDepth + 1,
-                            onFile
+                            onFile,
+                            effectiveExcludedDirs
                         );
                     } catch (error: unknown) {
                         // Skip errors if requested
@@ -295,9 +299,13 @@ export class DirectoryScanner {
         return new Set(configured.map((name) => name.trim().toLowerCase()).filter(Boolean));
     }
 
-    private matchesFilters(file: FileNode, options: ScanOptions): boolean {
+    private matchesFilters(
+        file: FileNode,
+        options: ScanOptions,
+        excludedDirsSet?: Set<string>
+    ): boolean {
         // Never traverse excluded system/VCS/build/trash directories by default
-        const excludedSet = this.resolveExcludedDirsSet(options);
+        const excludedSet = excludedDirsSet ?? this.resolveExcludedDirsSet(options);
         if (file.isDirectory && excludedSet.has(file.name.toLowerCase())) {
             return false;
         }

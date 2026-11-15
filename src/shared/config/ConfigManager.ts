@@ -30,8 +30,9 @@ import path from 'path';
 import os from 'os';
 import { config as loadDotenv } from 'dotenv';
 import { type AppConfig, type PartialAppConfig } from './schema';
-import { defaultConfig } from './defaults';
+import { defaultConfig, getDefaultForbiddenPaths } from './defaults';
 import { validateConfigOrThrow } from './validator';
+import { atomicWriteFileSync } from '../utils/atomicFs';
 
 type DeepPartialAppConfig = {
   [K in keyof AppConfig]?: Partial<AppConfig[K]>;
@@ -192,8 +193,8 @@ export class ConfigManager {
 
     target[lastKey] = value;
 
-    // Validate configuration after update
-    this.config = validateConfigOrThrow(this.config);
+    // Validate configuration after update and keep built-in forbiddenPaths enforced
+    this.config = this.enforceSecurityDefaults(validateConfigOrThrow(this.config));
 
     if (save) {
       this.saveConfig();
@@ -254,8 +255,21 @@ export class ConfigManager {
       envConfig as unknown as Record<string, unknown>
     ) as PartialAppConfig;
 
-    // Validate and return
-    return validateConfigOrThrow(merged);
+    // Validate and return with non-strippable default forbiddenPaths protection
+    return this.enforceSecurityDefaults(validateConfigOrThrow(merged));
+  }
+
+  private enforceSecurityDefaults(config: AppConfig): AppConfig {
+    const configured = Array.isArray(config.security?.forbiddenPaths)
+      ? config.security.forbiddenPaths
+      : [];
+    return {
+      ...config,
+      security: {
+        ...config.security,
+        forbiddenPaths: Array.from(new Set([...getDefaultForbiddenPaths(), ...configured])),
+      },
+    };
   }
 
   /**
@@ -358,12 +372,7 @@ export class ConfigManager {
    */
   private createDefaultConfigFile(): void {
     try {
-      const dir = path.dirname(this.configPath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-
-      fs.writeFileSync(
+      atomicWriteFileSync(
         this.configPath,
         JSON.stringify(defaultConfig, null, 2),
         'utf-8'
@@ -379,12 +388,7 @@ export class ConfigManager {
    */
   private saveConfig(): void {
     try {
-      const dir = path.dirname(this.configPath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-
-      fs.writeFileSync(
+      atomicWriteFileSync(
         this.configPath,
         JSON.stringify(this.config, null, 2),
         'utf-8'

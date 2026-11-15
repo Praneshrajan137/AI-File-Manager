@@ -1,6 +1,8 @@
 import { FileSystemService } from '@main/services/FileSystemService';
 import { FileNode, FileStats } from '@shared/contracts';
+import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import path from 'path';
 import os from 'os';
 
@@ -12,8 +14,13 @@ describe('FileSystemService', () => {
     let testRoot: string;
 
     beforeEach(() => {
-        testRoot = path.join(os.tmpdir(), 'test-file-manager');
+        const canonicalTmp =
+            typeof fsSync.realpathSync?.native === 'function'
+                ? fsSync.realpathSync.native(os.tmpdir())
+                : fsSync.realpathSync(os.tmpdir());
+        testRoot = path.join(canonicalTmp, 'test-file-manager');
         service = new FileSystemService(testRoot);
+        RuntimeDiagnostics.resetForTesting();
 
         // Clear all mocks
         jest.clearAllMocks();
@@ -216,8 +223,9 @@ describe('FileSystemService', () => {
     });
 
     describe('writeFile()', () => {
-        it('should write file content', async () => {
+        it('should write file content atomically via sibling temp file and rename', async () => {
             (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+            (fs.rename as jest.Mock).mockResolvedValue(undefined);
 
             const filePath = path.join(testRoot, 'new-file.txt');
             const content = 'Test content';
@@ -225,7 +233,27 @@ describe('FileSystemService', () => {
             const result = await service.writeFile(filePath, content);
 
             expect(result.success).toBe(true);
-            expect(fs.writeFile).toHaveBeenCalledWith(filePath, content, 'utf-8');
+            expect(fs.writeFile).toHaveBeenCalledWith(
+                expect.stringMatching(new RegExp(`^${filePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\..+\\.tmp$`)),
+                content,
+                'utf-8'
+            );
+            const writtenTemp = (fs.writeFile as jest.Mock).mock.calls[0][0] as string;
+            expect(fs.rename).toHaveBeenCalledWith(writtenTemp, filePath);
+        });
+
+        it('should clean up temp file if atomic rename fails', async () => {
+            (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+            (fs.rename as jest.Mock).mockRejectedValueOnce({ code: 'ENOSPC' });
+            (fs.unlink as jest.Mock).mockResolvedValue(undefined);
+
+            const filePath = path.join(testRoot, 'broken-rename.txt');
+
+            await expect(service.writeFile(filePath, 'Test content')).rejects.toMatchObject({
+                code: 'DISK_FULL',
+            });
+            const writtenTemp = (fs.writeFile as jest.Mock).mock.calls[0][0] as string;
+            expect(fs.unlink).toHaveBeenCalledWith(writtenTemp);
         });
 
         it('should validate path before writing', async () => {
@@ -340,7 +368,7 @@ describe('FileSystemService', () => {
             expect(fs.rename).not.toHaveBeenCalled();
         });
 
-        it('should handle cross-device move', async () => {
+        it('should handle cross-device move and clean destination if source removal fails', async () => {
             // First rename fails with EXDEV, then copy+delete succeeds
             (fs.rename as jest.Mock).mockRejectedValueOnce({
                 code: 'EXDEV',
@@ -356,6 +384,45 @@ describe('FileSystemService', () => {
             expect(result.success).toBe(true);
             expect(fs.copyFile).toHaveBeenCalled();
             expect(fs.rm).toHaveBeenCalled();
+
+            // If rm throws after EXDEV copy, destination copy is rolled back cleanly
+            jest.clearAllMocks();
+            (fs.rename as jest.Mock).mockRejectedValueOnce({ code: 'EXDEV' });
+            (fs.lstat as jest.Mock).mockResolvedValue({
+                isSymbolicLink: () => false,
+                isDirectory: () => true,
+            });
+            (fs.cp as jest.Mock).mockResolvedValue(undefined);
+            (fs.rm as jest.Mock)
+                .mockRejectedValueOnce({ code: 'EACCES' })
+                .mockResolvedValueOnce(undefined);
+
+            const srcDir = path.join(testRoot, 'dirA');
+            const dstDir = path.join(testRoot, 'dirB');
+            await expect(service.move(srcDir, dstDir)).rejects.toMatchObject({
+                code: 'PERMISSION_DENIED',
+            });
+            expect(fs.cp).toHaveBeenCalledWith(srcDir, dstDir, expect.objectContaining({
+                verbatimSymlinks: true,
+                recursive: true,
+            }));
+            expect(fs.rm).toHaveBeenNthCalledWith(2, dstDir, { recursive: true, force: true });
+        });
+
+        it('should retry transient Windows EBUSY locks during move and record retry telemetry', async () => {
+            if (process.platform === 'win32') {
+                (fs.rename as jest.Mock)
+                    .mockRejectedValueOnce({ code: 'EBUSY' })
+                    .mockResolvedValueOnce(undefined);
+
+                const source = path.join(testRoot, 'locked.txt');
+                const dest = path.join(testRoot, 'unlocked.txt');
+                const result = await service.move(source, dest);
+
+                expect(result.success).toBe(true);
+                expect(fs.rename).toHaveBeenCalledTimes(2);
+                expect(RuntimeDiagnostics.getInstance().getSnapshot().resilience?.retryRenameCount).toBe(1);
+            }
         });
     });
 

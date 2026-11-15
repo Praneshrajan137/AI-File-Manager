@@ -18,6 +18,11 @@ import { RingBuffer } from '@main/dsa/RingBuffer';
 import { RuntimeDiagnostics } from './RuntimeDiagnostics';
 import { ErrorFactory, FileSystemError } from '@shared/errors';
 import { FileSystemLogger, SecurityLogger } from '@shared/logging';
+import {
+    atomicWriteFile,
+    extractFsErrorCode,
+    renameWithWindowsRetry,
+} from '@shared/utils/atomicFs';
 
 const MAX_PREVIEW_BYTES = 256 * 1024;
 const MAX_RANGE_READ_BYTES = 2 * 1024 * 1024;
@@ -33,11 +38,7 @@ function estimatePreviewBytes(preview: FilePreviewResult): number {
 }
 
 function getFsErrorCode(error: unknown): string | undefined {
-    if (error && typeof error === 'object' && 'code' in error) {
-        const code = (error as { code?: unknown }).code;
-        return typeof code === 'string' ? code : undefined;
-    }
-    return undefined;
+    return extractFsErrorCode(error);
 }
 
 export class FileSystemService implements IFileSystemService {
@@ -76,9 +77,9 @@ export class FileSystemService implements IFileSystemService {
      */
     async readDirectory(dirPath: string): Promise<FileNode[]> {
         // SECURITY: Validate path lexically and canonically first (guards symlinks & traversal)
-        await this.validateCanonicalPathOrThrow(dirPath);
+        const canonicalDir = await this.validateCanonicalPathOrThrow(dirPath);
 
-        const cacheKey = this.normalizeCacheKey(dirPath);
+        const cacheKey = this.normalizeCacheKey(canonicalDir);
         const cached = this.dirCache.get(cacheKey);
         if (cached) {
             this.syncCacheTelemetry();
@@ -87,14 +88,14 @@ export class FileSystemService implements IFileSystemService {
 
         try {
             // Read directory with file types
-            const entries = await fs.readdir(dirPath, { withFileTypes: true });
+            const entries = await fs.readdir(canonicalDir, { withFileTypes: true });
             const fileNodes: FileNode[] = [];
 
             for (let i = 0; i < entries.length; i += READ_DIR_CONCURRENCY) {
                 const batch = entries.slice(i, i + READ_DIR_CONCURRENCY);
                 const settled = await Promise.all(
                     batch.map(async (entry): Promise<FileNode | null> => {
-                        const fullPath = path.join(dirPath, entry.name);
+                        const fullPath = path.join(canonicalDir, entry.name);
                         try {
                             if (typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink()) {
                                 const canonicalCheck = await this.validator.validateCanonical(fullPath);
@@ -148,14 +149,14 @@ export class FileSystemService implements IFileSystemService {
         filePath: string,
         encoding: BufferEncoding = 'utf-8'
     ): Promise<string> {
-        // SECURITY: Validate canonical path first (prevents ancestor/leaf symlink escapes)
-        await this.validateCanonicalPathOrThrow(filePath);
+        // SECURITY: Validate canonical path first and consume canonicalPath to narrow TOCTOU windows
+        const canonicalPath = await this.validateCanonicalPathOrThrow(filePath);
 
         try {
-            const content = await fs.readFile(filePath, encoding);
+            const content = await fs.readFile(canonicalPath, encoding);
             return content;
         } catch (error: unknown) {
-            throw this.wrapError(error, filePath);
+            throw this.wrapError(error, canonicalPath);
         }
     }
 
@@ -255,22 +256,22 @@ export class FileSystemService implements IFileSystemService {
         filePath: string,
         maxLines: number = RING_BUFFER_CAPACITY
     ): Promise<FilePreviewResult> {
-        await this.validateCanonicalPathOrThrow(filePath);
+        const canonicalPath = await this.validateCanonicalPathOrThrow(filePath);
 
         const cap = Math.max(1, Math.min(Math.floor(maxLines), RING_BUFFER_CAPACITY));
-        const normalizedFile = this.normalizeCacheKey(filePath);
+        const normalizedFile = this.normalizeCacheKey(canonicalPath);
         const previewKey = `${normalizedFile}:${cap}`;
 
         let stats: Awaited<ReturnType<typeof fs.stat>>;
         try {
-            stats = await fs.stat(filePath);
+            stats = await fs.stat(canonicalPath);
         } catch (error: unknown) {
-            throw this.wrapError(error, filePath);
+            throw this.wrapError(error, canonicalPath);
         }
 
         if (typeof stats.isDirectory === 'function' && stats.isDirectory()) {
             throw new FileSystemError('INVALID_PATH', 'Cannot preview a directory', {
-                path: filePath,
+                path: canonicalPath,
                 operation: 'previewFile',
             });
         }
@@ -290,20 +291,20 @@ export class FileSystemService implements IFileSystemService {
             this.previewCache.invalidate(previewKey);
         }
 
-        const ext = this.getExtension(filePath);
+        const ext = this.getExtension(canonicalPath);
         const isLogTail = ext === 'log';
 
         try {
             const { text, binary, truncatedByBytes } = await this.readBoundedText(
-                filePath,
+                canonicalPath,
                 stats.size,
                 isLogTail
             );
 
             if (binary) {
                 const binaryPreview: FilePreviewResult = {
-                    path: filePath,
-                    name: path.basename(filePath),
+                    path: canonicalPath,
+                    name: path.basename(canonicalPath),
                     extension: ext,
                     size: stats.size,
                     modified: stats.mtimeMs,
@@ -338,8 +339,8 @@ export class FileSystemService implements IFileSystemService {
 
             const bufferedLines = ringBuffer.getLines(cap);
             const previewResult: FilePreviewResult = {
-                path: filePath,
-                name: path.basename(filePath),
+                path: canonicalPath,
+                name: path.basename(canonicalPath),
                 extension: ext,
                 size: stats.size,
                 modified: stats.mtimeMs,
@@ -359,7 +360,7 @@ export class FileSystemService implements IFileSystemService {
                 lines: [...previewResult.lines],
             };
         } catch (error: unknown) {
-            throw this.wrapError(error, filePath);
+            throw this.wrapError(error, canonicalPath);
         }
     }
 
@@ -367,15 +368,21 @@ export class FileSystemService implements IFileSystemService {
         filePath: string,
         content: string
     ): Promise<{ success: boolean }> {
-        // SECURITY: Validate canonical target/ancestor path first
-        await this.validateCanonicalPathOrThrow(filePath);
+        // SECURITY: Validate canonical target/ancestor path first and write atomically via temp+rename
+        const canonicalPath = await this.validateCanonicalPathOrThrow(filePath);
 
         try {
-            await fs.writeFile(filePath, content, 'utf-8');
-            this.invalidatePath(filePath);
+            await atomicWriteFile(canonicalPath, content, {
+                encoding: 'utf-8',
+                onRetry: () => RuntimeDiagnostics.getInstance().recordRenameRetry(),
+            });
+            this.invalidatePath(canonicalPath);
+            if (canonicalPath !== filePath) {
+                this.invalidatePath(filePath);
+            }
             return { success: true };
         } catch (error: unknown) {
-            throw this.wrapError(error, filePath);
+            throw this.wrapError(error, canonicalPath);
         }
     }
 
@@ -384,14 +391,17 @@ export class FileSystemService implements IFileSystemService {
         recursive: boolean = false
     ): Promise<{ success: boolean }> {
         // SECURITY: Validate parent canonically if leaf is a symlink so we unlink without dereferencing targets
-        await this.validateLinkAwarePathOrThrow(filePath);
+        const canonicalTarget = await this.validateLinkAwarePathOrThrow(filePath);
 
         try {
-            await fs.rm(filePath, { recursive, force: true });
-            this.invalidatePath(filePath);
+            await fs.rm(canonicalTarget, { recursive, force: true });
+            this.invalidatePath(canonicalTarget);
+            if (canonicalTarget !== filePath) {
+                this.invalidatePath(filePath);
+            }
             return { success: true };
         } catch (error: unknown) {
-            throw this.wrapError(error, filePath);
+            throw this.wrapError(error, canonicalTarget);
         }
     }
 
@@ -400,34 +410,68 @@ export class FileSystemService implements IFileSystemService {
         destination: string
     ): Promise<{ success: boolean; newPath: string }> {
         // SECURITY: Validate source (link-aware) and canonical destination
-        await this.validateLinkAwarePathOrThrow(source);
-        await this.validateCanonicalPathOrThrow(destination);
+        const canonicalSource = await this.validateLinkAwarePathOrThrow(source);
+        const canonicalDestination = await this.validateCanonicalPathOrThrow(destination);
+
+        const recordRetry = (): void => {
+            RuntimeDiagnostics.getInstance().recordRenameRetry();
+        };
 
         try {
-            await fs.rename(source, destination);
-            this.invalidatePath(source);
-            this.invalidatePath(destination);
-            return { success: true, newPath: destination };
+            await renameWithWindowsRetry(canonicalSource, canonicalDestination, {
+                onRetry: recordRetry,
+            });
+            this.invalidatePath(canonicalSource);
+            this.invalidatePath(canonicalDestination);
+            if (canonicalSource !== source) this.invalidatePath(source);
+            if (canonicalDestination !== destination) this.invalidatePath(destination);
+            return { success: true, newPath: canonicalDestination };
         } catch (error: unknown) {
-            // If rename fails with EXDEV (cross-device), do copy + delete (supports files and directories)
+            // If rename fails with EXDEV (cross-device), perform link-safe copy + atomic delete rollback
             if (getFsErrorCode(error) === 'EXDEV') {
+                let copiedToDest = false;
                 try {
-                    const sourceStats = await fs.stat(source);
-                    if (typeof sourceStats.isDirectory === 'function' && sourceStats.isDirectory()) {
-                        await fs.cp(source, destination, { recursive: true });
+                    const sourceStats = await fs.lstat(canonicalSource);
+                    const isSym = Boolean(
+                        sourceStats && typeof sourceStats.isSymbolicLink === 'function' && sourceStats.isSymbolicLink()
+                    );
+                    const isDir = !isSym && Boolean(
+                        sourceStats && typeof sourceStats.isDirectory === 'function' && sourceStats.isDirectory()
+                    );
+
+                    if (isSym) {
+                        const target = await fs.readlink(canonicalSource);
+                        await fs.symlink(target, canonicalDestination);
+                    } else if (isDir) {
+                        await fs.cp(canonicalSource, canonicalDestination, {
+                            recursive: true,
+                            preserveTimestamps: true,
+                            verbatimSymlinks: true,
+                        });
                     } else {
-                        await fs.copyFile(source, destination);
+                        await fs.copyFile(canonicalSource, canonicalDestination);
                     }
-                    await fs.rm(source, { recursive: true, force: true });
-                    this.invalidatePath(source);
-                    this.invalidatePath(destination);
-                    return { success: true, newPath: destination };
+                    copiedToDest = true;
+
+                    await fs.rm(canonicalSource, { recursive: true, force: true });
+                    this.invalidatePath(canonicalSource);
+                    this.invalidatePath(canonicalDestination);
+                    if (canonicalSource !== source) this.invalidatePath(source);
+                    if (canonicalDestination !== destination) this.invalidatePath(destination);
+                    return { success: true, newPath: canonicalDestination };
                 } catch (copyError: unknown) {
-                    throw this.wrapError(copyError, source);
+                    if (copiedToDest) {
+                        try {
+                            await fs.rm(canonicalDestination, { recursive: true, force: true });
+                        } catch {
+                            // Best-effort cleanup of half-moved cross-device destination
+                        }
+                    }
+                    throw this.wrapError(copyError, canonicalSource);
                 }
             }
 
-            throw this.wrapError(error, source);
+            throw this.wrapError(error, canonicalSource);
         }
     }
 
@@ -435,60 +479,74 @@ export class FileSystemService implements IFileSystemService {
         source: string,
         destination: string
     ): Promise<{ success: boolean; copiedPath: string }> {
-        await this.validateLinkAwarePathOrThrow(source);
-        await this.validateCanonicalPathOrThrow(destination);
+        const canonicalSource = await this.validateLinkAwarePathOrThrow(source);
+        const canonicalDestination = await this.validateCanonicalPathOrThrow(destination);
 
-        const normSource = this.normalizeCacheKey(source);
-        const normDest = this.normalizeCacheKey(destination);
+        const normSource = this.normalizeCacheKey(canonicalSource);
+        const normDest = this.normalizeCacheKey(canonicalDestination);
         const srcPrefix = normSource.endsWith(path.sep) ? normSource : `${normSource}${path.sep}`;
         if (normDest === normSource || normDest.startsWith(srcPrefix)) {
             throw new FileSystemError('INVALID_PATH', 'Cannot copy a directory into itself', {
-                path: destination,
+                path: canonicalDestination,
                 operation: 'copy',
             });
         }
 
         try {
-            const existsDest = await fs.lstat(destination).then(() => true).catch(() => false);
+            let existsDest = false;
+            try {
+                const destStat = await fs.lstat(canonicalDestination);
+                existsDest = Boolean(destStat);
+            } catch {
+                existsDest = false;
+            }
             if (existsDest) {
-                throw new FileSystemError('UNKNOWN', `Destination already exists: ${path.basename(destination)}`, {
-                    path: destination,
+                throw new FileSystemError('UNKNOWN', `Destination already exists: ${path.basename(canonicalDestination)}`, {
+                    path: canonicalDestination,
                     operation: 'copy',
                 });
             }
 
-            await fs.mkdir(path.dirname(destination), { recursive: true });
-            const sourceStats = await fs.lstat(source);
-            if (sourceStats.isDirectory() && !sourceStats.isSymbolicLink()) {
-                await fs.cp(source, destination, {
+            await fs.mkdir(path.dirname(canonicalDestination), { recursive: true });
+            const sourceStats = await fs.lstat(canonicalSource);
+            const isSym = Boolean(
+                sourceStats && typeof sourceStats.isSymbolicLink === 'function' && sourceStats.isSymbolicLink()
+            );
+            const isDir = !isSym && Boolean(
+                sourceStats && typeof sourceStats.isDirectory === 'function' && sourceStats.isDirectory()
+            );
+
+            if (isDir) {
+                await fs.cp(canonicalSource, canonicalDestination, {
                     recursive: true,
                     preserveTimestamps: true,
                     verbatimSymlinks: true,
                     errorOnExist: true,
                     force: false,
                 });
-            } else if (sourceStats.isSymbolicLink()) {
-                const target = await fs.readlink(source);
-                await fs.symlink(target, destination);
+            } else if (isSym) {
+                const target = await fs.readlink(canonicalSource);
+                await fs.symlink(target, canonicalDestination);
             } else {
-                await fs.copyFile(source, destination);
+                await fs.copyFile(canonicalSource, canonicalDestination);
             }
-            this.invalidatePath(destination);
-            return { success: true, copiedPath: destination };
+            this.invalidatePath(canonicalDestination);
+            if (canonicalDestination !== destination) this.invalidatePath(destination);
+            return { success: true, copiedPath: canonicalDestination };
         } catch (error: unknown) {
-            throw this.wrapError(error, source);
+            throw this.wrapError(error, canonicalSource);
         }
     }
 
     async getStats(filePath: string): Promise<FileStats> {
-        // SECURITY: Validate canonical path first
-        await this.validateCanonicalPathOrThrow(filePath);
+        // SECURITY: Validate canonical path first and read stats from canonicalPath
+        const canonicalPath = await this.validateCanonicalPathOrThrow(filePath);
 
         try {
-            const stats = await fs.stat(filePath);
+            const stats = await fs.stat(canonicalPath);
 
             return {
-                path: filePath,
+                path: canonicalPath,
                 size: stats.size,
                 created: stats.birthtimeMs,
                 modified: stats.mtimeMs,
@@ -499,24 +557,27 @@ export class FileSystemService implements IFileSystemService {
                 permissions: this.extractPermissions(stats.mode),
             };
         } catch (error: unknown) {
-            throw this.wrapError(error, filePath);
+            throw this.wrapError(error, canonicalPath);
         }
     }
 
     async createDirectory(dirPath: string): Promise<{ success: boolean }> {
-        // SECURITY: Validate canonical path first
-        await this.validateCanonicalPathOrThrow(dirPath);
+        // SECURITY: Validate canonical path first and create canonical target
+        const canonicalDir = await this.validateCanonicalPathOrThrow(dirPath);
 
         try {
             // Create directory (recursive: false to only create final directory)
-            await fs.mkdir(dirPath, { recursive: false });
-            this.invalidatePath(dirPath);
+            await fs.mkdir(canonicalDir, { recursive: false });
+            this.invalidatePath(canonicalDir);
+            if (canonicalDir !== dirPath) {
+                this.invalidatePath(dirPath);
+            }
 
-            FileSystemLogger.info('Directory created', { path: dirPath });
+            FileSystemLogger.info('Directory created', { path: canonicalDir });
 
             return { success: true };
         } catch (error: unknown) {
-            throw this.wrapError(error, dirPath);
+            throw this.wrapError(error, canonicalDir);
         }
     }
 

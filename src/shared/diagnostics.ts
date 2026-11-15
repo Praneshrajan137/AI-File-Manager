@@ -79,6 +79,15 @@ export interface IpcChannelMetric {
   lastCalledAt: number | null;
 }
 
+export interface ResilienceDiagnostics {
+  walRecoveries: number;
+  walRollbackFailures: number;
+  vectorOutboxPending: number;
+  secretGuardBlocks: number;
+  workerRestarts: number;
+  retryRenameCount: number;
+}
+
 export interface RuntimeDiagnosticsSnapshot {
   capturedAt: number;
   uptimeMs: number;
@@ -90,6 +99,7 @@ export interface RuntimeDiagnosticsSnapshot {
   preview: RingBufferPreviewDiagnostics;
   vectorStore: VectorStoreDiagnostics;
   llm: LlmPipelineDiagnostics;
+  resilience?: ResilienceDiagnostics;
   ipc: {
     registeredChannels: number;
     totalCalls: number;

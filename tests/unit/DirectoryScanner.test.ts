@@ -1,6 +1,7 @@
 import { DirectoryScanner } from '@main/services/DirectoryScanner';
 import { FileNode } from '@shared/contracts';
 import { FileSystemService } from '@main/services/FileSystemService';
+import { ConfigManager } from '@shared/config';
 import path from 'path';
 import os from 'os';
 
@@ -530,6 +531,54 @@ describe('DirectoryScanner', () => {
             const totalSize = await scanner.getTotalSize(testRoot);
 
             expect(totalSize).toBe(300);
+        });
+
+        it('caches ConfigManager excludedDirs resolution once per recursive scan', async () => {
+            const getAllSpy = jest.spyOn(ConfigManager.getInstance(), 'getAll');
+
+            const makeFile = (name: string, parent = testRoot): FileNode => ({
+                path: path.join(parent, name),
+                name,
+                isDirectory: false,
+                size: 10,
+                modified: Date.now(),
+                extension: 'txt',
+                mimeType: 'text/plain',
+            });
+            const makeDir = (name: string, parent = testRoot): FileNode => ({
+                path: path.join(parent, name),
+                name,
+                isDirectory: true,
+                size: 0,
+                modified: Date.now(),
+                extension: '',
+                mimeType: 'application/octet-stream',
+            });
+
+            mockFileSystemService.readDirectory.mockImplementation(async (dirPath: string) => {
+                if (dirPath === testRoot) {
+                    return [
+                        makeDir('subA'),
+                        makeDir('subB'),
+                        makeDir('node_modules'),
+                        makeFile('root1.txt'),
+                        makeFile('root2.txt'),
+                    ];
+                }
+                if (dirPath === path.join(testRoot, 'subA')) {
+                    return [makeFile('a1.txt', dirPath), makeFile('a2.txt', dirPath)];
+                }
+                if (dirPath === path.join(testRoot, 'subB')) {
+                    return [makeFile('b1.txt', dirPath), makeFile('b2.txt', dirPath)];
+                }
+                return [];
+            });
+
+            const results = await scanner.scan(testRoot, { recursive: true });
+            expect(results.some((entry) => entry.name === 'node_modules')).toBe(false);
+            expect(results.filter((entry) => !entry.isDirectory)).toHaveLength(6);
+            expect(getAllSpy).toHaveBeenCalledTimes(1);
+            getAllSpy.mockRestore();
         });
     });
 });

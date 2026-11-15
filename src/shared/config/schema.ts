@@ -84,6 +84,7 @@ export const appConfigSchema = z.object({
     rerankerModel: z.string().default('Xenova/ms-marco-MiniLM-L-6-v2'),
     enableWebGPU: z.boolean().default(false),
     enableVisionCaptioning: z.boolean().default(false),
+    allowRemoteModels: z.boolean().default(true),
   }),
 
   ui: z.object({

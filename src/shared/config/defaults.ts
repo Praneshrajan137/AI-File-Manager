@@ -12,7 +12,7 @@ import { type AppConfig } from './schema';
 /**
  * Get OS-specific forbidden paths.
  */
-function getDefaultForbiddenPaths(): string[] {
+export function getDefaultForbiddenPaths(): string[] {
   const homeDir = os.homedir();
   const common = [
     path.join(homeDir, '.ssh'),
@@ -120,6 +120,7 @@ export const defaultConfig: AppConfig = {
     rerankerModel: 'Xenova/ms-marco-MiniLM-L-6-v2',
     enableWebGPU: false,
     enableVisionCaptioning: false,
+    allowRemoteModels: true,
   },
 
   ui: {

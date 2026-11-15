@@ -174,36 +174,39 @@ async function handleMove(
   const journal = getOperationJournal();
 
   if (input.repairMarkdownLinks) {
+    let linkSteps: Awaited<ReturnType<typeof buildMarkdownLinkRepairSteps>> = [];
     try {
       const impact = checkWorkspaceGraphImpact([input.source]);
       const mdSources = impact.references
         .filter((r) => r.isMarkdownLink)
         .map((r) => r.sourcePath);
-      const linkSteps = await buildMarkdownLinkRepairSteps(mdSources, input.source, input.destination);
-      if (linkSteps.length > 0) {
-        const steps: BatchOperationStep[] = [
-          { type: 'move', source: input.source, destination: input.destination },
-          ...linkSteps,
-        ];
-        await journal.executeBatch(
-          `Move ${path.basename(input.source)} + repair ${linkSteps.length} link(s)`,
-          steps
-        );
-        kernel.notifyMutation('unlink', input.source);
-        kernel.notifyMutation('create', input.destination);
-        for (const edit of linkSteps) {
-          kernel.notifyMutation('change', edit.filePath);
-        }
-        return {
-          success: true,
-          newPath: input.destination,
-          repairedLinksCount: linkSteps.length,
-        };
-      }
+      linkSteps = await buildMarkdownLinkRepairSteps(mdSources, input.source, input.destination);
     } catch (repairErr: unknown) {
-      FileSystemLogger.warn('Markdown link repair skipped; proceeding with standard move', {
+      FileSystemLogger.warn('Markdown link repair planning skipped; proceeding with standard move', {
         error: repairErr instanceof Error ? repairErr.message : String(repairErr),
       });
+    }
+
+    if (linkSteps.length > 0) {
+      const steps: BatchOperationStep[] = [
+        { type: 'move', source: input.source, destination: input.destination },
+        ...linkSteps,
+      ];
+      const batchRes = await journal.executeBatch(
+        `Move ${path.basename(input.source)} + repair ${linkSteps.length} link(s)`,
+        steps
+      );
+      const canonicalDest = batchRes.operation.children?.[0]?.destinationPath ?? input.destination;
+      kernel.notifyMutation('unlink', input.source);
+      kernel.notifyMutation('create', canonicalDest);
+      for (const edit of linkSteps) {
+        kernel.notifyMutation('change', edit.filePath);
+      }
+      return {
+        success: true,
+        newPath: canonicalDest,
+        repairedLinksCount: linkSteps.length,
+      };
     }
   }
 

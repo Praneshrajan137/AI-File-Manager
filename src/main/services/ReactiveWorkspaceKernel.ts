@@ -69,6 +69,7 @@ export class ReactiveWorkspaceKernel {
   private totalProcessed = 0;
   private totalCoalesced = 0;
   private totalDropped = 0;
+  private readonly suppressedPaths = new Map<string, number>();
 
   constructor(options: ReactiveWorkspaceKernelOptions = {}) {
     this.allowedRoots =
@@ -167,6 +168,9 @@ export class ReactiveWorkspaceKernel {
   warmDirectory(entries: FileNode[]): void {
     const start = Date.now();
     for (const entry of entries) {
+      if (isSensitiveSecretFile(entry.path).blocked) {
+        continue;
+      }
       const metadata: FileMetadata = {
         filePath: entry.path,
         totalChunks: 0,
@@ -196,8 +200,8 @@ export class ReactiveWorkspaceKernel {
       return;
     }
 
-    const validation = this.fileSystemService.validatePath(dirPath);
-    if (!validation.valid) {
+    const validation = await this.fileSystemService.validateCanonicalPath(dirPath);
+    if (!validation.valid || !validation.canonicalPath) {
       FileSystemLogger.warn('Skipping watch on unvalidated directory', {
         path: dirPath,
         error: validation.error,
@@ -205,7 +209,7 @@ export class ReactiveWorkspaceKernel {
       return;
     }
 
-    const normalized = path.normalize(dirPath);
+    const normalized = path.normalize(validation.canonicalPath);
 
     this.watchTransition = this.watchTransition.then(async () => {
       if (this.closed) {
@@ -513,6 +517,47 @@ export class ReactiveWorkspaceKernel {
   }
 
   /**
+   * Temporarily suppress redundant OS file-watcher events caused by app-initiated journal mutations.
+   */
+  suppressPaths(paths: string[], ttlMs: number = 1500): void {
+    if (this.closed || !Array.isArray(paths) || paths.length === 0) {
+      return;
+    }
+    const now = Date.now();
+    const expiresAt = now + Math.max(50, ttlMs);
+    if (this.suppressedPaths.size > 512) {
+      for (const [entryKey, expiry] of this.suppressedPaths.entries()) {
+        if (expiry <= now) {
+          this.suppressedPaths.delete(entryKey);
+        }
+      }
+    }
+    for (const rawPath of paths) {
+      if (typeof rawPath !== 'string' || !rawPath.trim()) {
+        continue;
+      }
+      const key = this.canonicalKey(path.normalize(rawPath));
+      this.suppressedPaths.set(key, expiresAt);
+    }
+  }
+
+  private isPathSuppressed(filePath: string): boolean {
+    if (this.suppressedPaths.size === 0) {
+      return false;
+    }
+    const key = this.canonicalKey(path.normalize(filePath));
+    const expiresAt = this.suppressedPaths.get(key);
+    if (expiresAt === undefined) {
+      return false;
+    }
+    if (Date.now() > expiresAt) {
+      this.suppressedPaths.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * Record an application-initiated mutation immediately in cache + enqueue user-priority event.
    */
   notifyMutation(type: 'create' | 'change' | 'unlink', filePath: string): void {
@@ -614,12 +659,16 @@ export class ReactiveWorkspaceKernel {
       return 0;
     }
 
-    // Coalesce strictly in chronological order so newer USER_ACTION unlinks
-    // are never overwritten by stale lower-priority watcher events.
-    rawEvents.sort((a, b) => a.timestamp - b.timestamp || b.priority - a.priority);
+    const activeEvents = rawEvents.filter(
+      (ev) => ev.priority === EventPriority.USER_ACTION || !this.isPathSuppressed(ev.path)
+    );
+
+    // Coalesce chronologically so equal-timestamp higher-urgency events (smaller numeric priority, e.g. USER_ACTION=1)
+    // land last in `netByPath` without being overwritten by stale FILE_WATCHER/BACKGROUND_INDEX events.
+    activeEvents.sort((a, b) => a.timestamp - b.timestamp || b.priority - a.priority);
 
     const netByPath = new Map<string, FileEvent>();
-    for (const ev of rawEvents) {
+    for (const ev of activeEvents) {
       const key = this.canonicalKey(ev.path);
       const prev = netByPath.get(key);
       if (!prev) {
@@ -646,10 +695,15 @@ export class ReactiveWorkspaceKernel {
       }
     }
 
-    const coalescedCount = Math.max(0, rawEvents.length - netByPath.size);
+    const coalescedCount = Math.max(0, activeEvents.length - netByPath.size);
     const diagnostics = RuntimeDiagnostics.getInstance();
 
-    for (const event of netByPath.values()) {
+    // Dispatch highest-urgency distinct paths first (smaller EventPriority enum = higher urgency)
+    const orderedEvents = Array.from(netByPath.values()).sort(
+      (a, b) => a.priority - b.priority || a.timestamp - b.timestamp
+    );
+
+    for (const event of orderedEvents) {
       this.fileSystemService.invalidatePath(event.path);
       let hookType: 'create' | 'change' | 'unlink' =
         event.type === 'rename' ? 'change' : event.type;
@@ -662,15 +716,19 @@ export class ReactiveWorkspaceKernel {
         try {
           const stats = await fs.stat(event.path);
           existsOnDisk = true;
-          const ext = path.extname(event.path).replace(/^\./, '').toLowerCase();
-          const metadata: FileMetadata = {
-            filePath: event.path,
-            totalChunks: 0,
-            indexedAt: Date.now(),
-            fileSize: stats.size,
-            language: ext || undefined,
-          };
-          this.pathTrie.insert(event.path, metadata);
+          if (isSensitiveSecretFile(event.path).blocked) {
+            this.pathTrie.removePrefix(event.path);
+          } else {
+            const ext = path.extname(event.path).replace(/^\./, '').toLowerCase();
+            const metadata: FileMetadata = {
+              filePath: event.path,
+              totalChunks: 0,
+              indexedAt: Date.now(),
+              fileSize: stats.size,
+              language: ext || undefined,
+            };
+            this.pathTrie.insert(event.path, metadata);
+          }
         } catch {
           this.pathTrie.removePrefix(event.path);
           hookType = 'unlink';
@@ -792,6 +850,10 @@ export function configureKernelHooks(hooks: {
     sharedIndexHook = hooks.indexMutationHook;
     kernelInstance?.setIndexMutationHook(sharedIndexHook);
   }
+}
+
+export function hasActiveReactiveWorkspaceKernel(): boolean {
+  return kernelInstance !== null;
 }
 
 export function getReactiveWorkspaceKernel(): ReactiveWorkspaceKernel {

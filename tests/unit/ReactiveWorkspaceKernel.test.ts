@@ -322,6 +322,73 @@ describe('M3 Closed-Loop ReactiveWorkspaceKernel & DSA Integration', () => {
       await kernel.shutdown();
     }
   });
+
+  it('suppresses self-generated FILE_WATCHER noise while ordering same-timestamp ties with USER_ACTION urgency winning', async () => {
+    const broadcasts: Array<{ channel: string; payload: string }> = [];
+    const kernel = new ReactiveWorkspaceKernel({
+      allowedRoots: [workspaceDir],
+      coalesceMs: 1000,
+      broadcaster: (channel, payload) => {
+        broadcasts.push({ channel, payload });
+      },
+    });
+
+    try {
+      const suppressedFile = path.join(workspaceDir, 'self-moved.md');
+      const unsuppressedUrgent = path.join(workspaceDir, 'urgent.md');
+      const unsuppressedBg = path.join(workspaceDir, 'background.md');
+      const sameTsConflict = path.join(workspaceDir, 'conflict.md');
+      await fs.writeFile(suppressedFile, 'ignored echo', 'utf-8');
+      await fs.writeFile(unsuppressedUrgent, 'urgent body', 'utf-8');
+      await fs.writeFile(unsuppressedBg, 'bg body', 'utf-8');
+
+      kernel.suppressPaths([suppressedFile], 1500);
+
+      const q = kernel.getEventQueue();
+      // Suppressed FILE_WATCHER noise must be filtered out
+      q.enqueue({
+        type: 'change',
+        path: suppressedFile,
+        priority: EventPriority.FILE_WATCHER,
+        timestamp: 400,
+      });
+      // Equal timestamps across distinct paths: USER_ACTION (1) must dispatch before BACKGROUND_INDEX (10)
+      q.enqueue({
+        type: 'create',
+        path: unsuppressedBg,
+        priority: EventPriority.BACKGROUND_INDEX,
+        timestamp: 500,
+      });
+      q.enqueue({
+        type: 'create',
+        path: unsuppressedUrgent,
+        priority: EventPriority.USER_ACTION,
+        timestamp: 500,
+      });
+      // Equal timestamps on same path: USER_ACTION unlink must win over FILE_WATCHER create even when enqueued first
+      q.enqueue({
+        type: 'unlink',
+        path: sameTsConflict,
+        priority: EventPriority.USER_ACTION,
+        timestamp: 600,
+      });
+      q.enqueue({
+        type: 'create',
+        path: sameTsConflict,
+        priority: EventPriority.FILE_WATCHER,
+        timestamp: 600,
+      });
+
+      await kernel.drainNow();
+      expect(broadcasts).toEqual([
+        { channel: 'FILE_CREATED', payload: unsuppressedUrgent },
+        { channel: 'FILE_DELETED', payload: sameTsConflict },
+        { channel: 'FILE_CREATED', payload: unsuppressedBg },
+      ]);
+    } finally {
+      await kernel.shutdown();
+    }
+  });
 });
 
 async function waitForCondition(predicate: () => boolean, timeoutMs: number): Promise<void> {

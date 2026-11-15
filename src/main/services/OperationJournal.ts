@@ -10,7 +10,9 @@ import {
 } from '@shared/contracts';
 import { PathValidator } from './PathValidator';
 import { FileSystemService } from './FileSystemService';
-import { getReactiveWorkspaceKernel } from './ReactiveWorkspaceKernel';
+import { getReactiveWorkspaceKernel, hasActiveReactiveWorkspaceKernel } from './ReactiveWorkspaceKernel';
+import { RuntimeDiagnostics } from './RuntimeDiagnostics';
+import { atomicWriteFile, renameWithWindowsRetry } from '@shared/utils/atomicFs';
 import { ErrorFactory } from '@shared/errors';
 import { FileSystemLogger } from '@shared/logging';
 
@@ -38,6 +40,39 @@ export interface OperationJournalOptions {
   validator: PathValidator;
   fileSystemService: FileSystemService;
   osTrashFn?: (targetPath: string) => Promise<void>;
+  onSuppressWatchPaths?: (paths: string[], ttlMs?: number) => void;
+}
+
+export interface BatchRollbackFailureDetail {
+  stepId: string;
+  description: string;
+  error: string;
+}
+
+export class BatchRollbackError extends Error {
+  readonly originalError: unknown;
+  readonly rollbackFailures: BatchRollbackFailureDetail[];
+
+  constructor(
+    message: string,
+    originalError: unknown,
+    rollbackFailures: BatchRollbackFailureDetail[]
+  ) {
+    super(message);
+    this.name = 'BatchRollbackError';
+    this.originalError = originalError;
+    this.rollbackFailures = rollbackFailures;
+  }
+}
+
+interface WalPendingState {
+  batchId: string;
+  description: string;
+  status: 'pending' | 'rollback_failed';
+  startedAt: number;
+  completed: OperationRecord[];
+  failureReason?: string;
+  rollbackFailures?: BatchRollbackFailureDetail[];
 }
 
 export function resolveDefaultTrashVaultDir(): string {
@@ -82,11 +117,13 @@ export class OperationJournal {
   private readonly vaultDir: string;
   private readonly payloadsDir: string;
   private readonly journalFile: string;
+  private readonly walFile: string;
   private readonly maxHistory: number;
   private readonly maxVaultBytes: number;
   private readonly maxVaultAgeMs: number;
   private readonly fileSystemService: FileSystemService;
   private readonly osTrashFn: (targetPath: string) => Promise<void>;
+  private readonly onSuppressWatchPaths?: (paths: string[], ttlMs?: number) => void;
   private validator: PathValidator;
 
   private undoStack: OperationRecord[] = [];
@@ -98,12 +135,14 @@ export class OperationJournal {
     this.vaultDir = path.resolve(options.vaultDir ?? resolveDefaultTrashVaultDir());
     this.payloadsDir = path.join(this.vaultDir, 'payloads');
     this.journalFile = path.join(this.vaultDir, 'journal.json');
+    this.walFile = path.join(this.vaultDir, 'wal-pending.json');
     this.maxHistory = Math.max(10, options.maxHistory ?? DEFAULT_MAX_HISTORY);
     this.maxVaultBytes = options.maxVaultBytes ?? DEFAULT_MAX_VAULT_BYTES;
     this.maxVaultAgeMs = options.maxVaultAgeMs ?? DEFAULT_MAX_VAULT_AGE_MS;
     this.validator = options.validator;
     this.fileSystemService = options.fileSystemService;
     this.osTrashFn = options.osTrashFn ?? OperationJournal.defaultOsTrash;
+    this.onSuppressWatchPaths = options.onSuppressWatchPaths;
   }
 
   private static async defaultOsTrash(targetPath: string): Promise<void> {
@@ -150,11 +189,129 @@ export class OperationJournal {
       this.redoStack = [];
     }
 
+    const recoveredWal = await this.recoverPendingWal();
     const evictedAny = await this.evictExpiredRecords();
     this.initialized = true;
-    if (evictedAny) {
+    if (evictedAny || recoveredWal) {
       await this.persist();
     }
+  }
+
+  private suppressWatchPathsForStep(paths: Array<string | undefined>, ttlMs: number = 1500): void {
+    const clean = paths.filter((p): p is string => typeof p === 'string' && p.trim().length > 0);
+    if (clean.length === 0) {
+      return;
+    }
+    this.onSuppressWatchPaths?.(clean, ttlMs);
+    if (hasActiveReactiveWorkspaceKernel()) {
+      getReactiveWorkspaceKernel().suppressPaths(clean, ttlMs);
+    }
+  }
+
+  private async writeWalState(state: WalPendingState, targetFile: string = this.walFile): Promise<void> {
+    await atomicWriteFile(targetFile, JSON.stringify(state, null, 2), { ensureDir: true });
+  }
+
+  private async removeWalFileIgnoreEnoent(): Promise<void> {
+    try {
+      await fs.unlink(this.walFile);
+    } catch (error: unknown) {
+      if (getFsErrorCode(error) !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
+
+  private async rollbackCompletedStepsUnlocked(
+    completed: OperationRecord[]
+  ): Promise<{
+    rollbackFailures: BatchRollbackFailureDetail[];
+    remainingRecords: OperationRecord[];
+  }> {
+    const rollbackFailures: BatchRollbackFailureDetail[] = [];
+    const remainingRecords: OperationRecord[] = [];
+    const diagnostics = RuntimeDiagnostics.getInstance();
+
+    for (const child of [...completed].reverse()) {
+      this.suppressWatchPathsForStep([child.sourcePath, child.destinationPath]);
+      try {
+        await this.undoSingleRecordUnlocked(child);
+      } catch (rbErr: unknown) {
+        diagnostics.recordWalRollbackFailure();
+        const detail = rbErr instanceof Error ? rbErr.message : String(rbErr);
+        rollbackFailures.push({
+          stepId: child.id,
+          description: child.description,
+          error: detail,
+        });
+        remainingRecords.unshift(child);
+      }
+    }
+
+    return { rollbackFailures, remainingRecords };
+  }
+
+  private async recoverPendingWal(): Promise<boolean> {
+    let raw: string;
+    try {
+      raw = await fs.readFile(this.walFile, 'utf-8');
+    } catch (error: unknown) {
+      if (getFsErrorCode(error) === 'ENOENT') {
+        return false;
+      }
+      throw error;
+    }
+
+    let wal: Partial<WalPendingState>;
+    try {
+      wal = JSON.parse(raw) as Partial<WalPendingState>;
+    } catch (parseErr: unknown) {
+      FileSystemLogger.error('Corrupt pending WAL file encountered during startup recovery', {
+        walFile: this.walFile,
+        error: parseErr instanceof Error ? parseErr.message : String(parseErr),
+      });
+      await this.removeWalFileIgnoreEnoent().catch(() => undefined);
+      return false;
+    }
+
+    if (wal.status !== 'pending') {
+      return false;
+    }
+
+    const completed = Array.isArray(wal.completed) ? wal.completed : [];
+    const diagnostics = RuntimeDiagnostics.getInstance();
+    const { rollbackFailures, remainingRecords } =
+      await this.rollbackCompletedStepsUnlocked(completed);
+
+    diagnostics.recordWalRecovery();
+
+    if (rollbackFailures.length > 0) {
+      const failedFile = path.join(this.vaultDir, `wal-failed-${wal.batchId ?? 'recovery'}.json`);
+      await this.writeWalState(
+        {
+          batchId: wal.batchId ?? randomUUID(),
+          description: wal.description ?? 'Interrupted batch',
+          status: 'rollback_failed',
+          startedAt: wal.startedAt ?? Date.now(),
+          completed: remainingRecords,
+          failureReason: 'Incomplete crash-recovery rollback',
+          rollbackFailures,
+        },
+        failedFile
+      );
+      FileSystemLogger.error('WAL crash recovery finished with partial rollback failures', {
+        failedFile,
+        rollbackFailures,
+      });
+    } else {
+      FileSystemLogger.warn('Recovered interrupted batch transaction from pending WAL', {
+        batchId: wal.batchId,
+        revertedSteps: completed.length,
+      });
+    }
+
+    await this.removeWalFileIgnoreEnoent();
+    return true;
   }
 
   private async evictExpiredRecords(): Promise<boolean> {
@@ -184,13 +341,11 @@ export class OperationJournal {
 
   private async persist(): Promise<void> {
     await fs.mkdir(this.payloadsDir, { recursive: true });
-    const tempFile = `${this.journalFile}.${randomUUID()}.tmp`;
     const payload: PersistedJournalData = {
       undoStack: this.undoStack,
       redoStack: this.redoStack,
     };
-    await fs.writeFile(tempFile, JSON.stringify(payload, null, 2), 'utf-8');
-    await fs.rename(tempFile, this.journalFile);
+    await atomicWriteFile(this.journalFile, JSON.stringify(payload, null, 2), { ensureDir: true });
   }
 
   private toValidationError(
@@ -657,12 +812,24 @@ export class OperationJournal {
 
     return this.serialize(async () => {
       await this.ensureInitialized();
+      const batchId = randomUUID();
+      const startedAt = Date.now();
       const completed: OperationRecord[] = [];
       let totalSize = 0;
 
+      const walState: WalPendingState = {
+        batchId,
+        description,
+        status: 'pending',
+        startedAt,
+        completed,
+      };
+      await this.writeWalState(walState);
+
       try {
         for (const step of steps) {
-            if (step.type === 'delete') {
+          if (step.type === 'delete') {
+            this.suppressWatchPathsForStep([step.path]);
             const mode = step.mode ?? 'vault';
             const res = await this.performSingleDeleteUnlocked(
               step.path,
@@ -672,8 +839,10 @@ export class OperationJournal {
             if (res.record) {
               completed.push(res.record);
               totalSize += res.record.size;
+              await this.writeWalState(walState);
             }
           } else if (step.type === 'create_dir') {
+            this.suppressWatchPathsForStep([step.path]);
             const canonicalDir = await this.validateCanonicalOrThrow(step.path);
             if (!(await this.pathExists(canonicalDir))) {
               await this.fileSystemService.createDirectory(canonicalDir);
@@ -687,19 +856,25 @@ export class OperationJournal {
                 undoable: true,
                 description: `Create folder ${path.basename(canonicalDir)}`,
               });
+              await this.writeWalState(walState);
             }
           } else if (step.type === 'copy') {
+            this.suppressWatchPathsForStep([step.source, step.destination]);
             const res = await this.performSingleCopyUnlocked(step.source, step.destination);
             completed.push(res.record);
             totalSize += res.record.size;
+            await this.writeWalState(walState);
           } else if (step.type === 'edit_links') {
+            this.suppressWatchPathsForStep([step.filePath]);
             const res = await this.performSingleEditLinksUnlocked(
               step.filePath,
               step.previousContent,
               step.nextContent
             );
             completed.push(res.record);
+            await this.writeWalState(walState);
           } else {
+            this.suppressWatchPathsForStep([step.source, step.destination]);
             const res = await this.performSingleMoveUnlocked(
               step.source,
               step.destination,
@@ -707,17 +882,50 @@ export class OperationJournal {
             );
             completed.push(res.record);
             totalSize += res.record.size;
+            await this.writeWalState(walState);
           }
         }
       } catch (err) {
-        for (const child of [...completed].reverse()) {
-          await this.undoSingleRecordUnlocked(child).catch(() => undefined);
+        const { rollbackFailures, remainingRecords } =
+          await this.rollbackCompletedStepsUnlocked(completed);
+
+        if (rollbackFailures.length > 0) {
+          const origMsg = err instanceof Error ? err.message : String(err);
+          const failedFile = path.join(this.vaultDir, `wal-failed-${batchId}.json`);
+          await this.writeWalState(
+            {
+              batchId,
+              description,
+              status: 'rollback_failed',
+              startedAt,
+              completed: remainingRecords,
+              failureReason: origMsg,
+              rollbackFailures,
+            },
+            failedFile
+          ).catch(() => undefined);
+          await this.removeWalFileIgnoreEnoent().catch(() => undefined);
+
+          FileSystemLogger.error('Batch execution & reverse rollback both encountered failures', {
+            batchId,
+            description,
+            originalError: origMsg,
+            rollbackFailures,
+            failedFile,
+          });
+          throw new BatchRollbackError(
+            `Batch "${description}" failed (${origMsg}) and ${rollbackFailures.length} rollback step(s) also failed`,
+            err,
+            rollbackFailures
+          );
         }
+
+        await this.removeWalFileIgnoreEnoent();
         throw err;
       }
 
       const batchRecord: OperationRecord = {
-        id: randomUUID(),
+        id: batchId,
         type: 'batch',
         timestamp: Date.now(),
         sourcePath: completed[0]?.sourcePath ?? '',
@@ -729,6 +937,7 @@ export class OperationJournal {
       };
 
       await this.pushUndoRecord(batchRecord);
+      await this.removeWalFileIgnoreEnoent();
       return {
         success: true,
         operation: batchRecord,
@@ -867,7 +1076,7 @@ export class OperationJournal {
 
       if (isSymlink) {
         await fs.mkdir(path.dirname(canonicalOriginal), { recursive: true });
-        await fs.rename(resolvedCurrent, canonicalOriginal);
+        await renameWithWindowsRetry(resolvedCurrent, canonicalOriginal);
         this.fileSystemService.invalidatePath(resolvedCurrent);
         this.fileSystemService.invalidatePath(canonicalOriginal);
       } else {

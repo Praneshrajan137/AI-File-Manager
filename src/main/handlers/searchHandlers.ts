@@ -33,7 +33,17 @@ import { searchWorkspaceContent } from './llmHandlers';
 import { ContentSearchMatch, FileNode, FileMetadata } from '@shared/contracts';
 import { IPCLogger, getLogger } from '@shared/logging';
 import { IPCChannel } from '@shared/ipc/contracts';
+import { isSensitiveSecretFile } from '@shared/security/SecretGuard';
 import path from 'path';
+
+function isWithinNormalizedRoot(candidatePath: string, rootPath: string): boolean {
+  const normalize = (p: string): string =>
+    process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
+  const normCandidate = normalize(candidatePath);
+  const normRoot = normalize(rootPath);
+  const prefix = normRoot.endsWith(path.sep) ? normRoot : `${normRoot}${path.sep}`;
+  return normCandidate === normRoot || normCandidate.startsWith(prefix);
+}
 
 /**
  * SearchService using PathTrie for fast autocomplete.
@@ -111,6 +121,9 @@ class SearchService {
         const filesInCurrentDir = await this.fileSystemService.readDirectory(searchRoot);
 
         for (const file of filesInCurrentDir) {
+          if (isSensitiveSecretFile(file.path).blocked) {
+            continue;
+          }
           // Case-insensitive substring match
           if (file.name.toLowerCase().includes(queryLower)) {
             fileNodes.push(file);
@@ -137,10 +150,16 @@ class SearchService {
       const lowerCandidates = this.pathTrie.autocomplete(queryLower, 100);
       const allCandidates = [...new Set([...candidatePaths, ...lowerCandidates])];
 
-      // Filter candidates that start with searchRoot and match query (substring)
-      const filteredPaths = allCandidates.filter(path => {
-        const fileName = path.split('/').pop() || path.split('\\').pop() || path;
-        return path.startsWith(searchRoot) && fileName.toLowerCase().includes(queryLower);
+      // Filter candidates that belong under searchRoot, aren't SecretGuard-blocked, and match query
+      const filteredPaths = allCandidates.filter(candidate => {
+        if (isSensitiveSecretFile(candidate).blocked) {
+          return false;
+        }
+        const fileName = candidate.split('/').pop() || candidate.split('\\').pop() || candidate;
+        return (
+          isWithinNormalizedRoot(candidate, searchRoot) &&
+          fileName.toLowerCase().includes(queryLower)
+        );
       });
 
       // Convert to FileNode objects
@@ -211,16 +230,20 @@ class SearchService {
         // Create DirectoryScanner for this root
         const scanner = new DirectoryScanner(this.fileSystemService);
 
-        // Scan directory recursively
+        // Scan directory recursively (skip sensitive secret files from PathTrie)
         const files = await scanner.scan(root, {
           recursive: true,
           maxDepth: 3, // Limit depth to avoid excessive scanning
           skipErrors: true,
+          skipSensitiveFiles: true,
         });
 
         const trieUpdateStart = Date.now();
-        // Insert all files into PathTrie
+        // Insert non-sensitive files into PathTrie
         for (const file of files) {
+          if (isSensitiveSecretFile(file.path).blocked) {
+            continue;
+          }
           try {
             const metadata: FileMetadata = {
               filePath: file.path,
@@ -346,10 +369,13 @@ async function handleQuery(
   const entries = await fsService.readDirectory(input.searchRoot);
   kernel.warmDirectory(entries);
 
+  const nonSensitiveEntries = entries.filter(
+    (entry) => !isSensitiveSecretFile(entry.path).blocked
+  );
   const fileNodes =
     queryLower.length === 0
-      ? [...entries]
-      : entries.filter((entry) => entry.name.toLowerCase().includes(queryLower));
+      ? [...nonSensitiveEntries]
+      : nonSensitiveEntries.filter((entry) => entry.name.toLowerCase().includes(queryLower));
 
   if (queryLower.length > 0) {
     const seen = new Set(
@@ -372,6 +398,9 @@ async function handleQuery(
       ])
     );
     for (const candidatePath of trieCandidates) {
+      if (isSensitiveSecretFile(candidatePath).blocked) {
+        continue;
+      }
       const normalizedCandidate =
         process.platform === 'win32'
           ? path.resolve(candidatePath).toLowerCase()
@@ -476,7 +505,9 @@ export async function searchWorkspacePaths(
       ...trie.autocomplete(q.toLowerCase(), 25),
       ...trie.searchSubstring(q.toLowerCase(), 25),
     ])
-  ).slice(0, 25);
+  )
+    .filter((candidate) => !isSensitiveSecretFile(candidate).blocked)
+    .slice(0, 25);
 }
 
 /**

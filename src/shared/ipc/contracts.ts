@@ -485,7 +485,8 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     channel: 'FS:RENAME',
     group: 'fileSystem',
     schema: IPC_SCHEMAS['FS:RENAME'],
-    pathFields: ['oldPath'],
+    pathFields: [],
+    linkSafePathFields: ['oldPath'],
     rateLimit: WRITE_RATE_LIMIT,
   },
   'FS:UNDO': {

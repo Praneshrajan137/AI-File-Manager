@@ -416,10 +416,26 @@ export class WorkspaceMcpServer {
       if (isSensitiveSecretFile(childPath).blocked) {
         continue;
       }
+      let isDirectory = entry.isDirectory();
+      if (typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink()) {
+        const canonicalCheck = await this.validator.validateCanonical(childPath);
+        if (!canonicalCheck.valid || !canonicalCheck.canonicalPath) {
+          continue;
+        }
+        if (isSensitiveSecretFile(canonicalCheck.canonicalPath).blocked) {
+          continue;
+        }
+        try {
+          const targetStats = await fs.stat(canonicalCheck.canonicalPath);
+          isDirectory = targetStats.isDirectory();
+        } catch {
+          continue;
+        }
+      }
       filtered.push({
         name: entry.name,
         path: childPath,
-        isDirectory: entry.isDirectory(),
+        isDirectory,
       });
       if (filtered.length >= 200) {
         break;
@@ -559,7 +575,18 @@ export class WorkspaceMcpServer {
             ...c,
             files: c.files.filter((fp) => this.isPathAllowedFast(fp)),
           })),
-          topHubs: insights.topHubs,
+          topHubs: insights.topHubs.filter((hub) => {
+            if (isSensitiveSecretFile(hub.targetRef).blocked) {
+              return false;
+            }
+            if (hub.targetRef.includes('..') || hub.targetRef.includes('\0')) {
+              return false;
+            }
+            if (path.isAbsolute(hub.targetRef) || /^[A-Za-z]:[\\/]/.test(hub.targetRef)) {
+              return this.isPathAllowedFast(hub.targetRef);
+            }
+            return true;
+          }),
           recentFiles: insights.recentFiles.filter((f) => this.isPathAllowedFast(f.path)),
         };
       }
@@ -661,11 +688,17 @@ export class WorkspaceMcpServer {
 }
 
 export function resolveDefaultGraphDbPath(): string {
+  const envDbOverride = process.env.FILE_MANAGER_VECTOR_DB_PATH?.trim();
+  const primaryCandidate = envDbOverride
+    ? path.join(path.resolve(envDbOverride), 'knowledge-graph.sqlite')
+    : path.join(os.homedir(), '.file-manager', 'vectordb', 'knowledge-graph.sqlite');
+
   const baseDir =
     process.env.APPDATA ||
     process.env.XDG_CONFIG_HOME ||
     path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Application Support' : '.config');
   const candidates = [
+    primaryCandidate,
     path.join(baseDir, 'project-2-file-manager', 'workspace-graph.sqlite'),
     path.join(baseDir, 'ai-file-manager', 'workspace-graph.sqlite'),
   ];
@@ -674,7 +707,7 @@ export function resolveDefaultGraphDbPath(): string {
       return candidate;
     }
   }
-  return candidates[0];
+  return primaryCandidate;
 }
 
 export function parseCliArgs(argv: string[]): { roots: string[]; dbPath?: string } {

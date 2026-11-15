@@ -52,7 +52,40 @@ import {
 } from '../../shared/contracts';
 import { IPCChannel } from '@shared/ipc/contracts';
 import { IPCLogger, LLMLogger } from '../../shared/logging';
-import { isSensitiveSecretFile } from '../../shared/security/SecretGuard';
+import { isSensitiveSecretFile, redactSensitiveText } from '../../shared/security/SecretGuard';
+
+async function readSecretGuardedRange(
+  fsService: Pick<FileSystemService, 'readFileRange'>,
+  filePath: string,
+  startLine: number,
+  endLine?: number
+): ReturnType<FileSystemService['readFileRange']> {
+  const secretCheck = isSensitiveSecretFile(filePath);
+  if (secretCheck.blocked) {
+    RuntimeDiagnostics.getInstance().recordSecretGuardBlock();
+    const err = new Error(
+      `[SECURITY_BLOCKED] SecretGuard blocked "${path.basename(filePath)}": ${secretCheck.reason || 'sensitive credential file'}`
+    ) as Error & { code?: string };
+    err.code = 'UNAUTHORIZED_ACCESS';
+    throw err;
+  }
+  const result = await fsService.readFileRange(filePath, startLine, endLine);
+  let redactions = 0;
+  const sanitizedLines = result.lines.map((line) => {
+    const cleaned = redactSensitiveText(line.text);
+    redactions += cleaned.redactionsCount;
+    return cleaned.redactionsCount > 0
+      ? { ...line, text: cleaned.sanitizedText }
+      : line;
+  });
+  if (redactions > 0) {
+    RuntimeDiagnostics.getInstance().recordSecretGuardBlock();
+  }
+  return {
+    ...result,
+    lines: sanitizedLines,
+  };
+}
 import { VectorStore } from '../../llm/services/VectorStore';
 import { WorkspaceKnowledgeGraph } from '../services/WorkspaceKnowledgeGraph';
 import { EmbeddingWorkerPool } from '../../llm/workers/EmbeddingWorkerPool';
@@ -298,6 +331,7 @@ async function ensureServicesInitialized(): Promise<void> {
       // Initialize embedding model (runs in worker thread to avoid blocking main process)
       localEmbeddingModel = new EmbeddingWorkerPool({
         modelName: configuredEmbeddingModel,
+        allowRemoteModels: llmConfig?.allowRemoteModels,
       });
       await localEmbeddingModel.initialize();
       LLMLogger.info('EmbeddingWorkerPool initialized (worker thread)');
@@ -342,6 +376,14 @@ async function ensureServicesInitialized(): Promise<void> {
       indexingService = new IndexingService(localEmbeddingModel, localVectorStore);
       retrievalService = new RetrievalService(localVectorStore, localEmbeddingModel, contextManager);
       await localVectorStore.getStats();
+
+      if (preInitMutationQueue.size > 0) {
+        void drainPreInitKernelMutations().catch((drainErr: unknown) => {
+          LLMLogger.warn('Failed to drain pre-init kernel mutations', {
+            error: drainErr instanceof Error ? drainErr.message : String(drainErr),
+          });
+        });
+      }
 
       LLMLogger.info('All LLM services initialized');
     } catch (error: unknown) {
@@ -491,7 +533,7 @@ async function handleQuery(
         searchFiles: (q, root) => searchWorkspacePaths(q, root),
         searchContent: (q, topK, root) => searchWorkspaceContent(q, topK ?? 8, root),
         readFileRange: (filePath, startLine, endLine) =>
-          fsService.readFileRange(filePath, startLine, endLine),
+          readSecretGuardedRange(fsService, filePath, startLine, endLine),
         queryGraph: (graphInput) => queryWorkspaceGraphInsights(graphInput),
         proposeOrganizePlan: (targetDir, strategy) =>
           createOrganizerService().proposeOrganizationPlan({
@@ -563,7 +605,7 @@ async function handleQuery(
         const check = await validator.validateCanonical(candidate);
         if (!check.valid || !check.canonicalPath) continue;
         try {
-          const range = await kernelFs.readFileRange(check.canonicalPath, 1, 50);
+          const range = await readSecretGuardedRange(kernelFs, check.canonicalPath, 1, 50);
           if (range.lines.length === 0) continue;
           const citation = `${path.basename(range.path)}#L${range.startLine}-L${range.endLine}`;
           const body = range.lines.map((l) => `${l.lineNumber}: ${l.text}`).join('\n');
@@ -948,11 +990,51 @@ async function handleIndexFile(
   }
 }
 
+const MAX_PREINIT_MUTATIONS = 250;
+const preInitMutationQueue = new Map<
+  string,
+  { eventType: 'create' | 'change' | 'unlink'; filePath: string }
+>();
+
+function queuePreInitKernelMutation(
+  eventType: 'create' | 'change' | 'unlink',
+  filePath: string
+): void {
+  const key =
+    process.platform === 'win32'
+      ? path.resolve(filePath).toLowerCase()
+      : path.resolve(filePath);
+  if (preInitMutationQueue.has(key)) {
+    preInitMutationQueue.delete(key);
+  } else if (preInitMutationQueue.size >= MAX_PREINIT_MUTATIONS) {
+    const oldestKey = preInitMutationQueue.keys().next().value;
+    if (oldestKey) {
+      preInitMutationQueue.delete(oldestKey);
+    }
+  }
+  preInitMutationQueue.set(key, { eventType, filePath });
+}
+
+async function drainPreInitKernelMutations(): Promise<void> {
+  if (!vectorStore || !indexingService || preInitMutationQueue.size === 0) {
+    return;
+  }
+  const pending = Array.from(preInitMutationQueue.values());
+  preInitMutationQueue.clear();
+  for (const item of pending) {
+    if (!vectorStore || !indexingService) {
+      break;
+    }
+    await handleKernelIndexMutation(item.eventType, item.filePath);
+  }
+}
+
 async function handleKernelIndexMutation(
   eventType: 'create' | 'change' | 'unlink',
   filePath: string
 ): Promise<void> {
   if (!vectorStore || !indexingService) {
+    queuePreInitKernelMutation(eventType, filePath);
     return;
   }
 
@@ -1307,6 +1389,7 @@ export async function cleanupLLMServices(): Promise<void> {
   LLMLogger.info('Cleaning up LLM services...');
   configureKernelHooks({ indexMutationHook: null });
   abortIndexing = true;
+  preInitMutationQueue.clear();
   for (const ctrl of activeQueryAbortControllers.values()) {
     ctrl.abort();
   }

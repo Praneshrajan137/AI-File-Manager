@@ -259,5 +259,97 @@ describe('VectorStore', () => {
             expect(stats.totalChunks).toBe(2);
             expect(stats.totalFiles).toBe(1);
         });
+
+        it('flushes buffered chunks on close(), tracks SQLite outbox sync state, and retrieves scoped hits beyond 250 files', async () => {
+            const isolatedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'vs-outbox-test-'));
+            try {
+                const s1 = new VectorStore();
+                await s1.initialize(isolatedDir);
+
+                const docPath = path.join(isolatedDir, 'note.md');
+                const meta = { size: 42, mtimeMs: 123456, sha256: 'sha-fixed-1', fileType: 'md' };
+                const emb = [1, 0, ...new Array(382).fill(0)];
+                await s1.addChunks(
+                    [{ text: 'Unflushed outbox chunk', startChar: 0, endChar: 22, chunkIndex: 0 }],
+                    [emb],
+                    docPath,
+                    meta
+                );
+
+                // Before flush/close, SQLite outbox stays pending so crash recovery would reindex
+                expect(s1.getKnowledgeGraph()?.getPendingSyncCount()).toBe(1);
+                expect(s1.needsReindex(docPath, meta.mtimeMs, meta.size, meta.sha256)).toBe(true);
+
+                // Graceful close flushes <50 buffered chunks to LanceDB & marks SQLite synced
+                await s1.close();
+
+                const s2 = new VectorStore();
+                await s2.initialize(isolatedDir);
+                expect(s2.getKnowledgeGraph()?.getPendingSyncCount()).toBe(0);
+                expect(s2.needsReindex(docPath, meta.mtimeMs, meta.size, meta.sha256)).toBe(false);
+
+                const reopenedHits = await s2.search(emb, 3);
+                expect(reopenedHits.some((r) => r.file_path === docPath)).toBe(true);
+
+                // Simulated crash leaving vector_sync_status='pending' forces reindex even when sha/mtime/size match
+                s2.getKnowledgeGraph()?.upsertDocument({
+                    filePath: docPath,
+                    sha256: meta.sha256,
+                    size: meta.size,
+                    mtimeMs: meta.mtimeMs,
+                    vectorSyncStatus: 'pending',
+                    chunks: [{ id: `${docPath}:0`, chunkIndex: 0, text: 'Unflushed outbox chunk', startChar: 0, endChar: 22 }],
+                });
+                expect(s2.needsReindex(docPath, meta.mtimeMs, meta.size, meta.sha256)).toBe(true);
+                await s2.close();
+            } finally {
+                await fs.rm(isolatedDir, { recursive: true, force: true });
+            }
+        }, 30000);
+
+        it('retrieves scoped matches when scoped subtree has >250 files amid high-scoring external distractors', async () => {
+            const scopedFolder = path.join(os.tmpdir(), 'vs-scoped-260-dir', 'target');
+            const distractorFolder = path.join(os.tmpdir(), 'vs-scoped-260-dir', 'outside');
+
+            const queryEmb = [1, 0, ...new Array(382).fill(0)];
+            const distractorEmb = [0.999, 0.04, ...new Array(382).fill(0)];
+            const scopedMatchEmb = [0.95, 0.3, ...new Array(382).fill(0)];
+            const fillerEmb = [0, 1, ...new Array(382).fill(0)];
+
+            // Seed 95 outside distractors ranked above scopedMatchEmb in global vector search (beyond fixed top-80 window!)
+            for (let i = 0; i < 95; i += 1) {
+                const fp = path.join(distractorFolder, `distract-${i}.md`);
+                await store.addChunks(
+                    [{ text: `distractor ${i}`, startChar: 0, endChar: 12, chunkIndex: 0 }],
+                    [distractorEmb],
+                    fp,
+                    { size: 20, mtimeMs: 1000 + i }
+                );
+            }
+
+            // Seed 260 files inside scopedFolder (>250 bypasses SQL predicate) with one target match
+            for (let i = 0; i < 259; i += 1) {
+                const fp = path.join(scopedFolder, `filler-${i}.md`);
+                await store.addChunks(
+                    [{ text: `filler ${i}`, startChar: 0, endChar: 10, chunkIndex: 0 }],
+                    [fillerEmb],
+                    fp,
+                    { size: 15, mtimeMs: 2000 + i }
+                );
+            }
+            const targetPath = path.join(scopedFolder, 'target-hit.md');
+            await store.addChunks(
+                [{ text: 'Needle inside large folder', startChar: 0, endChar: 26, chunkIndex: 0 }],
+                [scopedMatchEmb],
+                targetPath,
+                { size: 26, mtimeMs: 5000 }
+            );
+            await store.flushPendingRecords();
+
+            const hits = await store.search(queryEmb, 3, { folderPath: scopedFolder });
+            expect(hits.length).toBeGreaterThanOrEqual(1);
+            expect(hits.some((h) => h.file_path === targetPath)).toBe(true);
+            expect(hits.every((h) => h.file_path.startsWith(scopedFolder))).toBe(true);
+        }, 60000);
     });
 });
