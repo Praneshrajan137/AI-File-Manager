@@ -208,14 +208,12 @@ const FileManagerApp: React.FC = () => {
   }, []);
 
   const handleToggleSplitPane = useCallback((): void => {
-    setSplitPaneOpen((prev) => {
-      const next = !prev;
-      if (next && !secondaryPath && currentPath) {
-        void loadSecondaryDirectory(currentPath);
-      }
-      return next;
-    });
-  }, [secondaryPath, currentPath, loadSecondaryDirectory]);
+    const next = !splitPaneOpen;
+    setSplitPaneOpen(next);
+    if (next && !secondaryPath && currentPath) {
+      void loadSecondaryDirectory(currentPath);
+    }
+  }, [splitPaneOpen, secondaryPath, currentPath, loadSecondaryDirectory]);
 
   const refreshWorkspaceMetadata = useCallback(async (): Promise<void> => {
     try {

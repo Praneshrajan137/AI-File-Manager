@@ -295,8 +295,12 @@ test.describe('Stage 4 Spatial UI & Security E2E', () => {
       await page.keyboard.press('F6');
       const rightPane = page.locator('[data-testid="split-pane-right"]');
       await expect(rightPane).toBeVisible({ timeout: 5000 });
-      await rightPane.locator('[role="button"]', { hasText: 'dest-folder' }).dblclick();
-      await expect(page.locator('[data-testid="split-pane-path"]')).toContainText('dest-folder');
+      const rightDestFolder = rightPane.locator('[role="button"]', { hasText: 'dest-folder' });
+      await expect(rightDestFolder).toBeVisible({ timeout: 5000 });
+      await rightDestFolder.dblclick();
+      await expect(page.locator('[data-testid="split-pane-path"]')).toContainText('dest-folder', {
+        timeout: 10000,
+      });
       await page.locator('[data-testid="split-pane-close"]').click();
       await expect(rightPane).toBeHidden();
 
