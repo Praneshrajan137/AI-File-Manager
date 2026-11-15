@@ -7,6 +7,7 @@ import type {
   ContentSearchMatch,
   CopilotContextScope,
   CopilotQueryMode,
+  FileConnectionsSummary,
   FileDeleteMode,
   FileLineRangeResult,
   FileNode,
@@ -26,6 +27,8 @@ import type {
   UIPreferencesSnapshot,
   UndoRedoResult,
   VaultConfigSnapshot,
+  WorkspaceCollectionGroup,
+  WorkspaceGraphMap,
 } from '../shared/contracts';
 import type { RuntimeDiagnosticsSnapshot } from '../shared/diagnostics';
 
@@ -64,6 +67,7 @@ interface ElectronAPI {
     redo: () => Promise<UndoRedoResult>;
     getJournalState: () => Promise<OperationJournalState>;
     emptyTrashVault: () => Promise<OperationJournalState>;
+    watchSplitDir?: (path: string | null) => Promise<{ watching: boolean; path: string | null }>;
   };
 
   vault: {
@@ -97,6 +101,12 @@ interface ElectronAPI {
       backlinkTarget?: string;
     }) => Promise<GraphInsightsResponse>;
     checkImpact?: (paths: string[]) => Promise<GraphImpactCheckResult>;
+    getWorkspaceMap?: (options?: {
+      rootPrefix?: string;
+      maxNodes?: number;
+    }) => Promise<WorkspaceGraphMap>;
+    getCollections?: (options?: { rootPrefix?: string }) => Promise<WorkspaceCollectionGroup[]>;
+    getFileConnections?: (filePath: string) => Promise<FileConnectionsSummary>;
   };
 
   llm: {
@@ -148,12 +158,14 @@ interface ElectronAPI {
     planOrganize: (
       targetDir: string,
       strategy?: OrganizeStrategy,
-      useLLM?: boolean
+      useLLM?: boolean,
+      recursive?: boolean
     ) => Promise<OrganizePlanResult>;
     applyOrganize: (input: {
       planId: string;
       targetDir: string;
       operations: OrganizePlanOperation[];
+      repairMarkdownLinks?: boolean;
     }) => Promise<OrganizeApplyResult>;
   };
 

@@ -13,8 +13,12 @@ import {
   X,
   CornerDownLeft,
 } from 'lucide-react';
-import type { ContentSearchMatch, GraphInsightsResponse } from '@shared/contracts';
+import type {
+  ContentSearchMatch,
+  GraphInsightsResponse,
+} from '@shared/contracts';
 import { extractBasename } from '@renderer/utils/pathHelpers';
+import { formatFileSize } from '@renderer/utils/formatters';
 
 export type OmnibarTab = 'all' | 'files' | 'content' | 'commands';
 
@@ -41,9 +45,16 @@ interface CommandOmnibarProps {
   onOrganizeCurrentDir?: () => void;
 }
 
+type DuplicateClusterItem = GraphInsightsResponse['stats']['duplicateClusters'][number];
+type GraphSymbolMatch = NonNullable<GraphInsightsResponse['symbolMatches']>[number];
+type GraphBacklinkMatch = NonNullable<GraphInsightsResponse['backlinks']>[number];
+
 type OmnibarRow =
   | { kind: 'file'; key: string; path: string; name: string }
   | { kind: 'content'; key: string; match: ContentSearchMatch }
+  | { kind: 'symbol'; key: string; match: GraphSymbolMatch }
+  | { kind: 'backlink'; key: string; match: GraphBacklinkMatch }
+  | { kind: 'duplicate'; key: string; cluster: DuplicateClusterItem }
   | { kind: 'command'; key: string; command: OmnibarCommandItem };
 
 export const CommandOmnibar: React.FC<CommandOmnibarProps> = ({
@@ -64,6 +75,8 @@ export const CommandOmnibar: React.FC<CommandOmnibarProps> = ({
   const [activeTab, setActiveTab] = useState<OmnibarTab>('all');
   const [fileResults, setFileResults] = useState<string[]>([]);
   const [contentResults, setContentResults] = useState<ContentSearchMatch[]>([]);
+  const [symbolResults, setSymbolResults] = useState<GraphSymbolMatch[]>([]);
+  const [backlinkResults, setBacklinkResults] = useState<GraphBacklinkMatch[]>([]);
   const [graphInsights, setGraphInsights] = useState<GraphInsightsResponse | null>(null);
   const [loadingResults, setLoadingResults] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -131,6 +144,8 @@ export const CommandOmnibar: React.FC<CommandOmnibarProps> = ({
     setActiveIndex(0);
     setFileResults([]);
     setContentResults([]);
+    setSymbolResults([]);
+    setBacklinkResults([]);
     const timer = setTimeout(() => inputRef.current?.focus(), 10);
 
     window.electronAPI?.graph
@@ -145,6 +160,70 @@ export const CommandOmnibar: React.FC<CommandOmnibarProps> = ({
     if (!isOpen) return;
     const trimmed = query.trim();
     const seq = ++searchSeqRef.current;
+
+    if (/^@sym:/i.test(trimmed)) {
+      const symQuery = trimmed.slice(5).trim();
+      setFileResults([]);
+      setContentResults([]);
+      setBacklinkResults([]);
+      if (symQuery.length < 1) {
+        setSymbolResults([]);
+        setLoadingResults(false);
+        return;
+      }
+      setLoadingResults(true);
+      const timer = setTimeout(async () => {
+        try {
+          const insights = await window.electronAPI?.graph?.queryInsights?.({
+            symbolQuery: symQuery,
+          });
+          if (seq !== searchSeqRef.current) return;
+          setSymbolResults(insights?.symbolMatches ?? []);
+          setActiveIndex(0);
+        } finally {
+          if (seq === searchSeqRef.current) setLoadingResults(false);
+        }
+      }, 120);
+      return () => clearTimeout(timer);
+    }
+
+    if (/^link:/i.test(trimmed)) {
+      const target = trimmed.slice(5).trim();
+      setFileResults([]);
+      setContentResults([]);
+      setSymbolResults([]);
+      if (target.length < 1) {
+        setBacklinkResults([]);
+        setLoadingResults(false);
+        return;
+      }
+      setLoadingResults(true);
+      const timer = setTimeout(async () => {
+        try {
+          const insights = await window.electronAPI?.graph?.queryInsights?.({
+            backlinkTarget: target,
+          });
+          if (seq !== searchSeqRef.current) return;
+          setBacklinkResults(insights?.backlinks ?? []);
+          setActiveIndex(0);
+        } finally {
+          if (seq === searchSeqRef.current) setLoadingResults(false);
+        }
+      }, 120);
+      return () => clearTimeout(timer);
+    }
+
+    if (/^dup:/i.test(trimmed)) {
+      setFileResults([]);
+      setContentResults([]);
+      setSymbolResults([]);
+      setBacklinkResults([]);
+      setLoadingResults(false);
+      return;
+    }
+
+    setSymbolResults([]);
+    setBacklinkResults([]);
 
     if (trimmed.length < 2 || activeTab === 'commands') {
       setFileResults([]);
@@ -183,8 +262,10 @@ export const CommandOmnibar: React.FC<CommandOmnibarProps> = ({
   }, [isOpen, query, activeTab]);
 
   const filteredCommands = useMemo(() => {
+    const rawTrimmed = query.trim();
+    if (/^(?:@sym:|link:|dup:)/i.test(rawTrimmed)) return [];
     if (activeTab !== 'all' && activeTab !== 'commands') return [];
-    const q = query.trim().toLowerCase();
+    const q = rawTrimmed.toLowerCase();
     if (!q) return commands;
     return commands.filter(
       (cmd) =>
@@ -195,6 +276,48 @@ export const CommandOmnibar: React.FC<CommandOmnibarProps> = ({
 
   const rows = useMemo<OmnibarRow[]>(() => {
     const out: OmnibarRow[] = [];
+    const trimmed = query.trim();
+
+    if (/^@sym:/i.test(trimmed)) {
+      for (const match of symbolResults) {
+        out.push({
+          kind: 'symbol',
+          key: `sym:${match.filePath}:${match.symbolName}:${match.lineNumber}`,
+          match,
+        });
+      }
+      return out;
+    }
+
+    if (/^link:/i.test(trimmed)) {
+      for (const match of backlinkResults) {
+        out.push({
+          kind: 'backlink',
+          key: `link:${match.sourcePath}:${match.lineNumber}`,
+          match,
+        });
+      }
+      return out;
+    }
+
+    if (/^dup:/i.test(trimmed)) {
+      const needle = trimmed.slice(4).trim().toLowerCase();
+      for (const cluster of graphInsights?.stats.duplicateClusters ?? []) {
+        if (
+          !needle ||
+          cluster.sha256.toLowerCase().includes(needle) ||
+          cluster.files.some((f) => f.toLowerCase().includes(needle))
+        ) {
+          out.push({
+            kind: 'duplicate',
+            key: `dup:${cluster.sha256}`,
+            cluster,
+          });
+        }
+      }
+      return out;
+    }
+
     if (activeTab === 'all' || activeTab === 'content') {
       for (const match of contentResults) {
         out.push({
@@ -224,7 +347,16 @@ export const CommandOmnibar: React.FC<CommandOmnibarProps> = ({
       }
     }
     return out;
-  }, [activeTab, contentResults, fileResults, filteredCommands]);
+  }, [
+    activeTab,
+    backlinkResults,
+    contentResults,
+    fileResults,
+    filteredCommands,
+    graphInsights,
+    query,
+    symbolResults,
+  ]);
 
   useEffect(() => {
     if (activeIndex >= rows.length) {
@@ -238,6 +370,13 @@ export const CommandOmnibar: React.FC<CommandOmnibarProps> = ({
       void onNavigateFile(row.path);
     } else if (row.kind === 'content') {
       void onOpenCitation(row.match.filePath, row.match.startLine, row.match.endLine);
+    } else if (row.kind === 'symbol') {
+      void onOpenCitation(row.match.filePath, row.match.lineNumber, row.match.lineNumber);
+    } else if (row.kind === 'backlink') {
+      void onOpenCitation(row.match.sourcePath, row.match.lineNumber, row.match.lineNumber);
+    } else if (row.kind === 'duplicate') {
+      const target = row.cluster.files[0];
+      if (target) void onNavigateFile(target);
     } else {
       row.command.run();
     }
@@ -355,6 +494,87 @@ export const CommandOmnibar: React.FC<CommandOmnibarProps> = ({
           ) : (
             rows.map((row, idx) => {
               const selected = idx === activeIndex;
+              if (row.kind === 'symbol') {
+                return (
+                  <button
+                    key={row.key}
+                    type="button"
+                    data-testid="omnibar-symbol-result"
+                    onMouseEnter={() => setActiveIndex(idx)}
+                    onClick={() => executeRow(row)}
+                    className={`w-full text-left px-3 py-2 rounded-xl flex items-center gap-3 transition-colors ${
+                      selected
+                        ? 'bg-indigo-50 dark:bg-indigo-950/60 ring-1 ring-indigo-300 dark:ring-indigo-700'
+                        : 'hover:bg-primary-50 dark:hover:bg-slate-800/70'
+                    }`}
+                  >
+                    <FileCode2 className="w-4 h-4 text-purple-500 flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-semibold font-mono text-primary-900 dark:text-slate-100 truncate">
+                        {row.match.symbolName} ({row.match.kind})
+                      </div>
+                      <div className="text-[11px] text-primary-500 dark:text-slate-400 truncate">
+                        {extractBasename(row.match.filePath)}#L{row.match.lineNumber}
+                      </div>
+                    </div>
+                  </button>
+                );
+              }
+
+              if (row.kind === 'backlink') {
+                return (
+                  <button
+                    key={row.key}
+                    type="button"
+                    data-testid="omnibar-backlink-result"
+                    onMouseEnter={() => setActiveIndex(idx)}
+                    onClick={() => executeRow(row)}
+                    className={`w-full text-left px-3 py-2 rounded-xl flex items-center gap-3 transition-colors ${
+                      selected
+                        ? 'bg-indigo-50 dark:bg-indigo-950/60 ring-1 ring-indigo-300 dark:ring-indigo-700'
+                        : 'hover:bg-primary-50 dark:hover:bg-slate-800/70'
+                    }`}
+                  >
+                    <FileText className="w-4 h-4 text-sky-500 flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-semibold text-primary-900 dark:text-slate-100 truncate">
+                        {extractBasename(row.match.sourcePath)}#L{row.match.lineNumber}
+                      </div>
+                      <div className="text-[11px] text-primary-500 dark:text-slate-400 truncate">
+                        {row.match.kind} → {row.match.targetRef}
+                      </div>
+                    </div>
+                  </button>
+                );
+              }
+
+              if (row.kind === 'duplicate') {
+                return (
+                  <button
+                    key={row.key}
+                    type="button"
+                    data-testid="omnibar-duplicate-result"
+                    onMouseEnter={() => setActiveIndex(idx)}
+                    onClick={() => executeRow(row)}
+                    className={`w-full text-left px-3 py-2 rounded-xl flex items-center gap-3 transition-colors ${
+                      selected
+                        ? 'bg-indigo-50 dark:bg-indigo-950/60 ring-1 ring-indigo-300 dark:ring-indigo-700'
+                        : 'hover:bg-primary-50 dark:hover:bg-slate-800/70'
+                    }`}
+                  >
+                    <Database className="w-4 h-4 text-amber-500 flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-semibold font-mono text-primary-900 dark:text-slate-100 truncate">
+                        sha256:{row.cluster.sha256.slice(0, 10)} ({row.cluster.files.length} copies)
+                      </div>
+                      <div className="text-[11px] text-primary-500 dark:text-slate-400 truncate tabular-nums">
+                        {row.cluster.files.map((f) => extractBasename(f)).join(' · ')} ({formatFileSize(row.cluster.wastedBytes)} reclaimable)
+                      </div>
+                    </div>
+                  </button>
+                );
+              }
+
               if (row.kind === 'content') {
                 return (
                   <button
@@ -477,7 +697,7 @@ export const CommandOmnibar: React.FC<CommandOmnibarProps> = ({
 
         {/* Footer Hints */}
         <div className="px-4 py-2 border-t border-primary-200 dark:border-slate-800 bg-primary-50/50 dark:bg-slate-950/60 flex items-center justify-between text-[11px] text-primary-500 dark:text-slate-400">
-          <span>↑/↓ navigate • Enter open • Esc close</span>
+          <span>↑/↓ navigate • Enter open • Prefix: @sym: link: dup:</span>
           <span>Ctrl+K anywhere</span>
         </div>
       </div>

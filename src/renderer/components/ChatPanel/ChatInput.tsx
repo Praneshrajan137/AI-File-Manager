@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bot, Folder, MousePointerClick, Send } from 'lucide-react';
+import { Bot, Folder, MousePointerClick, Send, Square } from 'lucide-react';
 import { CopilotQueryMode } from '@shared/contracts';
 import { extractBasename } from '@renderer/utils/pathHelpers';
 
@@ -7,6 +7,7 @@ interface ChatInputProps {
   value: string;
   onChange: (value: string) => void;
   onSend: () => void;
+  onCancel?: () => void;
   disabled?: boolean;
   currentPath?: string;
   selectedCount?: number;
@@ -22,6 +23,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   value,
   onChange,
   onSend,
+  onCancel,
   disabled,
   currentPath = '',
   selectedCount = 0,
@@ -130,6 +132,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         >
           <Send className="w-4 h-4" />
         </button>
+        {disabled && onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-1 text-xs font-medium"
+            aria-label="Stop generation"
+            data-testid="cancel-query-button"
+            title="Cancel running AI response"
+          >
+            <Square className="w-3.5 h-3.5 fill-current" />
+            <span>Stop</span>
+          </button>
+        )}
       </div>
     </div>
   );

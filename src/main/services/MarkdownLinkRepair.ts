@@ -29,14 +29,17 @@ function toPosixRelative(fromDir: string, targetFile: string): string {
 
 /**
  * Rewrite Markdown links in `sourceContent` pointing from `oldTargetPath` to `newTargetPath`.
+ * Optional `originalSourceFilePath` resolves pre-move relative hrefs when the source file itself moves.
  */
 export function rewriteMarkdownLinksInContent(
   sourceFilePath: string,
   sourceContent: string,
   oldTargetPath: string,
-  newTargetPath: string
+  newTargetPath: string,
+  originalSourceFilePath: string = sourceFilePath
 ): string {
-  const sourceDir = path.dirname(sourceFilePath);
+  const newSourceDir = path.dirname(sourceFilePath);
+  const resolveSourceDir = path.dirname(originalSourceFilePath);
   const oldKey = normalizeCmp(oldTargetPath);
   const oldExt = path.extname(oldTargetPath);
   const oldStem = path.basename(oldTargetPath, oldExt);
@@ -60,13 +63,13 @@ export function rewriteMarkdownLinksInContent(
         return full;
       }
 
-      const resolvedWithExt = normalizeCmp(path.resolve(sourceDir, pathPart));
-      const resolvedAddedMd = normalizeCmp(path.resolve(sourceDir, `${pathPart}.md`));
+      const resolvedWithExt = normalizeCmp(path.resolve(resolveSourceDir, pathPart));
+      const resolvedAddedMd = normalizeCmp(path.resolve(resolveSourceDir, `${pathPart}.md`));
       if (resolvedWithExt !== oldKey && resolvedAddedMd !== oldKey) {
         return full;
       }
 
-      const newRel = toPosixRelative(sourceDir, newTargetPath);
+      const newRel = toPosixRelative(newSourceDir, newTargetPath);
       return `${open}${newRel}${anchor}${close}`;
     }
   );
@@ -116,6 +119,73 @@ export async function buildMarkdownLinkRepairSteps(
       }
     } catch {
       // Skip unreadable/stale referencing files silently
+    }
+  }
+
+  return steps;
+}
+
+/**
+ * Plan safe post-move `edit_links` steps across multi-file batches (e.g., AI Organizer),
+ * resolving relative hrefs from each referencing file's pre-move directory to final destinations.
+ */
+export async function buildBatchMarkdownLinkRepairSteps(
+  movedFiles: Array<{ source: string; destination: string }>,
+  references: Array<{ sourcePath: string; targetPath: string; isMarkdownLink: boolean }>
+): Promise<Array<Extract<BatchOperationStep, { type: 'edit_links' }>>> {
+  const moveMap = new Map<string, { source: string; destination: string }>();
+  for (const m of movedFiles) {
+    moveMap.set(normalizeCmp(m.source), {
+      source: path.resolve(m.source),
+      destination: path.resolve(m.destination),
+    });
+  }
+
+  // Group Markdown target pairs per original source file
+  const refsBySource = new Map<string, Array<{ oldTarget: string; newTarget: string }>>();
+  for (const ref of references) {
+    if (!ref.isMarkdownLink) continue;
+    const ext = path.extname(ref.sourcePath).toLowerCase();
+    if (ext !== '.md' && ext !== '.markdown') continue;
+
+    const movedTarget = moveMap.get(normalizeCmp(ref.targetPath));
+    if (!movedTarget) continue;
+
+    const canonicalSource = path.resolve(ref.sourcePath);
+    const list = refsBySource.get(canonicalSource) ?? [];
+    if (!list.some((item) => normalizeCmp(item.oldTarget) === normalizeCmp(movedTarget.source))) {
+      list.push({ oldTarget: movedTarget.source, newTarget: movedTarget.destination });
+    }
+    refsBySource.set(canonicalSource, list);
+  }
+
+  const steps: Array<Extract<BatchOperationStep, { type: 'edit_links' }>> = [];
+  for (const [origSourcePath, targets] of refsBySource.entries()) {
+    const movedSource = moveMap.get(normalizeCmp(origSourcePath));
+    const finalSourcePath = movedSource ? movedSource.destination : origSourcePath;
+
+    try {
+      const prev = await fs.readFile(origSourcePath, 'utf-8');
+      let next = prev;
+      for (const pair of targets) {
+        next = rewriteMarkdownLinksInContent(
+          finalSourcePath,
+          next,
+          pair.oldTarget,
+          pair.newTarget,
+          origSourcePath
+        );
+      }
+      if (next !== prev) {
+        steps.push({
+          type: 'edit_links',
+          filePath: finalSourcePath,
+          previousContent: prev,
+          nextContent: next,
+        });
+      }
+    } catch {
+      // Skip unreadable files cleanly
     }
   }
 

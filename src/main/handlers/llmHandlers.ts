@@ -36,6 +36,7 @@ import {
   ContentSearchMatch,
   CopilotContextScope,
   CopilotQueryMode,
+  FileConnectionsSummary,
   GraphImpactCheckResult,
   GraphInsightsResponse,
   IndexingStatus,
@@ -46,6 +47,8 @@ import {
   OrganizePlanResult,
   OrganizeStrategy,
   RetrievalSource,
+  WorkspaceCollectionGroup,
+  WorkspaceGraphMap,
 } from '../../shared/contracts';
 import { IPCChannel } from '@shared/ipc/contracts';
 import { IPCLogger, LLMLogger } from '../../shared/logging';
@@ -244,6 +247,25 @@ export function checkWorkspaceGraphImpact(targetPaths: string[]): GraphImpactChe
       references,
     };
   });
+}
+
+export function getWorkspaceGraphMapData(input?: {
+  rootPrefix?: string;
+  maxNodes?: number;
+}): WorkspaceGraphMap {
+  return withKnowledgeGraph((kg) =>
+    kg.getWorkspaceGraphMap(input?.rootPrefix, input?.maxNodes ?? 240)
+  );
+}
+
+export function getWorkspaceCollectionsData(input?: {
+  rootPrefix?: string;
+}): WorkspaceCollectionGroup[] {
+  return withKnowledgeGraph((kg) => kg.getSemanticCollections(input?.rootPrefix));
+}
+
+export function getWorkspaceFileConnectionsData(filePath: string): FileConnectionsSummary {
+  return withKnowledgeGraph((kg) => kg.getFileConnections(filePath));
 }
 
 /**
@@ -1166,25 +1188,28 @@ function createOrganizerService(): AIOrganizerService {
   const kernel = getReactiveWorkspaceKernel();
   const fsService = kernel.getFileSystemService();
   const validator = new PathValidator(fsService.getAllowedRoots());
-  const llmCfg = readLlmConfig();
+  const transportCfg = resolveActiveTransportSettings();
 
   return new AIOrganizerService({
     validator,
     operationJournal: getOperationJournal(),
-    ollamaUrl: resolveOllamaUrl(),
-    model: llmCfg?.model,
+    provider: transportCfg.provider,
+    ollamaUrl: transportCfg.baseUrl,
+    model: transportCfg.model,
+    findImpactForPaths: (targetPaths) => withKnowledgeGraph((kg) => kg.findImpactForPaths(targetPaths)),
   });
 }
 
 async function handlePlanOrganize(
   _event: IpcMainInvokeEvent,
-  input: { targetDir: string; strategy?: OrganizeStrategy; useLLM?: boolean }
+  input: { targetDir: string; strategy?: OrganizeStrategy; useLLM?: boolean; recursive?: boolean }
 ): Promise<OrganizePlanResult> {
   const canonicalTarget = await validateCanonicalPathOrThrow(input.targetDir);
   return createOrganizerService().proposeOrganizationPlan({
     targetDir: canonicalTarget,
     strategy: input.strategy,
     useLLM: input.useLLM,
+    recursive: input.recursive,
   });
 }
 
@@ -1194,6 +1219,7 @@ async function handleApplyOrganize(
     planId: string;
     targetDir: string;
     operations: OrganizePlanOperation[];
+    repairMarkdownLinks?: boolean;
   }
 ): Promise<OrganizeApplyResult> {
   const canonicalTarget = await validateCanonicalPathOrThrow(input.targetDir);
@@ -1201,6 +1227,7 @@ async function handleApplyOrganize(
     planId: input.planId,
     targetDir: canonicalTarget,
     operations: input.operations,
+    repairMarkdownLinks: input.repairMarkdownLinks,
   });
 }
 

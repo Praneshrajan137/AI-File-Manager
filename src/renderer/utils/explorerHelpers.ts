@@ -1,4 +1,24 @@
 import type { FileNode, SortCriteria, SortDirection } from '@shared/contracts';
+import { extractBasename, normalizeComparablePath } from './pathHelpers';
+
+export function toFileNodeStub(filePath: string, files: FileNode[]): FileNode {
+  const existing = files.find(
+    (f) => normalizeComparablePath(f.path) === normalizeComparablePath(filePath)
+  );
+  if (existing) return existing;
+  const name = extractBasename(filePath);
+  const dot = name.lastIndexOf('.');
+  const extension = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+  return {
+    path: filePath,
+    name,
+    isDirectory: false,
+    size: 0,
+    modified: Date.now(),
+    extension,
+    mimeType: 'text/plain',
+  };
+}
 
 export function sortFileNodes(
   files: FileNode[],

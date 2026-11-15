@@ -4,6 +4,7 @@ import type {
   CopilotContextScope,
   CopilotQueryMode,
   LLMModelsSnapshot,
+  OrganizePlanResult,
   RetrievalSource,
 } from '@shared/contracts';
 
@@ -16,6 +17,8 @@ export interface Message {
   sources?: string[];
   structuredSources?: RetrievalSource[];
   agentSteps?: AgentTraceStep[];
+  offlineSynthesis?: boolean;
+  proposedPlan?: OrganizePlanResult;
   timestamp: number;
 }
 
@@ -29,6 +32,7 @@ export interface IndexingStatus {
 export interface SendQueryOptions {
   mode?: CopilotQueryMode;
   contextScope?: CopilotContextScope;
+  history?: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
 export interface UseLLMReturn {
@@ -38,6 +42,7 @@ export interface UseLLMReturn {
   modelsSnapshot: LLMModelsSnapshot | null;
 
   sendQuery: (query: string, options?: SendQueryOptions) => Promise<void>;
+  cancelQuery: () => Promise<void>;
   startIndexing: (path: string) => Promise<void>;
   stopIndexing: () => Promise<void>;
   clearIndex: () => Promise<void>;
@@ -56,6 +61,12 @@ export function useLLM(): UseLLMReturn {
   const [modelsSnapshot, setModelsSnapshot] = useState<LLMModelsSnapshot | null>(null);
 
   const loadingRef = useRef<boolean>(false);
+  const messagesRef = useRef<Message[]>([]);
+  const activeChannelRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   const refreshModels = useCallback(async () => {
     try {
@@ -77,11 +88,32 @@ export function useLLM(): UseLLMReturn {
     }
   }, []);
 
+  const cancelQuery = useCallback(async (): Promise<void> => {
+    const channel = activeChannelRef.current;
+    activeChannelRef.current = null;
+    if (channel && typeof window.electronAPI?.llm?.abortQuery === 'function') {
+      try {
+        await window.electronAPI.llm.abortQuery(channel);
+      } catch {
+        // Ignore cancellation race if stream already finished
+      }
+    }
+    loadingRef.current = false;
+    setLoading(false);
+  }, []);
+
   const sendQuery = useCallback(async (query: string, options?: SendQueryOptions) => {
     if (!query.trim() || loadingRef.current) return;
 
     loadingRef.current = true;
     setLoading(true);
+
+    const historyTurns =
+      options?.history ??
+      messagesRef.current
+        .slice(-6)
+        .filter((m) => m.content.trim().length > 0)
+        .map((m) => ({ role: m.role, content: m.content }));
 
     const userMessage: Message = {
       id: messageIdCounter++,
@@ -91,58 +123,74 @@ export function useLLM(): UseLLMReturn {
     };
     setMessages((prev) => [...prev, userMessage]);
 
+    const assistantMessageId = messageIdCounter++;
+    const assistantTimestamp = Date.now();
+    const upsertAssistant = (
+      patch: Partial<Message> | ((existing: Message | undefined) => Partial<Message>)
+    ): void => {
+      setMessages((prev) => {
+        const idx = prev.findIndex((msg) => msg.id === assistantMessageId);
+        const existing = idx >= 0 ? prev[idx] : undefined;
+        const resolvedPatch = typeof patch === 'function' ? patch(existing) : patch;
+        if (existing) {
+          return prev.map((msg, i) => (i === idx ? { ...msg, ...resolvedPatch } : msg));
+        }
+        return [
+          ...prev,
+          {
+            id: assistantMessageId,
+            role: 'assistant',
+            content: '',
+            timestamp: assistantTimestamp,
+            ...resolvedPatch,
+          },
+        ];
+      });
+    };
+
     try {
       let responseContent = '';
-      const assistantMessageId = messageIdCounter++;
-      const assistantTimestamp = Date.now();
 
       const result = await window.electronAPI.llm.query(
         query,
         (chunk: string) => {
           responseContent += chunk;
           const latestContent = responseContent;
-
-          setMessages((prev) => {
-            const existingIndex = prev.findIndex((msg) => msg.id === assistantMessageId);
-            if (existingIndex >= 0) {
-              return prev.map((msg, idx) =>
-                idx === existingIndex ? { ...msg, content: latestContent } : msg
-              );
-            }
-            return [
-              ...prev,
-              {
-                id: assistantMessageId,
-                role: 'assistant',
-                content: latestContent,
-                timestamp: assistantTimestamp,
-              },
-            ];
-          });
+          upsertAssistant({ content: latestContent });
         },
-        options
+        {
+          mode: options?.mode,
+          contextScope: options?.contextScope,
+          history: historyTurns.length > 0 ? historyTurns : undefined,
+          onChannelCreated: (channel: string): void => {
+            activeChannelRef.current = channel;
+          },
+          onStep: (step: AgentTraceStep): void => {
+            upsertAssistant((existing) => ({
+              agentSteps: [...(existing?.agentSteps ?? []), step],
+            }));
+          },
+        }
       );
+
+      activeChannelRef.current = null;
 
       if (
         (result?.sources && result.sources.length > 0) ||
-        (result?.agentSteps && result.agentSteps.length > 0)
+        (result?.agentSteps && result.agentSteps.length > 0) ||
+        result?.offlineSynthesis !== undefined ||
+        result?.proposedPlan
       ) {
         const structuredSources = result.sources ?? [];
         const uniquePaths = Array.from(new Set(structuredSources.map((s) => s.filePath)));
-        const agentSteps = result.agentSteps;
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantMessageId
-              ? {
-                  ...msg,
-                  sources: uniquePaths.length > 0 ? uniquePaths : msg.sources,
-                  structuredSources:
-                    structuredSources.length > 0 ? structuredSources : msg.structuredSources,
-                  agentSteps: agentSteps ?? msg.agentSteps,
-                }
-              : msg
-          )
-        );
+        upsertAssistant((existing) => ({
+          sources: uniquePaths.length > 0 ? uniquePaths : existing?.sources,
+          structuredSources:
+            structuredSources.length > 0 ? structuredSources : existing?.structuredSources,
+          agentSteps: result.agentSteps ?? existing?.agentSteps,
+          offlineSynthesis: result.offlineSynthesis ?? existing?.offlineSynthesis,
+          proposedPlan: result.proposedPlan ?? existing?.proposedPlan,
+        }));
       }
 
       if (!result?.success && result?.error) {
@@ -152,29 +200,14 @@ export function useLLM(): UseLLMReturn {
             responseContent.trim().length > 0
               ? `${responseContent}\n\nError: ${errorText}`
               : `Error: ${errorText}`;
-          setMessages((prev) => {
-            const existingIndex = prev.findIndex((msg) => msg.id === assistantMessageId);
-            if (existingIndex >= 0) {
-              return prev.map((msg, idx) =>
-                idx === existingIndex ? { ...msg, content: finalContent } : msg
-              );
-            }
-            return [
-              ...prev,
-              {
-                id: assistantMessageId,
-                role: 'assistant',
-                content: finalContent,
-                timestamp: assistantTimestamp,
-              },
-            ];
-          });
+          upsertAssistant({ content: finalContent });
         }
       }
 
       loadingRef.current = false;
       setLoading(false);
     } catch {
+      activeChannelRef.current = null;
       setMessages((prev) => [
         ...prev,
         {
@@ -258,6 +291,7 @@ export function useLLM(): UseLLMReturn {
     indexingStatus,
     modelsSnapshot,
     sendQuery,
+    cancelQuery,
     startIndexing,
     stopIndexing,
     clearIndex,

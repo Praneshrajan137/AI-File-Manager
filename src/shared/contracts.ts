@@ -1135,7 +1135,9 @@ export type OrganizeStrategy =
   | 'smart_category'
   | 'by_type'
   | 'by_date'
-  | 'ai_suggested';
+  | 'ai_suggested'
+  | 'deduplicate'
+  | 'semantic_cluster';
 
 export interface OrganizePlanOperation {
   id: string;
@@ -1157,6 +1159,8 @@ export interface OrganizePlanResult {
   operations: OrganizePlanOperation[];
   skippedFiles: number;
   summary: string;
+  linkImpact?: GraphImpactCheckResult;
+  repairedLinksCount?: number;
 }
 
 export interface OrganizeApplyResult {
@@ -1165,6 +1169,7 @@ export interface OrganizeApplyResult {
   appliedCount: number;
   operationId: string;
   journalState: OperationJournalState;
+  repairedLinksCount?: number;
 }
 
 // ============================================================================

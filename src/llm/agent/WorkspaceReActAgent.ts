@@ -123,7 +123,7 @@ export const AGENT_TOOL_DEFINITIONS: readonly AgentToolDefinition[] = [
           strategy: {
             type: 'string',
             description: 'Organization strategy',
-            enum: ['auto', 'smart_category', 'by_type', 'by_date', 'ai_suggested'],
+            enum: ['auto', 'smart_category', 'by_type', 'by_date', 'ai_suggested', 'deduplicate', 'semantic_cluster'],
           },
         },
       },

@@ -804,4 +804,176 @@ describe('Stage 5 (M11): Bounded ReAct Copilot, @folder/@selection Scope & Trans
     expect(fenced).toContain('<untrusted_workspace_data source="/a/b.ts" citation="b.ts#L1-L2">');
     expect(fenced).toContain('</untrusted_workspace_data>');
   });
+
+  describe('Stage 4 Link-Safe Organizer (deduplicate, semantic_cluster, atomic link repair) & ReAct proposals', () => {
+    it('deduplicates redundant copies, clusters semantic docs, repairs markdown links atomically, and undoes everything cleanly', async () => {
+      const notesFile = path.join(workspaceRoot, 'oauth-guide.md');
+      const indexFile = path.join(workspaceRoot, 'index.md');
+      const origDup = path.join(workspaceRoot, 'asset.txt');
+      const redundantDup = path.join(workspaceRoot, 'asset-copy.txt');
+
+      await fs.writeFile(notesFile, '# OAuth SecretGuard Spec\nJWT & firewall rules.\n', 'utf-8');
+      await fs.writeFile(indexFile, '# Index\nRead [OAuth](./oauth-guide.md) first.\n', 'utf-8');
+      await fs.writeFile(origDup, 'identical-binary-payload-v1', 'utf-8');
+      await fs.writeFile(redundantDup, 'identical-binary-payload-v1', 'utf-8');
+
+      const validator = new PathValidator([workspaceRoot]);
+      const fsService = new FileSystemService([workspaceRoot]);
+      const journal = new OperationJournal({
+        vaultDir,
+        maxHistory: 20,
+        maxVaultBytes: 10 * 1024 * 1024,
+        validator,
+        fileSystemService: fsService,
+      });
+      const organizer = new AIOrganizerService({
+        validator,
+        operationJournal: journal,
+        ollamaUrl: 'http://127.0.0.1:11434',
+        model: 'llama3.2',
+        findImpactForPaths: (targetPaths) => {
+          if (targetPaths.some((p) => path.resolve(p) === path.resolve(notesFile))) {
+            return [
+              {
+                sourcePath: indexFile,
+                targetPath: notesFile,
+                targetRef: './oauth-guide.md',
+                kind: 'markdown_link',
+                lineNumber: 2,
+                isMarkdownLink: true,
+              },
+            ];
+          }
+          return [];
+        },
+      });
+
+      // 1. Deduplicate strategy quarantines redundant copy without losing canonical original
+      const dedupPlan = await organizer.proposeOrganizationPlan({
+        targetDir: workspaceRoot,
+        strategy: 'deduplicate',
+      });
+      expect(dedupPlan.operations).toHaveLength(1);
+      expect(dedupPlan.operations[0].sourcePath).toBe(redundantDup);
+      expect(dedupPlan.operations[0].destinationPath).toContain('Duplicates Archive');
+
+      // 2. Semantic cluster groups Security & Auth doc and computes link impact
+      const semPlan = await organizer.proposeOrganizationPlan({
+        targetDir: workspaceRoot,
+        strategy: 'semantic_cluster',
+      });
+      const notesOp = semPlan.operations.find((op) => op.sourcePath === notesFile);
+      expect(notesOp).toBeDefined();
+      expect(notesOp?.category).toBe('Security & Auth');
+      expect(semPlan.linkImpact?.totalAffectedFiles).toBe(1);
+      expect(semPlan.linkImpact?.markdownRepairableCount).toBe(1);
+
+      // 3. Apply single move of oauth-guide.md with repairMarkdownLinks: true -> index.md updates atomically
+      const applyRes = await organizer.applyOrganizationPlan({
+        planId: semPlan.planId,
+        targetDir: semPlan.targetDir,
+        operations: [notesOp!],
+        repairMarkdownLinks: true,
+      });
+      expect(applyRes.success).toBe(true);
+      expect(applyRes.appliedCount).toBe(1);
+      expect(applyRes.repairedLinksCount).toBeGreaterThanOrEqual(1);
+      expect(fsSync.existsSync(notesOp!.destinationPath)).toBe(true);
+      expect(fsSync.existsSync(notesFile)).toBe(false);
+
+      const repairedIndex = await fs.readFile(indexFile, 'utf-8');
+      expect(repairedIndex).toContain('./Security & Auth/oauth-guide.md');
+
+      // 4. 1-Click Batch Undo restores oauth-guide.md AND reverts index.md link cleanly
+      const undoRes = await journal.undo();
+      expect(undoRes.success).toBe(true);
+      expect(fsSync.existsSync(notesFile)).toBe(true);
+      expect(fsSync.existsSync(notesOp!.destinationPath)).toBe(false);
+      const restoredIndex = await fs.readFile(indexFile, 'utf-8');
+      expect(restoredIndex).toContain('./oauth-guide.md');
+    });
+
+    it('emits structured dry-run proposedPlan via propose_organize_plan tool and preserves multi-turn history without mutating disk', async () => {
+      const sampleFile = path.join(workspaceRoot, 'notes.md');
+      await fs.writeFile(sampleFile, 'Architecture proposal', 'utf-8');
+
+      const validator = new PathValidator([workspaceRoot]);
+      const fsService = new FileSystemService([workspaceRoot]);
+      const journal = new OperationJournal({
+        vaultDir,
+        maxHistory: 10,
+        maxVaultBytes: 10 * 1024 * 1024,
+        validator,
+        fileSystemService: fsService,
+      });
+      const organizer = new AIOrganizerService({
+        validator,
+        operationJournal: journal,
+        ollamaUrl: 'http://127.0.0.1:11434',
+        model: 'llama3.2',
+      });
+
+      const recordedMessages: Array<Array<{ role: string; content: string }>> = [];
+      let callCount = 0;
+      const mockFetch = (async (_url: unknown, init?: { body?: unknown }) => {
+        callCount += 1;
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages: Array<{ role: string; content: string }>;
+        };
+        recordedMessages.push(body.messages);
+
+        if (callCount === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              message: {
+                role: 'assistant',
+                content: '',
+                tool_calls: [
+                  {
+                    function: {
+                      name: 'propose_organize_plan',
+                      arguments: { targetDir: workspaceRoot, strategy: 'auto' },
+                    },
+                  },
+                ],
+              },
+            }),
+          } as Response;
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            message: {
+              role: 'assistant',
+              content: 'Prepared a dry-run organization proposal for your review.',
+            },
+          }),
+        } as Response;
+      }) as unknown as typeof fetch;
+
+      const agent = new WorkspaceReActAgent({
+        ollamaUrl: 'http://127.0.0.1:11434',
+        model: 'llama3.2',
+        fetchFn: mockFetch,
+        validatePath: (p) => validator.validateCanonical(p),
+        searchFiles: async () => [sampleFile],
+        searchContent: () => [],
+        readFileRange: (fp, s, e) => buildRealReadRange(fp, s, e),
+        queryGraph: () => makeGraphResponse({ totalFiles: 1 }),
+        proposeOrganizePlan: (targetDir, strategy) =>
+          organizer.proposeOrganizationPlan({ targetDir, strategy }),
+      });
+
+      const res = await agent.run('Suggest how to organize this folder cleanly', {
+        history: [{ role: 'user', content: 'Earlier question about docs' }],
+      });
+
+      expect(res.aborted).toBe(false);
+      expect(res.proposedPlan).toBeDefined();
+      expect(res.proposedPlan?.operations.length).toBeGreaterThanOrEqual(1);
+      expect(fsSync.existsSync(sampleFile)).toBe(true);
+      expect(recordedMessages[0].some((m) => m.content === 'Earlier question about docs')).toBe(true);
+    });
+  });
 });

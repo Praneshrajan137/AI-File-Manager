@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { User, Bot, FileCode2, Cpu } from 'lucide-react';
+import { User, Bot, FileCode2, Cpu, WifiOff, FolderKanban } from 'lucide-react';
+import type { OrganizePlanResult } from '@shared/contracts';
 import { Message } from '@renderer/hooks/useLLM';
 import { parseCitationSegments } from '@renderer/utils/explorerHelpers';
 import { extractBasename } from '@renderer/utils/pathHelpers';
@@ -7,9 +8,14 @@ import { extractBasename } from '@renderer/utils/pathHelpers';
 interface MessageBubbleProps {
   message: Message;
   onOpenCitation?: (filePath: string, startLine?: number, endLine?: number) => void;
+  onPreviewOrganizePlan?: (plan: OrganizePlanResult) => void;
 }
 
-export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, onOpenCitation }) => {
+export const MessageBubble: React.FC<MessageBubbleProps> = ({
+  message,
+  onOpenCitation,
+  onPreviewOrganizePlan,
+}) => {
   const isUser = message.role === 'user';
   const [traceExpanded, setTraceExpanded] = useState<boolean>(false);
 
@@ -75,6 +81,43 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, onOpenCit
                 })}
           </p>
         </div>
+
+        {message.offlineSynthesis && !isUser && (
+          <div className="mt-1.5">
+            <span
+              data-testid="offline-synthesis-badge"
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/70 border border-amber-200 dark:border-amber-800 text-[10px] font-medium text-amber-800 dark:text-amber-300"
+            >
+              <WifiOff className="w-2.5 h-2.5" />
+              <span>Offline Local Graph Synthesis</span>
+            </span>
+          </div>
+        )}
+
+        {message.proposedPlan && !isUser && (
+          <div
+            data-testid="message-proposed-plan-card"
+            className="mt-2 p-2.5 rounded-lg border border-indigo-200 dark:border-indigo-800 bg-indigo-50/70 dark:bg-indigo-950/40 text-xs space-y-1.5"
+          >
+            <div className="font-semibold text-indigo-900 dark:text-indigo-200 flex items-center gap-1.5">
+              <FolderKanban className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+              <span>Proposed Organization Plan ({message.proposedPlan.operations.length} ops)</span>
+            </div>
+            <p className="text-[11px] text-indigo-700 dark:text-indigo-300">
+              {message.proposedPlan.summary}
+            </p>
+            {onPreviewOrganizePlan && (
+              <button
+                type="button"
+                data-testid="review-proposed-plan-button"
+                onClick={(): void => onPreviewOrganizePlan(message.proposedPlan!)}
+                className="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-medium"
+              >
+                Review Dry-Run Proposal
+              </button>
+            )}
+          </div>
+        )}
 
         {message.agentSteps && message.agentSteps.length > 0 && (
           <div className="mt-2">

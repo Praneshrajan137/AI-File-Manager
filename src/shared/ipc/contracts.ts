@@ -10,6 +10,7 @@ import { z } from 'zod';
 import type {
   AgentTraceStep,
   ContentSearchMatch,
+  FileConnectionsSummary,
   FileLineRangeResult,
   FileNode,
   FilePreviewResult,
@@ -26,6 +27,8 @@ import type {
   UIPreferencesSnapshot,
   UndoRedoResult,
   VaultConfigSnapshot,
+  WorkspaceCollectionGroup,
+  WorkspaceGraphMap,
 } from '../contracts';
 import type { RuntimeDiagnosticsSnapshot } from '../diagnostics';
 export {
@@ -143,6 +146,9 @@ export const IPC_SCHEMAS = {
   'FS:REDO': optionalEmptyObjectSchema,
   'FS:GET_JOURNAL_STATE': optionalEmptyObjectSchema,
   'FS:EMPTY_TRASH_VAULT': optionalEmptyObjectSchema,
+  'FS:WATCH_SPLIT_DIR': z.object({
+    path: z.string().min(1).nullable(),
+  }),
   'VAULT:GET_CONFIG': optionalEmptyObjectSchema,
   'VAULT:ADD_ROOT': z.object({
     path: z.string().min(1).optional(),
@@ -190,6 +196,28 @@ export const IPC_SCHEMAS = {
   'GRAPH:IMPACT_CHECK': z.object({
     paths: z.array(z.string().min(1)).min(1).max(250),
   }),
+  'GRAPH:WORKSPACE_MAP': z
+    .union([
+      z.undefined(),
+      z.null(),
+      z.object({
+        rootPrefix: z.string().min(1).max(1000).optional(),
+        maxNodes: z.number().int().min(10).max(500).optional(),
+      }),
+    ])
+    .transform((v) => v ?? {}),
+  'GRAPH:COLLECTIONS': z
+    .union([
+      z.undefined(),
+      z.null(),
+      z.object({
+        rootPrefix: z.string().min(1).max(1000).optional(),
+      }),
+    ])
+    .transform((v) => v ?? {}),
+  'GRAPH:FILE_CONNECTIONS': z.object({
+    filePath: z.string().min(1),
+  }),
   'LLM:QUERY': z.object({
     query: z.string().min(1).max(8000),
     channel: z
@@ -224,9 +252,18 @@ export const IPC_SCHEMAS = {
   'AI:ORGANIZE_PLAN': z.object({
     targetDir: z.string().min(1),
     strategy: z
-      .enum(['auto', 'smart_category', 'by_type', 'by_date', 'ai_suggested'])
+      .enum([
+        'auto',
+        'smart_category',
+        'by_type',
+        'by_date',
+        'ai_suggested',
+        'deduplicate',
+        'semantic_cluster',
+      ])
       .optional(),
     useLLM: z.boolean().optional(),
+    recursive: z.boolean().optional(),
   }),
   'AI:ORGANIZE_APPLY': z.object({
     planId: z.string().min(1).max(120),
@@ -246,6 +283,7 @@ export const IPC_SCHEMAS = {
       )
       .min(1)
       .max(500),
+    repairMarkdownLinks: z.boolean().optional(),
   }),
   'LLM:INDEX_STATUS': optionalEmptyObjectSchema,
   'LLM:START_INDEXING': z.object({ path: z.string().min(1) }),
@@ -300,6 +338,7 @@ export interface IPCResponseMap {
   'FS:REDO': UndoRedoResult;
   'FS:GET_JOURNAL_STATE': OperationJournalState;
   'FS:EMPTY_TRASH_VAULT': OperationJournalState;
+  'FS:WATCH_SPLIT_DIR': { watching: boolean; path: string | null };
   'VAULT:GET_CONFIG': VaultConfigSnapshot;
   'VAULT:ADD_ROOT': { cancelled: boolean; addedPath?: string; config: VaultConfigSnapshot };
   'VAULT:REMOVE_ROOT': VaultConfigSnapshot;
@@ -315,6 +354,9 @@ export interface IPCResponseMap {
   'SEARCH:CONTENT': ContentSearchMatch[];
   'GRAPH:QUERY_INSIGHTS': GraphInsightsResponse;
   'GRAPH:IMPACT_CHECK': GraphImpactCheckResult;
+  'GRAPH:WORKSPACE_MAP': WorkspaceGraphMap;
+  'GRAPH:COLLECTIONS': WorkspaceCollectionGroup[];
+  'GRAPH:FILE_CONNECTIONS': FileConnectionsSummary;
   'LLM:QUERY': {
     success: boolean;
     error?: string;
@@ -474,6 +516,13 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     pathFields: [],
     rateLimit: WRITE_RATE_LIMIT,
   },
+  'FS:WATCH_SPLIT_DIR': {
+    channel: 'FS:WATCH_SPLIT_DIR',
+    group: 'fileSystem',
+    schema: IPC_SCHEMAS['FS:WATCH_SPLIT_DIR'],
+    pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
+  },
   'VAULT:GET_CONFIG': {
     channel: 'VAULT:GET_CONFIG',
     group: 'vault',
@@ -577,6 +626,27 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     group: 'graph',
     schema: IPC_SCHEMAS['GRAPH:IMPACT_CHECK'],
     pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
+  },
+  'GRAPH:WORKSPACE_MAP': {
+    channel: 'GRAPH:WORKSPACE_MAP',
+    group: 'graph',
+    schema: IPC_SCHEMAS['GRAPH:WORKSPACE_MAP'],
+    pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
+  },
+  'GRAPH:COLLECTIONS': {
+    channel: 'GRAPH:COLLECTIONS',
+    group: 'graph',
+    schema: IPC_SCHEMAS['GRAPH:COLLECTIONS'],
+    pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
+  },
+  'GRAPH:FILE_CONNECTIONS': {
+    channel: 'GRAPH:FILE_CONNECTIONS',
+    group: 'graph',
+    schema: IPC_SCHEMAS['GRAPH:FILE_CONNECTIONS'],
+    pathFields: ['filePath'],
     rateLimit: READ_RATE_LIMIT,
   },
   'LLM:QUERY': {

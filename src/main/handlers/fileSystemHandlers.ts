@@ -387,6 +387,20 @@ async function handleEmptyTrashVault(_event: IpcMainInvokeEvent): Promise<Operat
   return getOperationJournal().emptyVault();
 }
 
+async function handleWatchSplitDir(
+  _event: IpcMainInvokeEvent,
+  input: { path: string | null }
+): Promise<{ watching: boolean; path: string | null }> {
+  const kernel = getReactiveWorkspaceKernel();
+  if (!input.path) {
+    await kernel.activateSecondaryDirectory(null);
+    return { watching: false, path: null };
+  }
+  const canonicalPath = await validateCanonicalPathOrThrow(input.path);
+  await kernel.activateSecondaryDirectory(canonicalPath);
+  return { watching: true, path: canonicalPath };
+}
+
 const FILE_SYSTEM_CHANNELS: IPCChannel[] = [
   'FS:READ_DIR',
   'FS:READ_FILE',
@@ -405,6 +419,7 @@ const FILE_SYSTEM_CHANNELS: IPCChannel[] = [
   'FS:REDO',
   'FS:GET_JOURNAL_STATE',
   'FS:EMPTY_TRASH_VAULT',
+  'FS:WATCH_SPLIT_DIR',
 ];
 
 /**
@@ -436,6 +451,7 @@ export function registerFileSystemHandlers(): IPCChannel[] {
   ipcMain.handle('FS:REDO', withContract('FS:REDO', handleRedo));
   ipcMain.handle('FS:GET_JOURNAL_STATE', withContract('FS:GET_JOURNAL_STATE', handleGetJournalState));
   ipcMain.handle('FS:EMPTY_TRASH_VAULT', withContract('FS:EMPTY_TRASH_VAULT', handleEmptyTrashVault));
+  ipcMain.handle('FS:WATCH_SPLIT_DIR', withContract('FS:WATCH_SPLIT_DIR', handleWatchSplitDir));
 
   IPCLogger.info('File system IPC handlers registered successfully');
   return [...FILE_SYSTEM_CHANNELS];

@@ -128,6 +128,9 @@ const electronAPI = {
 
     emptyTrashVault: (): ContractResult<'FS:EMPTY_TRASH_VAULT'> =>
       invokeContract('FS:EMPTY_TRASH_VAULT'),
+
+    watchSplitDir: (path: string | null): ContractResult<'FS:WATCH_SPLIT_DIR'> =>
+      invokeContract('FS:WATCH_SPLIT_DIR', { path }),
   },
 
   /**
@@ -191,6 +194,18 @@ const electronAPI = {
 
     checkImpact: (paths: string[]): ContractResult<'GRAPH:IMPACT_CHECK'> =>
       invokeContract('GRAPH:IMPACT_CHECK', { paths }),
+
+    getWorkspaceMap: (options?: {
+      rootPrefix?: string;
+      maxNodes?: number;
+    }): ContractResult<'GRAPH:WORKSPACE_MAP'> =>
+      invokeContract('GRAPH:WORKSPACE_MAP', options),
+
+    getCollections: (options?: { rootPrefix?: string }): ContractResult<'GRAPH:COLLECTIONS'> =>
+      invokeContract('GRAPH:COLLECTIONS', options),
+
+    getFileConnections: (filePath: string): ContractResult<'GRAPH:FILE_CONNECTIONS'> =>
+      invokeContract('GRAPH:FILE_CONNECTIONS', { filePath }),
   },
 
   /**
@@ -393,14 +408,16 @@ const electronAPI = {
     planOrganize: (
       targetDir: string,
       strategy?: OrganizeStrategy,
-      useLLM?: boolean
+      useLLM?: boolean,
+      recursive?: boolean
     ): Promise<IPCEnvelope<OrganizePlanResult>> =>
-      invokeContract('AI:ORGANIZE_PLAN', { targetDir, strategy, useLLM }),
+      invokeContract('AI:ORGANIZE_PLAN', { targetDir, strategy, useLLM, recursive }),
 
     applyOrganize: (input: {
       planId: string;
       targetDir: string;
       operations: OrganizePlanOperation[];
+      repairMarkdownLinks?: boolean;
     }): Promise<IPCEnvelope<OrganizeApplyResult>> =>
       invokeContract('AI:ORGANIZE_APPLY', input),
   },
