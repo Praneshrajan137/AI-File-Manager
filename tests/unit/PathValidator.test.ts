@@ -385,5 +385,57 @@ describe('PathValidator', () => {
                 syncSpy.mockRestore();
             }
         });
+
+        it('validates candidate workspace roots fail-closed in validateNewRoot', async () => {
+            expect((await validator.validateNewRoot('')).valid).toBe(false);
+            expect((await validator.validateNewRoot('bad\0root')).error).toBe('INVALID_PATH');
+            expect((await validator.validateNewRoot('../escape')).error).toBe('PATH_TRAVERSAL');
+            expect((await validator.validateNewRoot('C:relative')).error).toBe('PATH_TRAVERSAL');
+
+            const sandbox = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pv-root-'));
+            const regularFile = path.join(sandbox, 'not-a-dir.txt');
+            const missingDir = path.join(sandbox, 'does-not-exist');
+            try {
+                await fs.promises.writeFile(regularFile, 'hi', 'utf-8');
+                expect((await validator.validateNewRoot(regularFile)).error).toBe('INVALID_PATH');
+                expect((await validator.validateNewRoot(missingDir)).error).toBe('INVALID_PATH');
+
+                const fsRoot = path.parse(sandbox).root;
+                expect((await validator.validateNewRoot(fsRoot)).error).toBe('UNAUTHORIZED_ACCESS');
+
+                const forbidden = process.platform === 'win32' ? 'C:\\Windows\\System32' : '/sys';
+                if (fs.existsSync(forbidden)) {
+                    expect((await validator.validateNewRoot(forbidden)).error).toBe('UNAUTHORIZED_ACCESS');
+                }
+
+                const ok = await validator.validateNewRoot(sandbox);
+                expect(ok.valid).toBe(true);
+                expect(ok.canonicalPath).toBe(await fs.promises.realpath(sandbox));
+
+                // validateParentCanonicalForLink: rejects outside escape, accepts valid in-root target
+                const scopedValidator = new PathValidator(sandbox);
+                expect((await scopedValidator.validateParentCanonicalForLink('../outside-link')).valid).toBe(false);
+                const validLinkCheck = await scopedValidator.validateParentCanonicalForLink(
+                    path.join(sandbox, 'new-symlink')
+                );
+                expect(validLinkCheck.valid).toBe(true);
+                expect(validLinkCheck.canonicalLinkPath).toBeTruthy();
+
+                const escapeSubdir = path.join(sandbox, 'escaped-parent');
+                const outsideTarget = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pv-outside-'));
+                try {
+                    const symlinkType = process.platform === 'win32' ? 'junction' : 'dir';
+                    await fs.promises.symlink(outsideTarget, escapeSubdir, symlinkType);
+                    const escapedLink = await scopedValidator.validateParentCanonicalForLink(
+                        path.join(escapeSubdir, 'leaf.txt')
+                    );
+                    expect(escapedLink.valid).toBe(false);
+                } finally {
+                    await fs.promises.rm(outsideTarget, { recursive: true, force: true });
+                }
+            } finally {
+                await fs.promises.rm(sandbox, { recursive: true, force: true });
+            }
+        });
     });
 });

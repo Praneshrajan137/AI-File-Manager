@@ -78,7 +78,7 @@ describe('Stage 3 Frontier Local AI Runtime & Spatial Associative Retrieval', ()
       process.env.FORCE_EP_PROBE = '1';
       try {
         // Isolate module cache so jest.doMock intercepts require('@huggingface/transformers')
-        let resolvedInfo: { device: string; dtype: string; fallbackReason?: string } | null = null;
+        let resolvedWin: { device: string; dtype: string; fallbackReason?: string } | null = null;
         await jest.isolateModulesAsync(async () => {
           // eslint-disable-next-line @typescript-eslint/no-var-requires
           const mod = require('../../src/llm/models/transformersLoader') as typeof import('../../src/llm/models/transformersLoader');
@@ -86,15 +86,40 @@ describe('Stage 3 Frontier Local AI Runtime & Spatial Associative Retrieval', ()
             modelName: 'Xenova/bge-small-en-v1.5',
             dtype: 'q8',
             device: 'auto',
+            platform: 'win32',
             onResolved: (info) => {
-              resolvedInfo = info;
+              resolvedWin = info;
             },
           });
           expect(mod.getCachedExecutionProvider()).toBe('cpu');
         });
 
         expect(calls.map((c) => c.device)).toEqual(['dml', 'webgpu', 'cpu']);
-        expect(resolvedInfo).toEqual({
+        expect(resolvedWin).toEqual({
+          device: 'cpu',
+          dtype: 'q8',
+          fallbackReason: 'WebGPU adapter missing',
+        });
+
+        calls.length = 0;
+        let resolvedLinux: { device: string; dtype: string; fallbackReason?: string } | null = null;
+        await jest.isolateModulesAsync(async () => {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const mod = require('../../src/llm/models/transformersLoader') as typeof import('../../src/llm/models/transformersLoader');
+          await mod.loadFeatureExtractionPipeline({
+            modelName: 'Xenova/bge-small-en-v1.5',
+            dtype: 'q8',
+            device: 'auto',
+            platform: 'linux',
+            onResolved: (info) => {
+              resolvedLinux = info;
+            },
+          });
+          expect(mod.getCachedExecutionProvider()).toBe('cpu');
+        });
+
+        expect(calls.map((c) => c.device)).toEqual(['webgpu', 'cpu']);
+        expect(resolvedLinux).toEqual({
           device: 'cpu',
           dtype: 'q8',
           fallbackReason: 'WebGPU adapter missing',

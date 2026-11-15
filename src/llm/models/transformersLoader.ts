@@ -159,6 +159,7 @@ export async function loadFeatureExtractionPipeline(options: {
   modelName: string;
   dtype?: TransformersDtype;
   device?: TransformersDevice;
+  platform?: NodeJS.Platform;
   allowRemoteModels?: boolean;
   onResolved?: (info: ExecutionProviderResolution) => void;
 }): Promise<FeatureExtractorFn> {
@@ -167,7 +168,7 @@ export async function loadFeatureExtractionPipeline(options: {
   });
   const requestedDtype: TransformersDtype = options.dtype ?? 'q8';
   const requestedDevice: TransformersDevice = options.device ?? 'cpu';
-  const candidates = resolveExecutionDeviceCandidates(requestedDevice);
+  const candidates = resolveExecutionDeviceCandidates(requestedDevice, options.platform);
 
   let fallbackReason: string | undefined;
   let lastError: unknown;

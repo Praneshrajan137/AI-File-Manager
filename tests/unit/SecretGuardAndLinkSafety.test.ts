@@ -9,6 +9,7 @@ import { FileSystemService } from '../../src/main/services/FileSystemService';
 import { OperationJournal } from '../../src/main/services/OperationJournal';
 import { WorkspaceKnowledgeGraph } from '../../src/main/services/WorkspaceKnowledgeGraph';
 import {
+  buildBatchMarkdownLinkRepairSteps,
   buildMarkdownLinkRepairSteps,
   rewriteMarkdownLinksInContent,
 } from '../../src/main/services/MarkdownLinkRepair';
@@ -246,6 +247,81 @@ describe('Stage 1: SecretGuard, Multi-Page PDF, Copy & Link-Safe Journal', () =>
       expect(await fs.readFile(targetNote, 'utf-8')).toContain('Architecture spec');
       expect(await fs.readFile(referencingNote, 'utf-8')).toContain('./notes/design-doc.md#arch');
       expect(await fs.readFile(referencingNote, 'utf-8')).toContain('[[design-doc|the spec]]');
+    });
+
+    it('preserves external/anchor/unrelated links, resolves parent ../ paths, and plans multi-file batch repairs', async () => {
+      const subDocsDir = path.join(workspaceDir, 'sub', 'docs');
+      const movedRootDir = path.join(workspaceDir, 'shared');
+      const codeDir = path.join(workspaceDir, 'src');
+      await fs.mkdir(subDocsDir, { recursive: true });
+      await fs.mkdir(movedRootDir, { recursive: true });
+      await fs.mkdir(codeDir, { recursive: true });
+
+      const movedDocA = path.join(subDocsDir, 'alpha.md');
+      const movedDocB = path.join(subDocsDir, 'beta.md');
+      const destDocA = path.join(movedRootDir, 'alpha-v2.md');
+      const destDocB = path.join(movedRootDir, 'beta.md');
+      const guideNote = path.join(subDocsDir, 'guide.md');
+      const codeFile = path.join(codeDir, 'helper.ts');
+
+      await fs.writeFile(movedDocA, '# Alpha', 'utf-8');
+      await fs.writeFile(movedDocB, '# Beta', 'utf-8');
+      await fs.writeFile(
+        guideNote,
+        [
+          '# Guide',
+          '[Ext](https://example.com)',
+          '[Anchor](#local-section)',
+          '[Other](./unrelated.md)',
+          '[Alpha](./alpha.md#intro)',
+          '[Beta](./beta.md)',
+          '[[alpha|AlphaAlias]]',
+        ].join('\n'),
+        'utf-8'
+      );
+      await fs.writeFile(codeFile, 'export const x = "./alpha.md";\n', 'utf-8');
+
+      // Single-target rewrite across directory boundaries produces `../` relative link while leaving ext/anchor/other intact
+      const singleRewrite = rewriteMarkdownLinksInContent(
+        guideNote,
+        await fs.readFile(guideNote, 'utf-8'),
+        movedDocA,
+        destDocA
+      );
+      expect(singleRewrite).toContain('[Ext](https://example.com)');
+      expect(singleRewrite).toContain('[Anchor](#local-section)');
+      expect(singleRewrite).toContain('[Other](./unrelated.md)');
+      expect(singleRewrite).toContain('[Alpha](../../shared/alpha-v2.md#intro)');
+      expect(singleRewrite).toContain('[[alpha-v2|AlphaAlias]]');
+
+      // buildMarkdownLinkRepairSteps skips self-target and non-markdown source files
+      const singleSteps = await buildMarkdownLinkRepairSteps(
+        [movedDocA, codeFile, guideNote, path.join(subDocsDir, 'missing.md')],
+        movedDocA,
+        destDocA
+      );
+      expect(singleSteps).toHaveLength(1);
+      expect(singleSteps[0].filePath).toBe(path.resolve(guideNote));
+
+      // buildBatchMarkdownLinkRepairSteps handles duplicate target refs, non-markdown skips, and multi-target moves
+      const batchSteps = await buildBatchMarkdownLinkRepairSteps(
+        [
+          { source: movedDocA, destination: destDocA },
+          { source: movedDocB, destination: destDocB },
+        ],
+        [
+          { sourcePath: codeFile, targetPath: movedDocA, isMarkdownLink: false },
+          { sourcePath: codeFile, targetPath: movedDocA, isMarkdownLink: true },
+          { sourcePath: guideNote, targetPath: movedDocA, isMarkdownLink: true },
+          { sourcePath: guideNote, targetPath: movedDocA, isMarkdownLink: true },
+          { sourcePath: guideNote, targetPath: movedDocB, isMarkdownLink: true },
+          { sourcePath: path.join(subDocsDir, 'missing.md'), targetPath: movedDocA, isMarkdownLink: true },
+        ]
+      );
+      expect(batchSteps).toHaveLength(1);
+      expect(batchSteps[0].nextContent).toContain('../../shared/alpha-v2.md#intro');
+      expect(batchSteps[0].nextContent).toContain('../../shared/beta.md');
+      expect(batchSteps[0].nextContent).toContain('[Ext](https://example.com)');
     });
   });
 });
