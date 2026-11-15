@@ -150,8 +150,16 @@ export class RuntimeDiagnostics {
     retrievalMs: number;
     generationMs: number;
     error?: string;
+    provider?: string;
+    model?: string;
   }): void {
     this.llm.queriesExecuted += 1;
+    if (params.provider) {
+      this.llm.activeProvider = params.provider;
+    }
+    if (params.model) {
+      this.llm.activeModel = params.model;
+    }
     if (params.success) {
       this.llm.successfulQueries += 1;
       this.llm.lastError = null;

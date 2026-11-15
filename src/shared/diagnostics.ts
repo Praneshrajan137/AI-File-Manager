@@ -67,6 +67,8 @@ export interface LlmPipelineDiagnostics {
   avgRetrievalMs: number;
   avgGenerationMs: number;
   lastError: string | null;
+  activeProvider?: string;
+  activeModel?: string;
 }
 
 export interface IpcChannelMetric {

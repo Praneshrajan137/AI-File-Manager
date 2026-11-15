@@ -279,6 +279,19 @@ describe('Renderer UI & M5 Control Upgrades', () => {
         React.createElement(DiagnosticsModal, {
           isOpen: true,
           onClose: () => undefined,
+          initialSnapshot: {
+            capturedAt: Date.now(),
+            uptimeMs: 1200,
+            allowedRoots: ['C:\\vault'],
+            watcher: { status: 'watching', watchedPath: 'C:\\vault', eventsReceived: 2, lastEventAt: null, lastError: null },
+            eventQueue: { pending: 0, processed: 4, coalesced: 1, dropped: 0, lastFlushAt: null, lastFlushDurationMs: 2 },
+            pathTrie: { entryCount: 10, indexedRoots: ['C:\\vault'], lastIndexDurationMs: 3 },
+            cache: { entries: 2, capacity: 100, currentBytes: 120, maxBytes: 1024, hits: 5, misses: 1, hitRate: 0.83, invalidations: 0 },
+            preview: { capacityPerFile: 50, previewsServed: 2, cacheHits: 1 },
+            vectorStore: { initialized: true, totalChunks: 20, indexedFiles: 4, lexicalDocs: 4, pendingBuffer: 0, activeExecutionProvider: 'dml', supportedDevices: ['cpu', 'dml'] },
+            llm: { queriesExecuted: 1, successfulQueries: 1, failedQueries: 0, avgRetrievalMs: 12, avgGenerationMs: 150, lastError: null, activeProvider: 'openai_compatible', activeModel: 'qwen2.5-7b' },
+            ipc: { registeredChannels: 30, totalCalls: 5, totalErrors: 0, channels: [] },
+          },
         })
       );
 
@@ -291,6 +304,13 @@ describe('Renderer UI & M5 Control Upgrades', () => {
       expect(toolbarHtml).toContain('data-testid="diagnostics-button"');
       expect(modalHtml).toContain('Kernel Runtime Diagnostics');
       expect(modalHtml).toContain('data-testid="diagnostics-modal"');
+      expect(modalHtml).toContain('data-testid="diagnostics-onnx-ep"');
+      expect(modalHtml).toContain('dml (cpu, dml)');
+      expect(modalHtml).toContain('data-testid="diagnostics-llm-provider"');
+      expect(modalHtml).toContain('openai_compatible');
+      expect(modalHtml).toContain('data-testid="diagnostics-mcp-section"');
+      expect(modalHtml).toContain('dist/main/mcpServer.js');
+      expect(modalHtml).toContain('data-testid="copy-mcp-config-button"');
     });
 
     it('renders M7 Stage 1 DeleteConfirmDialog, VaultSection, FavoritesList, Toast Undo action, and Toolbar Undo/Redo', () => {

@@ -531,6 +531,8 @@ async function handleQuery(
         success: true,
         retrievalMs: 0,
         generationMs,
+        provider: llmConfig?.provider ?? 'ollama',
+        model: llmConfig?.model,
       });
 
       return {
@@ -620,6 +622,8 @@ async function handleQuery(
         success: true,
         retrievalMs,
         generationMs: 0,
+        provider: 'offline_graph',
+        model: llmConfig?.model,
       });
       return {
         success: true,
@@ -655,6 +659,8 @@ async function handleQuery(
       success: true,
       retrievalMs,
       generationMs,
+      provider: llmConfig?.provider ?? 'ollama',
+      model: llmConfig?.model,
     });
 
     return { success: true, sources: structuredSources };
@@ -672,6 +678,8 @@ async function handleQuery(
       retrievalMs,
       generationMs,
       error: msg,
+      provider: readLlmConfig()?.provider ?? 'ollama',
+      model: readLlmConfig()?.model,
     });
     return { success: false, error: msg };
   } finally {
