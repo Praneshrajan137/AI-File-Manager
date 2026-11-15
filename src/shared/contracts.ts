@@ -204,7 +204,7 @@ export interface LLMModelsSnapshot {
   rerankerModel: string;
   temperature: number;
   maxTokens: number;
-  provider?: 'ollama' | 'openai-compatible';
+  provider?: 'ollama' | 'openai_compatible';
   openAiBaseUrl?: string;
   embeddingDevice?: 'auto' | 'cpu' | 'dml' | 'webgpu';
   activeExecutionProvider?: string;
@@ -1108,7 +1108,8 @@ export type AgentToolName =
   | 'search_files'
   | 'search_content'
   | 'read_file_range'
-  | 'graph_lookup';
+  | 'graph_lookup'
+  | 'propose_organize_plan';
 
 export interface AgentTraceStep {
   step: number;
@@ -1126,6 +1127,7 @@ export interface AgentRunResult {
   sources: RetrievalSource[];
   stepLimitReached: boolean;
   aborted: boolean;
+  proposedPlan?: OrganizePlanResult;
 }
 
 export type OrganizeStrategy =

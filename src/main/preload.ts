@@ -200,13 +200,22 @@ const electronAPI = {
     query: async (
       query: string,
       callback: (chunk: string) => void,
-      options?: { mode?: CopilotQueryMode; contextScope?: CopilotContextScope }
+      options?: {
+        mode?: CopilotQueryMode;
+        contextScope?: CopilotContextScope;
+        history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+        onStep?: (step: AgentTraceStep) => void;
+        onChannelCreated?: (channel: string) => void;
+      }
     ): Promise<IPCEnvelope<IPCResponse<'LLM:QUERY'>>> => {
       llmStreamCounter += 1;
       const channel = `LLM:QUERY:${Date.now()}:${llmStreamCounter}`;
+      options?.onChannelCreated?.(channel);
       let streamEnded = false;
       let streamedSources: RetrievalSource[] | undefined;
       let streamedAgentSteps: AgentTraceStep[] | undefined;
+      let streamedOfflineSynthesis: boolean | undefined;
+      let streamedProposedPlan: OrganizePlanResult | undefined;
       let safetyTimer: ReturnType<typeof setTimeout> | null = null;
       let resolveEnd: (() => void) | null = null;
       const endPromise = new Promise<void>((resolve) => {
@@ -219,12 +228,20 @@ const electronAPI = {
         }
       };
 
+      const handleStep = (_event: IpcRendererEvent, step: AgentTraceStep): void => {
+        if (step && typeof step === 'object') {
+          options?.onStep?.(step);
+        }
+      };
+
       const handleEnd = (
         _event: IpcRendererEvent,
         payload?: {
           ok?: boolean;
           sources?: RetrievalSource[];
           agentSteps?: AgentTraceStep[];
+          offlineSynthesis?: boolean;
+          proposedPlan?: OrganizePlanResult;
         }
       ): void => {
         if (Array.isArray(payload?.sources)) {
@@ -232,6 +249,12 @@ const electronAPI = {
         }
         if (Array.isArray(payload?.agentSteps)) {
           streamedAgentSteps = payload.agentSteps;
+        }
+        if (typeof payload?.offlineSynthesis === 'boolean') {
+          streamedOfflineSynthesis = payload.offlineSynthesis;
+        }
+        if (payload?.proposedPlan) {
+          streamedProposedPlan = payload.proposedPlan;
         }
         streamEnded = true;
         if (safetyTimer) {
@@ -242,6 +265,7 @@ const electronAPI = {
       };
 
       ipcRenderer.on(channel, handleChunk);
+      ipcRenderer.on(`${channel}:step`, handleStep);
       ipcRenderer.once(`${channel}:end`, handleEnd);
 
       try {
@@ -250,6 +274,7 @@ const electronAPI = {
           channel,
           mode: options?.mode,
           contextScope: options?.contextScope,
+          history: options?.history,
         });
         if (result.ok && !streamEnded) {
           await Promise.race([
@@ -265,12 +290,16 @@ const electronAPI = {
         if (
           result.ok &&
           ((streamedSources && !result.data.sources) ||
-            (streamedAgentSteps && !result.data.agentSteps))
+            (streamedAgentSteps && !result.data.agentSteps) ||
+            (streamedOfflineSynthesis !== undefined && result.data.offlineSynthesis === undefined) ||
+            (streamedProposedPlan && !result.data.proposedPlan))
         ) {
           return wrapIPCSuccess({
             ...result.data,
             sources: result.data.sources ?? streamedSources,
             agentSteps: result.data.agentSteps ?? streamedAgentSteps,
+            offlineSynthesis: result.data.offlineSynthesis ?? streamedOfflineSynthesis,
+            proposedPlan: result.data.proposedPlan ?? streamedProposedPlan,
           });
         }
         return result;
@@ -280,9 +309,13 @@ const electronAPI = {
           safetyTimer = null;
         }
         ipcRenderer.removeListener(channel, handleChunk);
+        ipcRenderer.removeListener(`${channel}:step`, handleStep);
         ipcRenderer.removeListener(`${channel}:end`, handleEnd);
       }
     },
+
+    abortQuery: (channel: string): ContractResult<'LLM:ABORT_QUERY'> =>
+      invokeContract('LLM:ABORT_QUERY', { channel }),
 
     getIndexingStatus: (): ContractResult<'LLM:INDEX_STATUS'> =>
       invokeContract('LLM:INDEX_STATUS'),
@@ -340,11 +373,15 @@ const electronAPI = {
       invokeContract('LLM:LIST_MODELS'),
 
     setModelConfig: (config: {
+      provider?: 'ollama' | 'openai_compatible';
+      openAiBaseUrl?: string;
       model?: string;
       temperature?: number;
       maxTokens?: number;
       embeddingModel?: string;
       rerankerModel?: string;
+      embeddingDevice?: 'auto' | 'cpu' | 'dml' | 'webgpu';
+      enableVisionCaptioning?: boolean;
     }): ContractResult<'LLM:SET_MODEL_CONFIG'> =>
       invokeContract('LLM:SET_MODEL_CONFIG', config),
   },

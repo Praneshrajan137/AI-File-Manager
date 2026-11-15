@@ -205,6 +205,21 @@ export const IPC_SCHEMAS = {
         useSelection: z.boolean().optional(),
       })
       .optional(),
+    history: z
+      .array(
+        z.object({
+          role: z.enum(['user', 'assistant']),
+          content: z.string().min(1).max(8000),
+        })
+      )
+      .max(12)
+      .optional(),
+  }),
+  'LLM:ABORT_QUERY': z.object({
+    channel: z
+      .string()
+      .min(1)
+      .regex(/^LLM:QUERY:[A-Za-z0-9:_-]+$/, 'Invalid stream channel name'),
   }),
   'AI:ORGANIZE_PLAN': z.object({
     targetDir: z.string().min(1),
@@ -243,11 +258,15 @@ export const IPC_SCHEMAS = {
   'LLM:CLEAR_INDEX': optionalEmptyObjectSchema,
   'LLM:LIST_MODELS': optionalEmptyObjectSchema,
   'LLM:SET_MODEL_CONFIG': z.object({
+    provider: z.enum(['ollama', 'openai_compatible']).optional(),
+    openAiBaseUrl: z.string().min(1).max(200).optional(),
     model: z.string().min(1).max(120).optional(),
     temperature: z.number().min(0).max(1).optional(),
     maxTokens: z.number().int().min(64).max(32768).optional(),
     embeddingModel: z.string().min(1).max(120).optional(),
     rerankerModel: z.string().min(1).max(120).optional(),
+    embeddingDevice: z.enum(['auto', 'cpu', 'dml', 'webgpu']).optional(),
+    enableVisionCaptioning: z.boolean().optional(),
   }),
   'CLIPBOARD:WRITE_TEXT': z.union([
     z.string().max(1024 * 1024).transform((text) => ({ text })),
@@ -301,7 +320,10 @@ export interface IPCResponseMap {
     error?: string;
     sources?: RetrievalSource[];
     agentSteps?: AgentTraceStep[];
+    offlineSynthesis?: boolean;
+    proposedPlan?: OrganizePlanResult;
   };
+  'LLM:ABORT_QUERY': { aborted: boolean };
   'AI:ORGANIZE_PLAN': OrganizePlanResult;
   'AI:ORGANIZE_APPLY': OrganizeApplyResult;
   'LLM:INDEX_STATUS': IndexingStatus;
@@ -607,6 +629,12 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     channel: 'LLM:LIST_MODELS',
     group: 'llm',
     schema: IPC_SCHEMAS['LLM:LIST_MODELS'],
+    pathFields: [],
+  },
+  'LLM:ABORT_QUERY': {
+    channel: 'LLM:ABORT_QUERY',
+    group: 'llm',
+    schema: IPC_SCHEMAS['LLM:ABORT_QUERY'],
     pathFields: [],
   },
   'LLM:SET_MODEL_CONFIG': {

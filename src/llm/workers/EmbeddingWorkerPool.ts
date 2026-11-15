@@ -28,6 +28,7 @@ import {
 } from '../../shared/contracts';
 import { ConfigManager } from '../../shared/config';
 import { LLMLogger } from '../../shared/logging';
+import { RuntimeDiagnostics } from '../../main/services/RuntimeDiagnostics';
 import {
     DEFAULT_RERANKER_MODEL,
     TransformersDevice,
@@ -73,6 +74,10 @@ interface WorkerResponse {
     message?: string;
     current?: number;
     total?: number;
+    device?: string;
+    dtype?: string;
+    supportedDevices?: string[];
+    fallbackReason?: string;
 }
 
 interface QueuedEmbedSlice {
@@ -116,6 +121,8 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
     private readonly device: TransformersDevice;
     private readonly rerankerModel: string;
     private readonly microBatchSize: number;
+    private activeExecutionProvider: string = 'cpu';
+    private supportedDevices: string[] = ['cpu'];
 
     /** Track memory pressure for adaptive behavior */
     private lastMemoryCheck = 0;
@@ -123,17 +130,29 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
 
     constructor(options: EmbeddingWorkerPoolOptions = {}) {
         let configuredModel = DEFAULT_EMBEDDING_MODEL;
+        let configuredDevice: TransformersDevice = 'auto';
         try {
-            configuredModel =
-                ConfigManager.getInstance().getAll()?.llm?.embeddingModel || DEFAULT_EMBEDDING_MODEL;
+            const llmCfg = ConfigManager.getInstance().getAll()?.llm;
+            configuredModel = llmCfg?.embeddingModel || DEFAULT_EMBEDDING_MODEL;
+            if (llmCfg?.embeddingDevice) {
+                configuredDevice = llmCfg.embeddingDevice;
+            }
         } catch {
             // Optional when instantiated standalone in unit tests
         }
         this.modelName = options.modelName || configuredModel;
         this.dtype = options.dtype ?? 'q8';
-        this.device = options.device ?? 'cpu';
+        this.device = options.device ?? configuredDevice;
         this.rerankerModel = options.rerankerModel || DEFAULT_RERANKER_MODEL;
         this.microBatchSize = Math.max(1, options.microBatchSize ?? 8);
+    }
+
+    getExecutionProvider(): string {
+        return this.activeExecutionProvider;
+    }
+
+    getSupportedDevices(): string[] {
+        return [...this.supportedDevices];
     }
 
     /**
@@ -298,6 +317,20 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
 
             case 'initialized':
                 this.workerReady = true;
+                this.activeExecutionProvider = response.device || 'cpu';
+                if (Array.isArray(response.supportedDevices) && response.supportedDevices.length > 0) {
+                    this.supportedDevices = response.supportedDevices;
+                }
+                RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                    activeExecutionProvider: this.activeExecutionProvider,
+                    supportedDevices: this.supportedDevices,
+                });
+                if (response.fallbackReason) {
+                    LLMLogger.info('[EmbeddingWorkerPool] Hardware EP fell back safely to CPU', {
+                        activeExecutionProvider: this.activeExecutionProvider,
+                        reason: response.fallbackReason,
+                    });
+                }
                 if (initResolve) {
                     initResolve();
                 }

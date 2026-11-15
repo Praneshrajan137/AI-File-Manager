@@ -10,9 +10,11 @@
  */
 import * as path from 'path';
 import {
+    AssociativeBoostResult,
     CopilotContextScope,
     RetrievalResult,
     RetrievalSource,
+    SearchScopeFilter,
     VectorRecord,
     Embedding,
     IEmbeddingModel,
@@ -60,31 +62,20 @@ export class RetrievalService {
             // 1. Embed query on HIGH priority lane
             const queryEmbedding = await this.embeddingModel.embed(query);
 
-            // 2. Dense vector candidates + SQLite FTS5 BM25 lexical candidates
+            const scopeFilter = this.buildScopeFilter(scope);
+
+            // 2. Pre-filtered Dense vector candidates + SQLite FTS5 BM25 lexical candidates
             const rawDense = await this.vectorStore.search(
                 queryEmbedding,
-                this.TOP_K
+                this.TOP_K,
+                scopeFilter
             );
             const rawLexical: LexicalSearchMatch[] =
                 typeof (this.vectorStore as Partial<VectorStore>).searchLexical === 'function'
-                    ? this.vectorStore.searchLexical(query, this.TOP_K)
+                    ? this.vectorStore.searchLexical(query, this.TOP_K, scopeFilter)
                     : [];
 
-            const normalizeCmp = (p: string): string => {
-                const resolved = path.resolve(p);
-                return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
-            };
-            const folderPrefix =
-                scope?.useFolder && scope.currentPath
-                    ? `${normalizeCmp(scope.currentPath).replace(/[\\/]+$/, '')}${path.sep}`
-                    : null;
-            const folderExact =
-                scope?.useFolder && scope.currentPath ? normalizeCmp(scope.currentPath) : null;
-            const matchesScope = (filePath: string): boolean => {
-                if (!folderPrefix || !folderExact) return true;
-                const norm = normalizeCmp(filePath);
-                return norm === folderExact || norm.startsWith(folderPrefix);
-            };
+            const matchesScope = this.createScopeMatcher(scope);
 
             const denseCandidates = rawDense.filter((c) => matchesScope(c.file_path));
             const lexicalMatches = rawLexical.filter((m) => matchesScope(m.record.file_path));
@@ -99,13 +90,15 @@ export class RetrievalService {
                 };
             }
 
-            // 3. Re-rank using RRF fusion + semantic similarity + Cross-Encoder reranker
+            // 3. RRF Fusion + 2-hop Knowledge-Graph Personalized PageRank Expansion + Cross-Encoder + MMR Diversity
             const baseRanked = this.rerankHybridScored(
                 queryEmbedding,
                 denseCandidates,
                 lexicalMatches
             );
-            const ranked = await this.applyCrossEncoderRerank(query, baseRanked);
+            const graphExpanded = this.expandWithAssociativeGraph(baseRanked, matchesScope);
+            const crossRanked = await this.applyCrossEncoderRerank(query, graphExpanded);
+            const ranked = this.applyMmrDiversityRerank(crossRanked);
             const rerankedRecords = ranked.map((r) => r.record);
 
             // 4. Format context with untrusted_workspace_data isolation fences & #Lx-Ly citations
@@ -154,6 +147,175 @@ export class RetrievalService {
         } finally {
             timer.stop();
         }
+    }
+
+    private buildScopeFilter(scope?: CopilotContextScope): SearchScopeFilter | undefined {
+        if (!scope) return undefined;
+        if (scope.useSelection && Array.isArray(scope.selectedPaths) && scope.selectedPaths.length > 0) {
+            return { filePaths: scope.selectedPaths };
+        }
+        if (scope.useFolder && scope.currentPath) {
+            return { folderPath: scope.currentPath };
+        }
+        return undefined;
+    }
+
+    private createScopeMatcher(scope?: CopilotContextScope): (filePath: string) => boolean {
+        const normalizeCmp = (p: string): string => {
+            const resolved = path.resolve(p);
+            return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+        };
+
+        if (scope?.useSelection && Array.isArray(scope.selectedPaths) && scope.selectedPaths.length > 0) {
+            const selectedSet = new Set(scope.selectedPaths.map(normalizeCmp));
+            return (filePath: string): boolean => selectedSet.has(normalizeCmp(filePath));
+        }
+
+        const folderPrefix =
+            scope?.useFolder && scope.currentPath
+                ? `${normalizeCmp(scope.currentPath).replace(/[\\/]+$/, '')}${path.sep}`
+                : null;
+        const folderExact =
+            scope?.useFolder && scope.currentPath ? normalizeCmp(scope.currentPath) : null;
+
+        return (filePath: string): boolean => {
+            if (!folderPrefix || !folderExact) return true;
+            const norm = normalizeCmp(filePath);
+            return norm === folderExact || norm.startsWith(folderPrefix);
+        };
+    }
+
+    /**
+     * Expand top retrieval seeds through 2-hop damped Personalized PageRank in WorkspaceKnowledgeGraph
+     * so structurally connected files (e.g. specs -> key vault configs) enter retrieval context cleanly.
+     */
+    private expandWithAssociativeGraph(
+        baseRanked: RankedChunk[],
+        matchesScope: (filePath: string) => boolean
+    ): RankedChunk[] {
+        const storePartial = this.vectorStore as Partial<VectorStore>;
+        const kg = typeof storePartial.getKnowledgeGraph === 'function' ? storePartial.getKnowledgeGraph() : null;
+        if (!kg || baseRanked.length === 0) {
+            return baseRanked;
+        }
+
+        const seedPaths: string[] = [];
+        const seenSeeds = new Set<string>();
+        for (const item of baseRanked) {
+            if (!seenSeeds.has(item.record.file_path)) {
+                seenSeeds.add(item.record.file_path);
+                seedPaths.push(item.record.file_path);
+                if (seedPaths.length >= 6) break;
+            }
+        }
+
+        const boosts: AssociativeBoostResult[] = kg.computeAssociativeBoosts(seedPaths, {
+            maxHops: 2,
+            damping: 0.65,
+            maxBoosts: 8,
+            excludeSeeds: true,
+        });
+        if (boosts.length === 0) {
+            return baseRanked;
+        }
+
+        const canonKey = (p: string): string =>
+            process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
+
+        const boostMap = new Map<string, AssociativeBoostResult>();
+        for (const b of boosts) {
+            boostMap.set(canonKey(b.filePath), b);
+        }
+
+        const presentFiles = new Set(baseRanked.map((item) => canonKey(item.record.file_path)));
+        const merged = baseRanked.map((item) => {
+            const b = boostMap.get(canonKey(item.record.file_path));
+            if (!b) return item;
+            return {
+                record: item.record,
+                score: item.score + Math.min(0.6, b.score * 2.2),
+            };
+        });
+
+        // Inject missed 1-hop / 2-hop graph-associated files if within active scope
+        const maxExisting = Math.max(...merged.map((m) => m.score), 0.1);
+        const canFetchChunks = typeof storePartial.getChunksForFile === 'function';
+        if (canFetchChunks) {
+            for (const b of boosts) {
+                const resolved = canonKey(b.filePath);
+                if (presentFiles.has(resolved) || !matchesScope(b.filePath)) {
+                    continue;
+                }
+                const chunks = storePartial.getChunksForFile!(b.filePath, 1);
+                if (chunks.length > 0) {
+                    const viaLabel = b.viaPath ? ` (via ${path.basename(b.viaPath)})` : '';
+                    merged.push({
+                        record: {
+                            ...chunks[0],
+                            heading: chunks[0].heading
+                                ? `${chunks[0].heading} [Graph ${b.hopDistance}-hop${viaLabel}]`
+                                : `Graph ${b.hopDistance}-hop${viaLabel}`,
+                        },
+                        score: Math.min(maxExisting * 0.92, Math.max(0.2, b.score * 2.5)),
+                    });
+                    presentFiles.add(resolved);
+                }
+            }
+        }
+
+        merged.sort((a, b) => b.score - a.score);
+        return merged;
+    }
+
+    /**
+     * Maximal Marginal Relevance (MMR) diversity reranking: prevents a single dense
+     * document from monopolizing the top context window when distinct sources exist.
+     */
+    private applyMmrDiversityRerank(
+        ranked: RankedChunk[],
+        maxPerFileInTop: number = 2,
+        lambda: number = 0.65
+    ): RankedChunk[] {
+        if (ranked.length <= 2) {
+            return ranked;
+        }
+
+        const maxScore = Math.max(...ranked.map((r) => r.score), 1e-6);
+        const remaining = [...ranked];
+        const selected: RankedChunk[] = [];
+        const fileCounts = new Map<string, number>();
+
+        const targetHead = Math.min(ranked.length, 16);
+        while (selected.length < targetHead && remaining.length > 0) {
+            const hasUncappedCandidate = remaining.some(
+                (item) => (fileCounts.get(item.record.file_path) ?? 0) < maxPerFileInTop
+            );
+            let bestIdx = 0;
+            let bestMmr = -Infinity;
+
+            for (let i = 0; i < remaining.length; i++) {
+                const candidate = remaining[i];
+                const fileKey = candidate.record.file_path;
+                const sameFileCount = fileCounts.get(fileKey) ?? 0;
+                if (hasUncappedCandidate && sameFileCount >= maxPerFileInTop) {
+                    continue;
+                }
+                const redundancyPenalty =
+                    sameFileCount >= maxPerFileInTop ? 1.5 : sameFileCount * 0.55;
+                const normRel = Math.max(0, candidate.score / maxScore);
+                const mmr = lambda * normRel - (1 - lambda) * redundancyPenalty;
+                if (mmr > bestMmr) {
+                    bestMmr = mmr;
+                    bestIdx = i;
+                }
+            }
+
+            const picked = remaining.splice(bestIdx, 1)[0];
+            selected.push(picked);
+            fileCounts.set(picked.record.file_path, (fileCounts.get(picked.record.file_path) ?? 0) + 1);
+        }
+
+        return [...selected, ...remaining];
     }
 
     private async applyCrossEncoderRerank(

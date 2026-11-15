@@ -68,7 +68,10 @@ export const appConfigSchema = z.object({
   }),
 
   llm: z.object({
-    provider: z.enum(['ollama', 'openai-compatible']).default('ollama'),
+    provider: z.preprocess(
+      (v) => (v === 'openai-compatible' ? 'openai_compatible' : v),
+      z.enum(['ollama', 'openai_compatible']).default('ollama')
+    ),
     ollamaUrl: z.string().url().default('http://localhost:11434'),
     openAiBaseUrl: z.string().url().default('http://localhost:1234'),
     model: z.string().default('llama3.2'),

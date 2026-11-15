@@ -103,13 +103,22 @@ interface ElectronAPI {
     query: (
       query: string,
       callback: (chunk: string) => void,
-      options?: { mode?: CopilotQueryMode; contextScope?: CopilotContextScope }
+      options?: {
+        mode?: CopilotQueryMode;
+        contextScope?: CopilotContextScope;
+        history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+        onStep?: (step: AgentTraceStep) => void;
+        onChannelCreated?: (channel: string) => void;
+      }
     ) => Promise<{
       success: boolean;
       error?: string;
       sources?: RetrievalSource[];
       agentSteps?: AgentTraceStep[];
+      offlineSynthesis?: boolean;
+      proposedPlan?: OrganizePlanResult;
     }>;
+    abortQuery?: (channel: string) => Promise<{ aborted: boolean }>;
     getIndexingStatus: () => Promise<IndexingStatus>;
     onIndexingProgress: (callback: (status: IndexingStatus) => void) => () => void;
     startIndexing: (
@@ -123,11 +132,15 @@ interface ElectronAPI {
     clearIndex: () => Promise<{ success: boolean; error?: string }>;
     listModels: () => Promise<LLMModelsSnapshot>;
     setModelConfig: (config: {
+      provider?: 'ollama' | 'openai_compatible';
+      openAiBaseUrl?: string;
       model?: string;
       temperature?: number;
       maxTokens?: number;
       embeddingModel?: string;
       rerankerModel?: string;
+      embeddingDevice?: 'auto' | 'cpu' | 'dml' | 'webgpu';
+      enableVisionCaptioning?: boolean;
     }) => Promise<{ success: boolean; config: LLMModelsSnapshot }>;
   };
 

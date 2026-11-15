@@ -11,8 +11,10 @@ import { suppressSqliteExperimentalWarning } from '../../shared/utils/processWar
 import {
   CrossEncoderRerankerFn,
   DEFAULT_RERANKER_MODEL,
+  detectSupportedTransformersDevices,
   loadCrossEncoderReranker,
   loadFeatureExtractionPipeline,
+  ResolvedExecutionDevice,
   TransformersDevice,
   TransformersDtype,
 } from '../models/transformersLoader';
@@ -28,11 +30,12 @@ let reranker: CrossEncoderRerankerFn | null = null;
 let activeModelName = DEFAULT_EMBEDDING_MODEL;
 let activeRerankerModel = DEFAULT_RERANKER_MODEL;
 let activeDtype: TransformersDtype = 'q8';
-let activeDevice: TransformersDevice = 'cpu';
+let activeDevice: ResolvedExecutionDevice = 'cpu';
+let requestedDevicePreference: TransformersDevice = 'auto';
 const DIMENSIONS = 384;
 
 /**
- * Initialize the embedding model (`q8` quantized ONNX on CPU by default).
+ * Initialize the embedding model (probing hardware EPs down to quantized `q8` on CPU).
  */
 async function initializeModel(options?: {
   modelName?: string;
@@ -42,7 +45,7 @@ async function initializeModel(options?: {
 }): Promise<void> {
   const requestedModel = options?.modelName || activeModelName;
   const requestedDtype = options?.dtype ?? activeDtype;
-  const requestedDevice = options?.device ?? activeDevice;
+  const requestedDevice = options?.device ?? requestedDevicePreference;
   if (options?.rerankerModel) {
     activeRerankerModel = options.rerankerModel;
   }
@@ -51,23 +54,49 @@ async function initializeModel(options?: {
     extractor &&
     requestedModel === activeModelName &&
     requestedDtype === activeDtype &&
-    requestedDevice === activeDevice
+    requestedDevice === requestedDevicePreference
   ) {
-    parentPort?.postMessage({ type: 'initialized' });
+    const supportedDevices = await detectSupportedTransformersDevices();
+    parentPort?.postMessage({
+      type: 'initialized',
+      device: activeDevice,
+      dtype: activeDtype,
+      supportedDevices,
+    });
     return;
   }
 
   try {
+    let resolvedInfo: {
+      device: ResolvedExecutionDevice;
+      dtype: TransformersDtype;
+      fallbackReason?: string;
+    } = {
+      device: 'cpu',
+      dtype: requestedDtype,
+    };
+
     extractor = await loadFeatureExtractionPipeline({
       modelName: requestedModel,
       dtype: requestedDtype,
       device: requestedDevice,
+      onResolved: (info) => {
+        resolvedInfo = info;
+      },
     });
     activeModelName = requestedModel;
-    activeDtype = requestedDtype;
-    activeDevice = requestedDevice;
+    activeDtype = resolvedInfo.dtype;
+    activeDevice = resolvedInfo.device;
+    requestedDevicePreference = requestedDevice;
+    const supportedDevices = await detectSupportedTransformersDevices();
 
-    parentPort?.postMessage({ type: 'initialized' });
+    parentPort?.postMessage({
+      type: 'initialized',
+      device: activeDevice,
+      dtype: activeDtype,
+      supportedDevices,
+      fallbackReason: resolvedInfo.fallbackReason,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     parentPort?.postMessage({ type: 'error', id: -1, message: `Model init failed: ${message}` });
