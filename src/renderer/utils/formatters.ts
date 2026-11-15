@@ -46,3 +46,10 @@ export function formatDuration(ms: number): string {
   if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
   return `${seconds}s`;
 }
+
+/**
+ * Extract human-readable error message from unknown caught error.
+ */
+export function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}

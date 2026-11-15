@@ -115,7 +115,7 @@ export class LLMMetrics {
         const startTime = performance.now();
 
         return {
-            stop: () => {
+            stop: (): number => {
                 const duration = performance.now() - startTime;
                 this.recordTiming(operation, duration);
                 return duration;

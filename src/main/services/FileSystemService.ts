@@ -2,8 +2,10 @@ import fs from 'fs/promises';
 import path from 'path';
 import {
     IFileSystemService,
+    FileLineRangeResult,
     FileNode,
     FilePreviewResult,
+    FileRangeLine,
     FileStats,
     ValidationResult,
     CACHE_CAPACITY,
@@ -18,6 +20,8 @@ import { ErrorFactory, FileSystemError } from '@shared/errors';
 import { FileSystemLogger, SecurityLogger } from '@shared/logging';
 
 const MAX_PREVIEW_BYTES = 256 * 1024;
+const MAX_RANGE_READ_BYTES = 2 * 1024 * 1024;
+const MAX_RANGE_RETURN_LINES = 400;
 const READ_DIR_CONCURRENCY = 16;
 
 function estimateFileNodesBytes(nodes: FileNode[]): number {
@@ -144,8 +148,8 @@ export class FileSystemService implements IFileSystemService {
         filePath: string,
         encoding: BufferEncoding = 'utf-8'
     ): Promise<string> {
-        // SECURITY: Validate path first
-        this.validatePathOrThrow(filePath);
+        // SECURITY: Validate canonical path first (prevents ancestor/leaf symlink escapes)
+        await this.validateCanonicalPathOrThrow(filePath);
 
         try {
             const content = await fs.readFile(filePath, encoding);
@@ -155,11 +159,103 @@ export class FileSystemService implements IFileSystemService {
         }
     }
 
+    async readFileRange(
+        filePath: string,
+        startLine: number,
+        endLine?: number,
+        contextLines: number = 0
+    ): Promise<FileLineRangeResult> {
+        const canonicalPath = await this.validateCanonicalPathOrThrow(filePath);
+
+        let stats: Awaited<ReturnType<typeof fs.stat>>;
+        try {
+            stats = await fs.stat(canonicalPath);
+        } catch (error: unknown) {
+            throw this.wrapError(error, filePath);
+        }
+
+        if (typeof stats.isDirectory === 'function' && stats.isDirectory()) {
+            throw new FileSystemError('INVALID_PATH', 'Cannot read line range of a directory', {
+                path: filePath,
+                operation: 'readFileRange',
+            });
+        }
+
+        if (stats.size > MAX_RANGE_READ_BYTES) {
+            throw new FileSystemError(
+                'INVALID_PATH',
+                `File exceeds line-range reader limit (${MAX_RANGE_READ_BYTES} bytes)`,
+                { path: filePath, operation: 'readFileRange' }
+            );
+        }
+
+        const rawBuf = await fs.readFile(canonicalPath);
+        if (Buffer.isBuffer(rawBuf)) {
+            const utf16Text = this.decodeUtf16WithBom(rawBuf);
+            let decoded: string;
+            if (utf16Text !== null) {
+                decoded = utf16Text;
+            } else if (rawBuf.includes(0)) {
+                throw new FileSystemError('INVALID_PATH', 'Binary file cannot be displayed as text lines', {
+                    path: filePath,
+                    operation: 'readFileRange',
+                });
+            } else {
+                decoded = rawBuf.toString('utf-8');
+            }
+
+            const allLines = decoded.length === 0 ? [] : decoded.split(/\r?\n/);
+            if (allLines.length > 0 && allLines[allLines.length - 1] === '') {
+                allLines.pop();
+            }
+
+            const totalLines = allLines.length;
+            const requestedStart = Math.max(1, Math.floor(startLine));
+            const requestedEnd = endLine !== undefined ? Math.max(requestedStart, Math.floor(endLine)) : requestedStart;
+            const pad = Math.max(0, Math.min(50, Math.floor(contextLines)));
+
+            if (totalLines === 0) {
+                return {
+                    path: canonicalPath,
+                    name: path.basename(canonicalPath),
+                    startLine: 1,
+                    endLine: 1,
+                    totalLines: 0,
+                    lines: [],
+                    truncated: false,
+                };
+            }
+
+            const windowStart = Math.max(1, Math.min(totalLines, requestedStart - pad));
+            const rawWindowEnd = Math.min(totalLines, requestedEnd + pad);
+            const cappedWindowEnd = Math.min(rawWindowEnd, windowStart + MAX_RANGE_RETURN_LINES - 1);
+            const lines: FileRangeLine[] = [];
+            for (let ln = windowStart; ln <= cappedWindowEnd; ln++) {
+                lines.push({ lineNumber: ln, text: allLines[ln - 1] });
+            }
+
+            return {
+                path: canonicalPath,
+                name: path.basename(canonicalPath),
+                startLine: windowStart,
+                endLine: cappedWindowEnd,
+                totalLines,
+                lines,
+                truncated: cappedWindowEnd < rawWindowEnd,
+            };
+        }
+
+        throw new FileSystemError('UNKNOWN', 'Unexpected non-buffer file read', {
+            path: filePath,
+            operation: 'readFileRange',
+        });
+    }
+
     async previewFile(
         filePath: string,
         maxLines: number = RING_BUFFER_CAPACITY
     ): Promise<FilePreviewResult> {
-        this.validatePathOrThrow(filePath);
+        await this.validateCanonicalPathOrThrow(filePath);
 
         const cap = Math.max(1, Math.min(Math.floor(maxLines), RING_BUFFER_CAPACITY));
         const normalizedFile = this.normalizeCacheKey(filePath);
@@ -271,8 +367,8 @@ export class FileSystemService implements IFileSystemService {
         filePath: string,
         content: string
     ): Promise<{ success: boolean }> {
-        // SECURITY: Validate path first
-        this.validatePathOrThrow(filePath);
+        // SECURITY: Validate canonical target/ancestor path first
+        await this.validateCanonicalPathOrThrow(filePath);
 
         try {
             await fs.writeFile(filePath, content, 'utf-8');
@@ -287,8 +383,8 @@ export class FileSystemService implements IFileSystemService {
         filePath: string,
         recursive: boolean = false
     ): Promise<{ success: boolean }> {
-        // SECURITY: Validate path first
-        this.validatePathOrThrow(filePath);
+        // SECURITY: Validate parent canonically if leaf is a symlink so we unlink without dereferencing targets
+        await this.validateLinkAwarePathOrThrow(filePath);
 
         try {
             await fs.rm(filePath, { recursive, force: true });
@@ -303,9 +399,9 @@ export class FileSystemService implements IFileSystemService {
         source: string,
         destination: string
     ): Promise<{ success: boolean; newPath: string }> {
-        // SECURITY: Validate both paths
-        this.validatePathOrThrow(source);
-        this.validatePathOrThrow(destination);
+        // SECURITY: Validate source (link-aware) and canonical destination
+        await this.validateLinkAwarePathOrThrow(source);
+        await this.validateCanonicalPathOrThrow(destination);
 
         try {
             await fs.rename(source, destination);
@@ -336,8 +432,8 @@ export class FileSystemService implements IFileSystemService {
     }
 
     async getStats(filePath: string): Promise<FileStats> {
-        // SECURITY: Validate path first
-        this.validatePathOrThrow(filePath);
+        // SECURITY: Validate canonical path first
+        await this.validateCanonicalPathOrThrow(filePath);
 
         try {
             const stats = await fs.stat(filePath);
@@ -359,8 +455,8 @@ export class FileSystemService implements IFileSystemService {
     }
 
     async createDirectory(dirPath: string): Promise<{ success: boolean }> {
-        // SECURITY: Validate path first
-        this.validatePathOrThrow(dirPath);
+        // SECURITY: Validate canonical path first
+        await this.validateCanonicalPathOrThrow(dirPath);
 
         try {
             // Create directory (recursive: false to only create final directory)
@@ -437,6 +533,59 @@ export class FileSystemService implements IFileSystemService {
      */
     getAllowedRoot(): string {
         return this.validator.getAllowedRoot();
+    }
+
+    getAllowedRoots(): string[] {
+        return this.validator.getAllowedRoots();
+    }
+
+    /**
+     * Dynamically update allowed workspace/vault roots and invalidate directory caches.
+     */
+    updateAllowedRoots(allowedRoot: string | string[]): void {
+        const roots = Array.isArray(allowedRoot)
+            ? allowedRoot.filter((entry) => entry && entry.trim() !== '')
+            : allowedRoot && allowedRoot.trim() !== ''
+                ? [allowedRoot]
+                : [];
+        if (roots.length === 0) {
+            throw new Error('Allowed root directory cannot be empty');
+        }
+        this.validator = new PathValidator(roots);
+        this.clearCache();
+    }
+
+    private async validateLinkAwarePathOrThrow(filePath: string): Promise<string> {
+        this.validatePathOrThrow(filePath);
+        if (typeof fs.lstat === 'function') {
+            try {
+                const lstatInfo = await fs.lstat(path.resolve(filePath));
+                if (typeof lstatInfo.isSymbolicLink === 'function' && lstatInfo.isSymbolicLink()) {
+                    const linkCheck = await this.validator.validateParentCanonicalForLink(filePath);
+                    if (!linkCheck.valid || !linkCheck.canonicalLinkPath) {
+                        const errorCode =
+                            linkCheck.error === 'SYMLINK_ESCAPE'
+                                ? 'UNAUTHORIZED_ACCESS'
+                                : (linkCheck.error as 'PATH_TRAVERSAL' | 'UNAUTHORIZED_ACCESS' | 'INVALID_PATH');
+                        throw ErrorFactory.createFileSystemError(
+                            errorCode || 'UNAUTHORIZED_ACCESS',
+                            filePath,
+                            undefined,
+                            { details: linkCheck.details }
+                        );
+                    }
+                    return linkCheck.canonicalLinkPath;
+                }
+            } catch (error: unknown) {
+                if (getFsErrorCode(error) !== 'ENOENT') {
+                    // Propagate validation errors; let downstream fs operations handle OS-level errors cleanly
+                    if (error instanceof Error && error.name !== 'Error' && 'code' in error && (error as { code?: string }).code === 'UNAUTHORIZED_ACCESS') {
+                        throw error;
+                    }
+                }
+            }
+        }
+        return this.validateCanonicalPathOrThrow(filePath);
     }
 
     private async validateCanonicalPathOrThrow(filePath: string): Promise<string> {

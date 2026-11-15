@@ -27,8 +27,10 @@ import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
 import {
   withContract,
   resolveAllowedRoots,
+  validateCanonicalPathOrThrow,
 } from './securityMiddleware';
-import { FileNode, FileMetadata } from '@shared/contracts';
+import { searchWorkspaceContent } from './llmHandlers';
+import { ContentSearchMatch, FileNode, FileMetadata } from '@shared/contracts';
 import { IPCLogger, getLogger } from '@shared/logging';
 import { IPCChannel } from '@shared/ipc/contracts';
 import path from 'path';
@@ -416,7 +418,18 @@ async function handleQuery(
   return fileNodes;
 }
 
-const SEARCH_CHANNELS: IPCChannel[] = ['SEARCH:AUTOCOMPLETE', 'SEARCH:QUERY'];
+async function handleContentSearch(
+  _event: IpcMainInvokeEvent,
+  input: { query: string; topK?: number; searchRoot?: string }
+): Promise<ContentSearchMatch[]> {
+  let canonicalRoot: string | undefined;
+  if (input.searchRoot && input.searchRoot.trim().length > 0) {
+    canonicalRoot = await validateCanonicalPathOrThrow(input.searchRoot);
+  }
+  return searchWorkspaceContent(input.query, input.topK ?? 20, canonicalRoot);
+}
+
+const SEARCH_CHANNELS: IPCChannel[] = ['SEARCH:AUTOCOMPLETE', 'SEARCH:QUERY', 'SEARCH:CONTENT'];
 
 export function registerSearchHandlers(): IPCChannel[] {
   IPCLogger.info('Registering search IPC handlers');
@@ -431,8 +444,39 @@ export function registerSearchHandlers(): IPCChannel[] {
     withContract('SEARCH:QUERY', handleQuery)
   );
 
+  ipcMain.handle(
+    'SEARCH:CONTENT',
+    withContract('SEARCH:CONTENT', handleContentSearch)
+  );
+
   IPCLogger.info('Search IPC handlers registered successfully');
   return [...SEARCH_CHANNELS];
+}
+
+/**
+ * Shared workspace path lookup helper reused by bounded ReAct agent tools.
+ */
+export async function searchWorkspacePaths(
+  query: string,
+  rootPath?: string
+): Promise<string[]> {
+  const kernel = getReactiveWorkspaceKernel();
+  if (rootPath) {
+    const matches = await getSearchService().search(query, rootPath);
+    return matches.map((m) => m.path);
+  }
+  const q = query.trim();
+  if (!q) {
+    return Array.from(kernel.getFileSystemService().getAllowedRoots());
+  }
+  const trie = kernel.getPathTrie();
+  return Array.from(
+    new Set([
+      ...trie.autocomplete(q, 25),
+      ...trie.autocomplete(q.toLowerCase(), 25),
+      ...trie.searchSubstring(q.toLowerCase(), 25),
+    ])
+  ).slice(0, 25);
 }
 
 /**

@@ -5,6 +5,12 @@
 
 ---
 
+## Binding Operational Rule: Hardware & Remote-First CI (12 GB RAM + RTX 3050)
+- **Local laptop (lightweight only):** `npm run type-check`, targeted `npx eslint`, and single/targeted mocked unit tests (`npx jest <file> --runInBand --maxWorkers=1`).
+- **GitHub Actions ONLY (heavy CI):** Full `npm run test:coverage`, full production `npm run build`, RAG/scale benchmarks, packaging dry-runs, and full Playwright Electron E2E suites MUST run in GitHub Actions via `.github/workflows/`. Always wait for GitHub Actions results (`gh run watch` / `gh run view`) before proceeding or claiming completion.
+
+---
+
 ## Core Architectural Decisions & Rejected Alternatives
 
 | Decision | Choice | Rejected Alternatives & Why |
@@ -12,7 +18,8 @@
 | **Transformation Strategy** | Unified typed IPC/security contracts + single coalescing `EventQueue` causal loop connecting all 5 DSAs & RAG + live `RuntimeDiagnostics` + real UI/E2E verification | *Prune-only cleanup* (guts DSAs & leaves security bypasses); *Vite + native SQLite FTS5 rewrite* (high Win native build churn, wrong leverage priority); *Security-only* (leaves watcher/cache/trie/RAG disconnected). |
 | **Hybrid Search Strategy** | LanceDB `0.4.20` dense cosine vectors + pure-TS BM25 (`HybridLexicalIndex`) rebuilt deterministically from LanceDB rows + Reciprocal Rank Fusion (RRF) | `@lancedb/lancedb@0.4.20` JS SDK lacks FTS/BM25 (`Index` only exposes `ivfPq`/`btree`); adding `better-sqlite3`/`sqlite3` risks native ABI friction on Electron 28 + Node 24. |
 | **IPC Contract & Error Model** | Single Zod contract registry (`shared/ipc/contracts.ts`) enforcing `filepath`/traversal/symlink security middleware + returning `IPCEnvelope<T>`; `preload.ts` exposes frozen `__electronIPCBridge` and renderer main-world `installElectronAPI.ts` unwraps envelopes into structured `Error` (`.code`, `.userMessage`, `.isOperational`, `.details`) before React mounts | Throwing `Error` in preload across Electron 28 `contextBridge` strips `.code`/`.details` before reaching renderer or Playwright `page.evaluate`; returning raw `{ ok: false }` to components breaks `try/catch` ergonomics; throwing plain objects over IPC causes `[object Object]` coercion. |
-| **Temp Root Policy** | Production defaults to `ConfigManager` `allowedRoots` (`[os.homedir()]`); `FILE_MANAGER_ALLOWED_ROOTS` honored strictly when `NODE_ENV === 'test' \|\| E2E_TEST === 'true'` | Hardcoding `os.homedir()` breaks Linux/macOS `/tmp` E2E specs; always trusting env vars weakens production sandbox boundaries. |
+| **Temp Root Policy** | Production defaults to `ConfigManager` `allowedRoots` (`[os.homedir()]`); `FILE_MANAGER_ALLOWED_ROOTS` honored strictly when `NODE_ENV === 'test' \|\| E2E_TEST === 'true'`, AND `PathValidator.expandCanonicalAliases` expands `fs.realpathSync` canonical aliases alongside lexical roots | Hardcoding `os.homedir()` breaks temp E2E specs; on Windows GitHub Actions `os.tmpdir()` returns 8.3 short paths (`RUNNER~1`) which `validateCanonical` resolves to `runneradmin`, causing secondary lexical checks to reject canonicalized paths without alias expansion. |
+| **Non-Blocking CI Watchdog** | `scripts/ci-watch.mjs` (`stdin: 'ignore'`, headless env, 20s per-API timeout, 30s stream download + 280-char line truncation) replaces bare `gh run watch` / `gh run view --log-failed` | Failed Playwright runs embed ~865 KB minified `bundle.js` lines per retry (~63 MB logs) which lock up PowerShell pipes/memory and non-interactive Windows `gh` TTY streams for 20+ minutes. |
 | **UI Test Coverage Strategy** | Keep Jest on pure TypeScript logic, handlers, security, kernel & React `react-dom/server` verification (`jest-environment-jsdom` not in `node_modules`) + Playwright real Chromium Electron UI journeys | Installing new npm packages (`jsdom`) avoided unless necessary. |
 
 ## Milestone Tracker

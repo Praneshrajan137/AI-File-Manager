@@ -20,11 +20,12 @@ test.describe('Navigation', () => {
 
   test.beforeAll(async () => {
     // Create test directory structure
-    testDir = path.join(os.tmpdir(), `e2e-nav-${Date.now()}`);
+    const rawTestDir = path.join(os.tmpdir(), `e2e-nav-${Date.now()}`);
+    await fs.mkdir(rawTestDir, { recursive: true });
+    testDir = await fs.realpath(rawTestDir);
     subDir1 = path.join(testDir, 'subdir1');
     subDir2 = path.join(subDir1, 'subdir2');
 
-    await fs.mkdir(testDir, { recursive: true });
     await fs.mkdir(subDir1, { recursive: true });
     await fs.mkdir(subDir2, { recursive: true });
     

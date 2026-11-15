@@ -36,6 +36,32 @@ export const appConfigSchema = z.object({
 
   fileSystem: z.object({
     allowedRoots: z.array(z.string()).default([]),
+    indexedRoots: z.array(z.string()).default([]),
+    excludedDirs: z.array(z.string()).default([
+      'node_modules',
+      '.git',
+      '.hg',
+      '.svn',
+      '__pycache__',
+      '.venv',
+      'venv',
+      '.mypy_cache',
+      '.pytest_cache',
+      '.next',
+      '.nuxt',
+      '.turbo',
+      '.cache',
+      'dist-packages',
+      'coverage',
+      '$RECYCLE.BIN',
+      'System Volume Information',
+      'AppData',
+      '.Trash',
+      '.file-manager',
+      'trash-vault',
+    ]),
+    favorites: z.array(z.string()).default([]),
+    defaultDeleteMode: z.enum(['vault', 'trash']).default('vault'),
     maxFileSize: z.number().int().positive().default(10 * 1024 * 1024), // 10MB
     cacheSize: z.number().int().positive().default(100 * 1024 * 1024), // 100MB
     chunkSize: z.number().int().positive().default(500),
@@ -47,6 +73,10 @@ export const appConfigSchema = z.object({
     maxTokens: z.number().int().positive().default(2048),
     temperature: z.number().min(0).max(1).default(0.7),
     embeddingDimensions: z.number().int().positive().default(384),
+    embeddingModel: z.string().default('Xenova/bge-small-en-v1.5'),
+    embeddingDtype: z.enum(['q8', 'fp32']).default('q8'),
+    rerankerModel: z.string().default('Xenova/ms-marco-MiniLM-L-6-v2'),
+    enableWebGPU: z.boolean().default(false),
   }),
 
   logging: z.object({

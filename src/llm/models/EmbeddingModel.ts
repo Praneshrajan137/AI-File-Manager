@@ -1,86 +1,96 @@
 /**
  * EmbeddingModel - Local Text-to-Vector Conversion
- * 
- * Uses @xenova/transformers with all-MiniLM-L6-v2 model.
- * Runs entirely locally - no API calls (privacy-first).
- * 
- * Model specs:
- * - Dimensions: 384
- * - Size: ~100MB (cached after first download)
- * - Speed: ~20ms per embedding on modern CPU
- * 
+ *
+ * Uses `@huggingface/transformers` v4 with quantized INT8 (`q8`) CPU execution.
+ * Defaults to `Xenova/bge-small-en-v1.5` (384 dimensions, 512-token context)
+ * with optional fallback to `Xenova/all-MiniLM-L6-v2` (384 dimensions, 256 tokens).
+ *
  * @implements IEmbeddingModel
  */
-// Dynamic import required for @xenova/transformers (ESM-only module)
-// We use Function constructor to prevent webpack from transforming the import
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let transformersModule: any = null;
-
-// Helper to dynamically import ESM modules without webpack transformation
-// eslint-disable-next-line @typescript-eslint/no-implied-eval
-const dynamicImport = new Function('modulePath', 'return import(modulePath)');
-
-import { IEmbeddingModel, Embedding } from '../../shared/contracts';
+import {
+  DEFAULT_EMBEDDING_MODEL,
+  Embedding,
+  IEmbeddingModel,
+} from '../../shared/contracts';
+import {
+  loadFeatureExtractionPipeline,
+  TransformersDevice,
+  TransformersDtype,
+} from './transformersLoader';
 
 // Type for the feature extraction pipeline
 type FeatureExtractionPipeline = (
-    text: string,
-    options?: Record<string, unknown>
+  text: string,
+  options?: Record<string, unknown>
 ) => Promise<{ data: ArrayLike<number> }>;
 
+export interface EmbeddingModelOptions {
+  modelName?: string;
+  dtype?: TransformersDtype;
+  device?: TransformersDevice;
+  dimensions?: number;
+}
+
 export class EmbeddingModel implements IEmbeddingModel {
-    private extractor: FeatureExtractionPipeline | null = null;
-    private readonly dimensions = 384;
-    private readonly modelName = 'Xenova/all-MiniLM-L6-v2';
+  private extractor: FeatureExtractionPipeline | null = null;
+  private readonly dimensions: number;
+  private readonly modelName: string;
+  private readonly dtype: TransformersDtype;
+  private readonly device: TransformersDevice;
 
-    /** Testing hook: allows injecting a mock pipeline for tests */
-    private static mockPipeline: FeatureExtractionPipeline | null = null;
+  /** Testing hook: allows injecting a mock pipeline for tests */
+  private static mockPipeline: FeatureExtractionPipeline | null = null;
 
-    /**
-     * Set a mock pipeline for testing (bypasses ESM dynamic import).
-     * @internal Only for testing purposes
-     */
-    static _setMockPipeline(pipeline: FeatureExtractionPipeline | null): void {
-        EmbeddingModel.mockPipeline = pipeline;
+  constructor(options: EmbeddingModelOptions = {}) {
+    this.modelName = options.modelName || DEFAULT_EMBEDDING_MODEL;
+    this.dtype = options.dtype ?? 'q8';
+    this.device = options.device ?? 'cpu';
+    this.dimensions = options.dimensions ?? 384;
+  }
+
+  /**
+   * Set a mock pipeline for testing (bypasses transformers runtime loading).
+   * @internal Only for testing purposes
+   */
+  static _setMockPipeline(pipeline: FeatureExtractionPipeline | null): void {
+    EmbeddingModel.mockPipeline = pipeline;
+  }
+
+  getModelName(): string {
+    return this.modelName;
+  }
+
+  getMaxContextTokens(): number {
+    return this.modelName.toLowerCase().includes('minilm') ? 256 : 512;
+  }
+
+  /**
+   * Initialize the embedding model.
+   * Downloads quantized ONNX weights on first run (~33-45MB, cached locally thereafter).
+   */
+  async initialize(): Promise<void> {
+    if (this.extractor) {
+      return; // Already initialized
     }
 
-    /**
-     * Initialize the embedding model.
-     * 
-     * Downloads model on first run (~100MB, cached thereafter).
-     * Must be called before first use.
-     * 
-     * @throws Error if initialization fails
-     */
-    async initialize(): Promise<void> {
-        if (this.extractor) {
-            return; // Already initialized
-        }
-
-        // Check for test mock first
-        if (EmbeddingModel.mockPipeline) {
-            this.extractor = EmbeddingModel.mockPipeline;
-            return;
-        }
-
-        try {
-            // Dynamic import for ESM-only @xenova/transformers
-            // Using dynamicImport helper to avoid webpack transformation
-            if (!transformersModule) {
-                transformersModule = await dynamicImport('@xenova/transformers');
-                // Configure transformers.js for Node.js environment
-                transformersModule.env.useBrowserCache = false;
-            }
-
-            // Load feature-extraction pipeline
-            this.extractor = await transformersModule.pipeline('feature-extraction', this.modelName, {
-                // Progress callback can be added for UI feedback
-                progress_callback: undefined,
-            });
-        } catch (error) {
-            throw new Error(`Failed to initialize embedding model: ${error instanceof Error ? error.message : String(error)}`);
-        }
+    // Check for test mock first
+    if (EmbeddingModel.mockPipeline) {
+      this.extractor = EmbeddingModel.mockPipeline;
+      return;
     }
+
+    try {
+      this.extractor = (await loadFeatureExtractionPipeline({
+        modelName: this.modelName,
+        dtype: this.dtype,
+        device: this.device,
+      })) as unknown as FeatureExtractionPipeline;
+    } catch (error) {
+      throw new Error(
+        `Failed to initialize embedding model: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
 
     /**
      * Generate embedding for single text.

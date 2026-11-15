@@ -80,3 +80,11 @@ export function isPathInsideDirectory(childPath: string, directoryPath: string):
   }
   return normalizedChild.startsWith(`${normalizedDir}/`);
 }
+
+export function joinChildPath(parentDir: string, childName: string): string {
+  const sep = parentDir.includes('\\') && !parentDir.includes('/') ? '\\' : '/';
+  if (parentDir.endsWith('/') || parentDir.endsWith('\\')) {
+    return `${parentDir}${childName}`;
+  }
+  return `${parentDir}${sep}${childName}`;
+}

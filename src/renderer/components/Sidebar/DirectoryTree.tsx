@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { DirectoryTreeNode } from './DirectoryTreeNode';
-import { FileNode } from '@shared/contracts';
+import { FileEvent, FileNode } from '@shared/contracts';
 
 interface DirectoryTreeProps {
   rootPath?: string;
   onNavigate: (path: string) => void;
+  lastWatcherEvent?: FileEvent | null;
 }
 
 export const DirectoryTree: React.FC<DirectoryTreeProps> = ({
   rootPath,
-  onNavigate
+  onNavigate,
+  lastWatcherEvent = null,
 }) => {
   const [root, setRoot] = useState<FileNode | null>(null);
   const [effectiveRootPath, setEffectiveRootPath] = useState<string | null>(rootPath || null);
@@ -19,7 +21,7 @@ export const DirectoryTree: React.FC<DirectoryTreeProps> = ({
     if (!rootPath) {
       window.electronAPI.fs.getSystemPaths()
         .then((paths) => setEffectiveRootPath(paths.home))
-        .catch((err) => console.error('Failed to get system paths:', err));
+        .catch(() => setEffectiveRootPath(null));
     } else {
       setEffectiveRootPath(rootPath);
     }
@@ -41,8 +43,8 @@ export const DirectoryTree: React.FC<DirectoryTreeProps> = ({
           extension: '',
           mimeType: '',
         });
-      } catch (error) {
-        console.error('Failed to load root:', error);
+      } catch {
+        setRoot(null);
       }
     };
 
@@ -56,7 +58,7 @@ export const DirectoryTree: React.FC<DirectoryTreeProps> = ({
       <h3 className="text-[10px] font-semibold text-primary-400 uppercase tracking-wider px-2 mb-3">
         Folders
       </h3>
-      <DirectoryTreeNode node={root} onNavigate={onNavigate} />
+      <DirectoryTreeNode node={root} onNavigate={onNavigate} lastWatcherEvent={lastWatcherEvent} />
     </div>
   );
 };

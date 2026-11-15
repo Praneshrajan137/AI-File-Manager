@@ -35,6 +35,11 @@
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   }
 
+  html.dark body {
+    background-color: #020617;
+    color: #F1F5F9;
+  }
+
   code {
     font-family: 'JetBrains Mono', source-code-pro, Menlo, Monaco, Consolas, monospace;
   }
@@ -73,6 +78,18 @@
 
   .scrollbar-thin::-webkit-scrollbar-thumb:hover {
     background: #94A3B8;
+  }
+
+  html.dark .scrollbar-thin {
+    scrollbar-color: #334155 transparent;
+  }
+
+  html.dark .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: #334155;
+  }
+
+  html.dark .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: #475569;
   }
 
   /* Hide scrollbar until hover */

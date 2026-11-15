@@ -17,8 +17,9 @@ test.describe('IPC Communication', () => {
   let testDir: string;
 
   test.beforeAll(async () => {
-    testDir = path.join(os.tmpdir(), `e2e-ipc-${Date.now()}`);
-    await fs.mkdir(testDir, { recursive: true });
+    const rawTestDir = path.join(os.tmpdir(), `e2e-ipc-${Date.now()}`);
+    await fs.mkdir(rawTestDir, { recursive: true });
+    testDir = await fs.realpath(rawTestDir);
   });
 
   test.afterAll(async () => {

@@ -101,7 +101,6 @@ export class ConfigManager {
    */
   static initialize(options?: ConfigManagerOptions): void {
     if (ConfigManager.instance) {
-      console.warn('ConfigManager already initialized');
       return;
     }
 
@@ -275,7 +274,8 @@ export class ConfigManager {
       this.createDefaultConfigFile();
       return null;
     } catch (error) {
-      console.warn(`Failed to load config file: ${this.configPath}`, error);
+      const detail = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`Failed to load config file ${this.configPath}: ${detail}\n`);
       return null;
     }
   }
@@ -369,7 +369,8 @@ export class ConfigManager {
         'utf-8'
       );
     } catch (error) {
-      console.warn(`Failed to create default config file: ${this.configPath}`, error);
+      const detail = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`Failed to create default config file ${this.configPath}: ${detail}\n`);
     }
   }
 
@@ -389,7 +390,8 @@ export class ConfigManager {
         'utf-8'
       );
     } catch (error) {
-      console.error(`Failed to save config file: ${this.configPath}`, error);
+      const detail = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`Failed to save config file ${this.configPath}: ${detail}\n`);
     }
   }
 
@@ -404,12 +406,12 @@ export class ConfigManager {
     try {
       this.fileWatcher = fs.watch(this.configPath, (eventType) => {
         if (eventType === 'change') {
-          console.log('Config file changed, reloading...');
           this.reload();
         }
       });
     } catch (error) {
-      console.warn('Failed to watch config file:', error);
+      const detail = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`Failed to watch config file: ${detail}\n`);
     }
   }
 

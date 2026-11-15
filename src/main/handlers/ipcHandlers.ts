@@ -11,6 +11,9 @@ import { registerNavigationHandlers, resetNavigationServices } from './navigatio
 import { registerSearchHandlers, resetSearchService } from './searchHandlers';
 import { registerLLMHandlers } from './llmHandlers';
 import { registerShellHandlers } from './shellHandlers';
+import { registerVaultHandlers } from './vaultHandlers';
+import { registerGraphHandlers } from './graphHandlers';
+import { resetOperationJournal } from '../services/OperationJournal';
 import { withContract, resolveAllowedRoots } from './securityMiddleware';
 import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
 import { resetReactiveWorkspaceKernelSync } from '@main/services/ReactiveWorkspaceKernel';
@@ -52,6 +55,8 @@ export function registerAllHandlers(): void {
       registerLLMHandlers(),
       registerShellHandlers(),
       registerRuntimeHandlers(),
+      registerVaultHandlers(),
+      registerGraphHandlers(),
     ];
 
     for (const channels of groups) {
@@ -90,6 +95,7 @@ export function unregisterAllHandlers(): void {
   registeredChannels.clear();
   resetSearchService();
   resetNavigationServices();
+  resetOperationJournal();
   resetReactiveWorkspaceKernelSync();
   RuntimeDiagnostics.getInstance().setRegisteredChannels(0);
 

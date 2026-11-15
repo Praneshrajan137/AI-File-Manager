@@ -168,12 +168,14 @@ describe('PathValidator', () => {
             expect(result.valid).toBe(true);
         });
 
-        it('should normalize Windows backslashes to forward slashes', () => {
-            const winPath = allowedRoot.replace(/\//g, '\\') + '\\file.txt';
+        it('should normalize alternate slashes and redundant separators safely', () => {
+            const altPath =
+                process.platform === 'win32'
+                    ? allowedRoot.replace(/\\/g, '/') + '/file.txt'
+                    : allowedRoot + '///file.txt';
 
-            const result = validator.validate(winPath);
+            const result = validator.validate(altPath);
 
-            // Should handle cross-platform
             expect(result.valid).toBe(true);
         });
     });
@@ -316,6 +318,71 @@ describe('PathValidator', () => {
                 expect(res.error).toBeTruthy();
             } finally {
                 realpathSpy.mockRestore();
+            }
+        });
+
+        it('validates both alias roots and canonical realpath targets without loosening escape checks', async () => {
+            const sandbox = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pv-alias-'));
+            const realRoot = path.join(sandbox, 'real-root');
+            const aliasRoot = path.join(sandbox, 'alias-root');
+            const outsideDir = path.join(sandbox, 'outside');
+            const escapeLink = path.join(realRoot, 'escape-link');
+            const symlinkType = process.platform === 'win32' ? 'junction' : 'dir';
+
+            try {
+                await fs.promises.mkdir(realRoot, { recursive: true });
+                await fs.promises.mkdir(outsideDir, { recursive: true });
+                await fs.promises.writeFile(path.join(realRoot, 'inside.txt'), 'ok', 'utf-8');
+                await fs.promises.writeFile(path.join(outsideDir, 'secret.txt'), 'nope', 'utf-8');
+                await fs.promises.symlink(realRoot, aliasRoot, symlinkType);
+                await fs.promises.symlink(outsideDir, escapeLink, symlinkType);
+
+                const canonicalRealRoot = await fs.promises.realpath(realRoot);
+                const canonicalInside = await fs.promises.realpath(path.join(realRoot, 'inside.txt'));
+                const aliasValidator = new PathValidator(aliasRoot);
+
+                expect(aliasValidator.getAllowedRoots()).toEqual([path.resolve(aliasRoot)]);
+                expect(aliasValidator.validate(canonicalInside).valid).toBe(true);
+
+                const viaAlias = await aliasValidator.validateCanonical(path.join(aliasRoot, 'inside.txt'));
+                expect(viaAlias.valid).toBe(true);
+                expect(viaAlias.canonicalPath).toBe(canonicalInside);
+
+                const viaCanonical = await aliasValidator.validateCanonical(
+                    path.join(canonicalRealRoot, 'inside.txt')
+                );
+                expect(viaCanonical.valid).toBe(true);
+                expect(viaCanonical.canonicalPath).toBe(canonicalInside);
+
+                const escapeAttempt = await aliasValidator.validateCanonical(
+                    path.join(aliasRoot, 'escape-link', 'secret.txt')
+                );
+                expect(escapeAttempt.valid).toBe(false);
+                expect(escapeAttempt.error).toBe('SYMLINK_ESCAPE');
+            } finally {
+                await fs.promises.rm(sandbox, { recursive: true, force: true });
+            }
+        });
+
+        it('expands 8.3 short-path root aliases via fs.realpathSync.native when plain realpathSync omits them', () => {
+            const shortRoot = path.join(os.tmpdir(), 'short-alias-root');
+            const longRoot = path.join(os.tmpdir(), 'long-canonical-root');
+            const syncSpy = jest
+                .spyOn(fs, 'realpathSync')
+                .mockImplementation((p) => String(p));
+            const nativeMock = jest.fn((p: fs.PathLike) =>
+                String(p) === shortRoot ? longRoot : String(p)
+            );
+            (fs.realpathSync as unknown as { native: typeof nativeMock }).native = nativeMock;
+
+            try {
+                const shortValidator = new PathValidator(shortRoot);
+                expect(syncSpy).toHaveBeenCalledWith(shortRoot);
+                expect(nativeMock).toHaveBeenCalledWith(shortRoot);
+                expect(shortValidator.validate(path.join(shortRoot, 'file.txt')).valid).toBe(true);
+                expect(shortValidator.validate(path.join(longRoot, 'file.txt')).valid).toBe(true);
+            } finally {
+                syncSpy.mockRestore();
             }
         });
     });

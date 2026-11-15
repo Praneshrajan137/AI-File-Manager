@@ -12,16 +12,24 @@ interface BasenameTrieNode {
     paths: Map<string, string>;
 }
 
+export interface FuzzySearchMatch {
+    path: string;
+    score: number;
+}
+
 /**
  * PathTrie - Prefix tree for O(L) file path search & basename lookup.
  * 
  * Dual-indexed:
  * 1. Segment trie rooted at `root` for full hierarchical path lookups (/home/user/doc -> ...)
  * 2. Character-level basename trie rooted at `basenameRoot` for O(L) filename prefix lookups ('rep' -> report.md)
+ * 3. O(1) maintained entry count & bounded Damerau-Levenshtein fuzzy matcher.
  */
 export class PathTrie {
     private root: TrieNode;
     private basenameRoot: BasenameTrieNode;
+    private indexedEntries = new Map<string, { basename: string; stem: string; path: string }>();
+    private totalCount = 0;
 
     constructor() {
         this.root = {
@@ -77,14 +85,26 @@ export class PathTrie {
             currentNode = currentNode.children.get(key)!;
         }
 
-        // Mark as terminal node and store metadata
+        // Mark as terminal node and store metadata (increment O(1) count only on new insertions)
+        const wasEndOfPath = currentNode.isEndOfPath;
         currentNode.isEndOfPath = true;
         currentNode.metadata = metadata;
+        if (!wasEndOfPath) {
+            this.totalCount++;
+        }
 
-        // Also index basename for O(L) filename prefix autocomplete
+        // Also index basename for O(L) filename prefix autocomplete & fuzzy lookup
+        const canonicalKey = normalized.toLowerCase();
         const basename = segments[segments.length - 1]?.toLowerCase() ?? '';
         if (basename.length > 0) {
-            this.insertBasename(basename, normalized.toLowerCase(), metadata.filePath);
+            this.insertBasename(basename, canonicalKey, metadata.filePath);
+            const dotIdx = basename.lastIndexOf('.');
+            const stem = dotIdx > 0 ? basename.slice(0, dotIdx) : basename;
+            this.indexedEntries.set(canonicalKey, {
+                basename,
+                stem,
+                path: metadata.filePath,
+            });
         }
     }
 
@@ -275,6 +295,7 @@ export class PathTrie {
         // Mark as not end of path and remove metadata
         currentNode.isEndOfPath = false;
         currentNode.metadata = undefined;
+        this.totalCount = Math.max(0, this.totalCount - 1);
 
         // Clean up empty nodes from bottom to top
         // We don't remove nodes that have children or are terminal nodes for other paths
@@ -293,9 +314,11 @@ export class PathTrie {
             }
         }
 
+        const canonicalKey = normalized.toLowerCase();
+        this.indexedEntries.delete(canonicalKey);
         const basename = segments[segments.length - 1]?.toLowerCase() ?? '';
         if (basename.length > 0) {
-            this.removeBasename(basename, normalized.toLowerCase());
+            this.removeBasename(basename, canonicalKey);
         }
 
         return true;
@@ -521,36 +544,110 @@ export class PathTrie {
     }
 
     /**
-     * Get the total number of paths stored in the trie.
-     * Used for debugging and testing.
-     * 
+     * Fuzzy basename/stem matcher using exact/prefix/substring fast-paths + bounded
+     * optimal string alignment (Damerau-Levenshtein) edit distance.
+     */
+    fuzzySearch(
+        query: string,
+        maxResults: number = 15,
+        maxDistance: number = 2
+    ): FuzzySearchMatch[] {
+        const needle = query.trim().toLowerCase();
+        if (!needle || maxResults <= 0) {
+            return [];
+        }
+
+        const scored: FuzzySearchMatch[] = [];
+        for (const entry of this.indexedEntries.values()) {
+            const target = entry.basename;
+            const stem = entry.stem;
+
+            if (target === needle || stem === needle) {
+                scored.push({ path: entry.path, score: 1.0 });
+                continue;
+            }
+            if (target.startsWith(needle) || stem.startsWith(needle)) {
+                scored.push({ path: entry.path, score: 0.92 - Math.min(0.1, (target.length - needle.length) * 0.005) });
+                continue;
+            }
+            if (target.includes(needle)) {
+                scored.push({ path: entry.path, score: 0.8 - Math.min(0.15, target.indexOf(needle) * 0.01) });
+                continue;
+            }
+
+            const compareTarget = needle.includes('.') ? target : stem;
+            if (Math.abs(compareTarget.length - needle.length) <= maxDistance) {
+                const dist = this.boundedDamerauLevenshtein(needle, compareTarget, maxDistance);
+                if (dist <= maxDistance) {
+                    const norm = 1 - dist / Math.max(needle.length, compareTarget.length, 1);
+                    scored.push({ path: entry.path, score: Number((0.65 * norm).toFixed(4)) });
+                }
+                continue;
+            }
+
+            if (compareTarget.length > needle.length && needle.length >= 4) {
+                const sameLenPrefix = compareTarget.slice(0, needle.length);
+                const plusOnePrefix = compareTarget.slice(0, needle.length + 1);
+                const dist = Math.min(
+                    this.boundedDamerauLevenshtein(needle, sameLenPrefix, maxDistance),
+                    this.boundedDamerauLevenshtein(needle, plusOnePrefix, maxDistance)
+                );
+                if (dist <= maxDistance) {
+                    const norm = 1 - dist / Math.max(needle.length, 1);
+                    scored.push({ path: entry.path, score: Number((0.6 * norm).toFixed(4)) });
+                }
+            }
+        }
+
+        scored.sort((a, b) => b.score - a.score || a.path.length - b.path.length);
+        return scored.slice(0, maxResults);
+    }
+
+    private boundedDamerauLevenshtein(a: string, b: string, maxDist: number): number {
+        const m = a.length;
+        const n = b.length;
+        if (Math.abs(m - n) > maxDist) return maxDist + 1;
+        if (m === 0) return n;
+        if (n === 0) return m;
+
+        const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
+        for (let i = 0; i <= m; i++) dp[i][0] = i;
+        for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+        for (let i = 1; i <= m; i++) {
+            let rowMin = maxDist + 1;
+            for (let j = 1; j <= n; j++) {
+                const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+                let val = Math.min(
+                    dp[i - 1][j] + 1,
+                    dp[i][j - 1] + 1,
+                    dp[i - 1][j - 1] + cost
+                );
+                if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+                    val = Math.min(val, dp[i - 2][j - 2] + 1);
+                }
+                dp[i][j] = val;
+                if (val < rowMin) rowMin = val;
+            }
+            if (rowMin > maxDist) {
+                return maxDist + 1;
+            }
+        }
+
+        return dp[m][n];
+    }
+
+    /**
+     * Get the total number of paths stored in the trie in O(1) time.
+     *
      * @returns Number of complete paths
      */
     public size(): number {
-        let count = 0;
-
-        const countNodes = (node: TrieNode): void => {
-            if (node.isEndOfPath) {
-                count++;
-            }
-
-            for (const child of node.children.values()) {
-                countNodes(child);
-            }
-        };
-
-        countNodes(this.root);
-        return count;
+        return this.totalCount;
     }
 
     /**
      * Clear all paths from the trie.
-     * 
-     * IMPLEMENTATION NOTE: We use recursive clearing to explicitly null out
-     * all references. While simply creating a new root would be faster and
-     * let GC handle cleanup, explicit cleanup is more predictable for
-     * memory-sensitive applications and prevents potential memory leaks
-     * in linked structures (BUG FIX #4 from architecture review).
      */
     public clear(): void {
         const clearNode = (node: TrieNode): void => {
@@ -566,6 +663,8 @@ export class PathTrie {
         };
 
         clearNode(this.root);
+        this.indexedEntries.clear();
+        this.totalCount = 0;
 
         // Reinitialize roots
         this.root = {

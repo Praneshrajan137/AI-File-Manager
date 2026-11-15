@@ -25,6 +25,7 @@ describe('VectorStore', () => {
         // Cleanup
         try {
             await store.clear();
+            await store.close();
             await fs.rm(testDbPath, { recursive: true, force: true });
         } catch {
             // Ignore cleanup errors
@@ -43,7 +44,8 @@ describe('VectorStore', () => {
 
             await expect(newStore.initialize(newPath)).resolves.not.toThrow();
 
-            // Cleanup
+            // Cleanup (close SQLite WAL handle cleanly before deleting directory on Windows)
+            await newStore.close();
             await fs.rm(newPath, { recursive: true, force: true });
         }, 30000);
 

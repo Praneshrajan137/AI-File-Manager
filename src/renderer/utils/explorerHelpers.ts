@@ -1,0 +1,157 @@
+import type { FileNode, SortCriteria, SortDirection } from '@shared/contracts';
+
+export function sortFileNodes(
+  files: FileNode[],
+  sortBy: SortCriteria,
+  sortDirection: SortDirection
+): FileNode[] {
+  return [...files].sort((a, b) => {
+    const direction = sortDirection === 'asc' ? 1 : -1;
+    switch (sortBy) {
+      case 'name':
+        return a.name.localeCompare(b.name) * direction;
+      case 'size':
+        return (a.size - b.size) * direction;
+      case 'modified':
+        return (a.modified - b.modified) * direction;
+      case 'type':
+        return a.extension.localeCompare(b.extension) * direction;
+      default:
+        return 0;
+    }
+  });
+}
+
+export interface SelectionModifiers {
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+}
+
+export function toggleMultiSelection(
+  currentSelected: string[],
+  orderedPaths: string[],
+  clickedPath: string,
+  modifiers: SelectionModifiers = {},
+  anchorPath: string | null = null
+): { selected: string[]; nextAnchor: string | null } {
+  if (modifiers.shiftKey && anchorPath) {
+    const startIdx = orderedPaths.indexOf(anchorPath);
+    const endIdx = orderedPaths.indexOf(clickedPath);
+    if (startIdx >= 0 && endIdx >= 0) {
+      const lo = Math.min(startIdx, endIdx);
+      const hi = Math.max(startIdx, endIdx);
+      return {
+        selected: orderedPaths.slice(lo, hi + 1),
+        nextAnchor: anchorPath,
+      };
+    }
+  }
+
+  if (modifiers.ctrlKey || modifiers.metaKey) {
+    const exists = currentSelected.includes(clickedPath);
+    const selected = exists
+      ? currentSelected.filter((p) => p !== clickedPath)
+      : [...currentSelected, clickedPath];
+    return {
+      selected,
+      nextAnchor: clickedPath,
+    };
+  }
+
+  return {
+    selected: [clickedPath],
+    nextAnchor: clickedPath,
+  };
+}
+
+export interface GridGeometry {
+  columnCount: number;
+  rowCount: number;
+  columnWidth: number;
+  rowHeight: number;
+  width: number;
+  height: number;
+}
+
+export function computeGridGeometry(
+  containerWidth: number,
+  containerHeight: number,
+  itemCount: number,
+  targetColumnWidth: number = 156,
+  rowHeight: number = 148
+): GridGeometry {
+  const safeWidth = Math.max(160, Math.floor(containerWidth));
+  const safeHeight = Math.max(160, Math.floor(containerHeight));
+  const columnCount = Math.max(1, Math.floor(safeWidth / targetColumnWidth));
+  const columnWidth = Math.max(120, Math.floor(safeWidth / columnCount));
+  const rowCount = itemCount > 0 ? Math.ceil(itemCount / columnCount) : 0;
+
+  return {
+    columnCount,
+    rowCount,
+    columnWidth,
+    rowHeight,
+    width: safeWidth,
+    height: safeHeight,
+  };
+}
+
+export interface ParsedTextSegment {
+  type: 'text' | 'citation';
+  content: string;
+  fileName?: string;
+  startLine?: number;
+  endLine?: number;
+}
+
+const CITATION_REGEX = /\[([^[\]\r\n#]+)#L(\d+)(?:-L?(\d+))?\]/g;
+
+export function parseCitationSegments(text: string): ParsedTextSegment[] {
+  const segments: ParsedTextSegment[] = [];
+  let lastIndex = 0;
+  CITATION_REGEX.lastIndex = 0;
+
+  let match: RegExpExecArray | null;
+  while ((match = CITATION_REGEX.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({
+        type: 'text',
+        content: text.slice(lastIndex, match.index),
+      });
+    }
+    const startLine = Number.parseInt(match[2], 10);
+    const endLine = match[3] ? Number.parseInt(match[3], 10) : startLine;
+    segments.push({
+      type: 'citation',
+      content: match[0],
+      fileName: match[1].trim(),
+      startLine,
+      endLine: Math.max(startLine, endLine),
+    });
+    lastIndex = CITATION_REGEX.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    segments.push({
+      type: 'text',
+      content: text.slice(lastIndex),
+    });
+  }
+
+  return segments.length > 0 ? segments : [{ type: 'text', content: text }];
+}
+
+export function extractDraggedPaths(dataTransfer: DataTransfer | null): string[] {
+  if (!dataTransfer) return [];
+  const raw = dataTransfer.getData('application/x-fm-paths');
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}

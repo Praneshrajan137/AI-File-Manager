@@ -21,6 +21,7 @@ import { ConfigManager } from '@shared/config';
 export class PathValidator {
     private allowedRoot: string;
     private allowedRoots: string[];
+    private lexicalAllowedRoots: string[];
     private forbiddenPaths: string[];
 
     constructor(allowedRoots: string | string[]) {
@@ -34,11 +35,43 @@ export class PathValidator {
             ? Array.from(new Set(normalized))
             : [this.stripTrailingSep(path.resolve(os.homedir()))];
         this.allowedRoot = this.allowedRoots[0];
+        this.lexicalAllowedRoots = this.expandCanonicalAliases(this.allowedRoots);
 
-        // Initialize OS-specific forbidden paths
-        this.forbiddenPaths = this.getForbiddenPaths().map((entry) =>
+        // Initialize OS-specific forbidden paths (including canonical aliases for OS 8.3/symlink equivalence)
+        const baseForbidden = this.getForbiddenPaths().map((entry) =>
             this.stripTrailingSep(path.resolve(path.normalize(entry)))
         );
+        this.forbiddenPaths = this.expandCanonicalAliases(baseForbidden);
+    }
+
+    /**
+     * Include canonical realpath aliases alongside configured paths for existing directories
+     * so OS short-path aliases (e.g. Windows RUNNER~1 <-> runneradmin) and symlinked roots
+     * (/tmp <-> /private/tmp) remain consistent between lexical and canonical checks.
+     */
+    private expandCanonicalAliases(entries: string[]): string[] {
+        const expanded = new Set<string>(entries);
+        const realpathFns: Array<(p: string) => string> = [];
+        if (typeof fs.realpathSync?.native === 'function') {
+            realpathFns.push((p) => fs.realpathSync.native(p));
+        }
+        if (typeof fs.realpathSync === 'function') {
+            realpathFns.push((p) => fs.realpathSync(p));
+        }
+
+        for (const entry of entries) {
+            for (const resolveFn of realpathFns) {
+                try {
+                    const real = this.stripTrailingSep(resolveFn(entry));
+                    if (real) {
+                        expanded.add(real);
+                    }
+                } catch {
+                    // Entry may not exist on disk yet; keep lexical entry only
+                }
+            }
+        }
+        return Array.from(expanded);
     }
 
     private stripTrailingSep(targetPath: string): string {
@@ -69,6 +102,57 @@ export class PathValidator {
             return decodeURIComponent(requestedPath);
         } catch {
             return requestedPath;
+        }
+    }
+
+    /**
+     * Resolve OS short/8.3 or case aliases along real, non-symlink ancestor components.
+     * Stops strictly before any symbolic link/junction so outside symlinks never bypass lexical containment.
+     */
+    private resolveNonSymlinkCanonicalSync(resolvedPath: string): string | null {
+        if (typeof fs.lstatSync !== 'function' || typeof fs.realpathSync !== 'function') {
+            return null;
+        }
+        const parsed = path.parse(resolvedPath);
+        const remainder = resolvedPath.slice(parsed.root.length);
+        if (!remainder) {
+            return null;
+        }
+
+        const parts = remainder.split(/[\\/]+/).filter(Boolean);
+        let prefix = parsed.root;
+        let consumed = 0;
+
+        for (let i = 0; i < parts.length; i += 1) {
+            const candidate = path.join(prefix, parts[i]);
+            try {
+                const stats = fs.lstatSync(candidate);
+                if (typeof stats.isSymbolicLink === 'function' && stats.isSymbolicLink()) {
+                    break;
+                }
+                prefix = candidate;
+                consumed = i + 1;
+            } catch {
+                break;
+            }
+        }
+
+        if (consumed === 0) {
+            return null;
+        }
+
+        const realpathFn: ((p: string) => string) =
+            typeof fs.realpathSync.native === 'function'
+                ? (p: string): string => fs.realpathSync.native(p)
+                : (p: string): string => fs.realpathSync(p);
+
+        try {
+            const canonicalPrefix = realpathFn(prefix);
+            const tail = parts.slice(consumed);
+            const combined = tail.length > 0 ? path.join(canonicalPrefix, ...tail) : canonicalPrefix;
+            return this.stripTrailingSep(path.resolve(combined));
+        } catch {
+            return null;
         }
     }
 
@@ -132,25 +216,56 @@ export class PathValidator {
         const resolved = this.stripTrailingSep(path.resolve(path.normalize(decoded)));
 
         // Step 7: Check against forbidden paths FIRST (exact match or nested child, case-safe on Windows)
-        for (const forbidden of this.forbiddenPaths) {
-            if (this.isWithinDirectory(resolved, forbidden)) {
-                SecurityLogger.error('Forbidden path access attempt', {
-                    requestedPath,
-                    resolvedPath: resolved,
-                    forbiddenPath: forbidden,
-                });
-                return {
-                    valid: false,
-                    error: 'UNAUTHORIZED_ACCESS',
-                    details: `Access to system path "${forbidden}" is forbidden`,
-                };
+        let nonSymlinkAlias: string | null | undefined;
+        const getNonSymlinkAlias = (): string | null => {
+            if (nonSymlinkAlias === undefined) {
+                nonSymlinkAlias = this.resolveNonSymlinkCanonicalSync(resolved);
+            }
+            return nonSymlinkAlias;
+        };
+
+        const pathsToCheckForbidden = [resolved];
+        if (process.platform === 'win32' && resolved.includes('~')) {
+            const alias = getNonSymlinkAlias();
+            if (alias && alias !== resolved) {
+                pathsToCheckForbidden.push(alias);
             }
         }
 
-        // Step 8: Ensure within at least one allowed root
-        const insideAllowedRoot = this.allowedRoots.some((root) =>
+        for (const candidate of pathsToCheckForbidden) {
+            for (const forbidden of this.forbiddenPaths) {
+                if (this.isWithinDirectory(candidate, forbidden)) {
+                    SecurityLogger.error('Forbidden path access attempt', {
+                        requestedPath,
+                        resolvedPath: resolved,
+                        forbiddenPath: forbidden,
+                    });
+                    return {
+                        valid: false,
+                        error: 'UNAUTHORIZED_ACCESS',
+                        details: `Access to system path "${forbidden}" is forbidden`,
+                    };
+                }
+            }
+        }
+
+        // Step 8: Ensure within at least one allowed root (supporting non-symlink OS short-path aliases)
+        let insideAllowedRoot = this.lexicalAllowedRoots.some((root) =>
             this.isWithinDirectory(resolved, root)
         );
+        if (!insideAllowedRoot) {
+            const alias = getNonSymlinkAlias();
+            if (alias) {
+                const hitsForbidden = this.forbiddenPaths.some((forbidden) =>
+                    this.isWithinDirectory(alias, forbidden)
+                );
+                if (!hitsForbidden) {
+                    insideAllowedRoot = this.lexicalAllowedRoots.some((root) =>
+                        this.isWithinDirectory(alias, root)
+                    );
+                }
+            }
+        }
         if (!insideAllowedRoot) {
             SecurityLogger.error('Unauthorized directory access attempt', {
                 requestedPath,
@@ -171,6 +286,48 @@ export class PathValidator {
             resolvedPath: resolved,
         });
         return { valid: true };
+    }
+
+    /**
+     * Validate the canonical parent directory for a path whose leaf may be a symbolic link.
+     * Ensures ancestor traversal/symlinks cannot escape allowed roots while allowing
+     * unlink/rename operations on an in-vault symlink without dereferencing its target.
+     */
+    async validateParentCanonicalForLink(requestedPath: string): Promise<ValidationResult & { canonicalLinkPath?: string }> {
+        const lexical = this.validate(requestedPath);
+        if (!lexical.valid) {
+            return lexical;
+        }
+
+        const decoded = this.decodeSafe(requestedPath);
+        const resolved = this.stripTrailingSep(path.resolve(path.normalize(decoded)));
+        const parentDir = path.dirname(resolved);
+        const leafName = path.basename(resolved);
+
+        const parentCanonical = await this.validateCanonical(parentDir);
+        if (!parentCanonical.valid) {
+            return parentCanonical;
+        }
+
+        try {
+            const realParent = await fs.promises.realpath(parentDir);
+            const canonicalLinkPath = path.join(realParent, leafName);
+            const linkCheck = this.validate(canonicalLinkPath);
+            if (!linkCheck.valid) {
+                return linkCheck;
+            }
+            return { valid: true, canonicalLinkPath };
+        } catch (err: unknown) {
+            const code = (err as { code?: string })?.code;
+            if (code === 'ENOENT') {
+                return { valid: true, canonicalLinkPath: resolved };
+            }
+            return {
+                valid: false,
+                error: 'INVALID_PATH',
+                details: err instanceof Error ? err.message : String(err),
+            };
+        }
     }
 
     /**
@@ -390,6 +547,77 @@ export class PathValidator {
      */
     getAllowedRoots(): string[] {
         return [...this.allowedRoots];
+    }
+
+    /**
+     * Validate a candidate new workspace/vault root before adding it to allowedRoots.
+     * Ensures the path is well-formed, resolves canonically to an existing directory,
+     * is not a filesystem drive root, and is not inside forbidden OS paths.
+     */
+    async validateNewRoot(requestedPath: string): Promise<ValidationResult> {
+        if (!requestedPath || requestedPath.trim() === '') {
+            return { valid: false, error: 'INVALID_PATH', details: 'Workspace path cannot be empty' };
+        }
+        if (requestedPath.includes('\0')) {
+            return { valid: false, error: 'INVALID_PATH', details: 'Workspace path contains null byte' };
+        }
+        const decoded = this.decodeSafe(requestedPath);
+        const driveRelativeMatch = /^[A-Za-z]:(?![\\/])/.test(decoded);
+        const colonRemainder = /^[A-Za-z]:/.test(decoded) ? decoded.slice(2) : decoded;
+        if (driveRelativeMatch || colonRemainder.includes(':') || decoded.includes('..')) {
+            return {
+                valid: false,
+                error: 'PATH_TRAVERSAL',
+                details: 'Invalid workspace path characters or traversal sequence',
+            };
+        }
+
+        const resolvedLexical = this.stripTrailingSep(path.resolve(path.normalize(decoded)));
+        let canonicalRoot: string;
+        try {
+            canonicalRoot = this.stripTrailingSep(await fs.promises.realpath(resolvedLexical));
+            const stats = await fs.promises.stat(canonicalRoot);
+            if (!stats.isDirectory()) {
+                return {
+                    valid: false,
+                    error: 'INVALID_PATH',
+                    details: 'Workspace root must be an existing directory',
+                };
+            }
+        } catch {
+            return {
+                valid: false,
+                error: 'INVALID_PATH',
+                details: `Workspace directory "${resolvedLexical}" does not exist or is inaccessible`,
+            };
+        }
+
+        const parsedCanonical = path.parse(canonicalRoot);
+        if (canonicalRoot === this.stripTrailingSep(parsedCanonical.root)) {
+            return {
+                valid: false,
+                error: 'UNAUTHORIZED_ACCESS',
+                details: 'Entire drive/filesystem root cannot be added as a workspace vault',
+            };
+        }
+
+        const canonicalForbidden = await Promise.all(
+            this.forbiddenPaths.map((p) => this.safeRealpathOrResolved(p))
+        );
+        for (const forbidden of canonicalForbidden) {
+            if (this.isWithinDirectory(canonicalRoot, forbidden)) {
+                return {
+                    valid: false,
+                    error: 'UNAUTHORIZED_ACCESS',
+                    details: `Workspace cannot point inside protected system path "${forbidden}"`,
+                };
+            }
+        }
+
+        return {
+            valid: true,
+            canonicalPath: canonicalRoot,
+        };
     }
 
     /**

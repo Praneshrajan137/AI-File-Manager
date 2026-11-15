@@ -8,7 +8,7 @@ interface ViewToggleProps {
 }
 
 export const ViewToggle: React.FC<ViewToggleProps> = ({ mode, onChange }) => (
-  <div className="flex gap-1 bg-gray-100 rounded p-1">
+  <div className="flex gap-1 bg-gray-100 dark:bg-slate-800 rounded p-1">
     <Button
       variant={mode === 'list' ? 'primary' : 'ghost'}
       size="sm"

@@ -79,11 +79,11 @@ const TEXT_EXTENSIONS = new Set([
     'log', 'csv', 'tsv',
 ]);
 
-// Binary document formats that require special handling
+// Binary/structured document formats that require specialized extractors
 const DOCUMENT_EXTENSIONS = new Set([
     'pdf',
-    // Future support:
-    // 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt', 'odt', 'ods', 'odp'
+    'docx',
+    'ipynb',
 ]);
 
 // Default configuration
@@ -93,11 +93,22 @@ const DEFAULT_CONFIG: Required<ExtractionConfig> = {
     includeMetadata: true,
 };
 
+type PdfParseV2Instance = {
+    getText: (params?: { first?: number }) => Promise<{
+        text: string;
+        total: number;
+        pages?: Array<{ num: number; text: string }>;
+    }>;
+    destroy: () => Promise<void>;
+};
+
+type PdfParseV2Class = new (options: { data: Buffer | Uint8Array; verbosity?: number }) => PdfParseV2Instance;
+type LegacyPdfParseFn = (buffer: Buffer, options?: Record<string, unknown>) => Promise<{ text: string; numpages: number }>;
+
 export class FileContentExtractor {
     private config: Required<ExtractionConfig>;
-    private pdfParser:
-        | ((buffer: Buffer, options?: Record<string, unknown>) => Promise<{ text: string; numpages: number }>)
-        | null = null;
+    private pdfParseClass: PdfParseV2Class | null = null;
+    private legacyPdfParser: LegacyPdfParseFn | null = null;
     private pdfParserLoaded = false;
 
     constructor(config?: ExtractionConfig) {
@@ -162,6 +173,14 @@ export class FileContentExtractor {
                 return await this.extractPDF(filePath, buffer);
             }
 
+            if (ext === 'docx') {
+                return await this.extractDOCX(filePath, buffer);
+            }
+
+            if (ext === 'ipynb') {
+                return await this.extractNotebook(filePath, buffer);
+            }
+
             // Unsupported: return metadata only
             return this.createMetadataResult(filePath, 'Unsupported file type');
 
@@ -190,6 +209,10 @@ export class FileContentExtractor {
             // Check for binary content (null bytes indicate binary)
             if (this.hasBinaryContent(content)) {
                 return this.createMetadataResult(filePath, 'Binary content detected');
+            }
+
+            if (ext === 'csv' || ext === 'tsv') {
+                content = this.formatDelimitedText(content, ext === 'tsv' ? '\t' : ',');
             }
 
             // Truncate if too long
@@ -229,10 +252,18 @@ export class FileContentExtractor {
         const ext = 'pdf';
 
         try {
-            // Lazy load pdf-parse
+            // Lazy load pdf-parse (v2 exports { PDFParse }; keep callable fallback for legacy/mocks)
             if (!this.pdfParserLoaded) {
                 try {
-                    this.pdfParser = require('pdf-parse');
+                    // eslint-disable-next-line @typescript-eslint/no-var-requires
+                    const pdfParseMod = require('pdf-parse');
+                    if (pdfParseMod && typeof pdfParseMod.PDFParse === 'function') {
+                        this.pdfParseClass = pdfParseMod.PDFParse as PdfParseV2Class;
+                    } else if (typeof pdfParseMod === 'function') {
+                        this.legacyPdfParser = pdfParseMod as LegacyPdfParseFn;
+                    } else if (pdfParseMod && typeof pdfParseMod.default === 'function') {
+                        this.legacyPdfParser = pdfParseMod.default as LegacyPdfParseFn;
+                    }
                     this.pdfParserLoaded = true;
                 } catch (e) {
                     return this.createMetadataResult(filePath,
@@ -241,18 +272,42 @@ export class FileContentExtractor {
             }
 
             // Parse PDF
-            if (!this.pdfParser) {
+            if (!this.pdfParseClass && !this.legacyPdfParser) {
                 return this.createMetadataResult(
                     filePath,
                     'PDF parsing not available (pdf-parse not installed)'
                 );
             }
-            const data = await this.pdfParser(buffer, {
-                // Limit pages for performance
-                max: 100,
-            });
 
-            let content = data.text || '';
+            let content = '';
+            let pageCount = 0;
+
+            if (this.pdfParseClass) {
+                const parser = new this.pdfParseClass({ data: buffer, verbosity: 0 });
+                try {
+                    const data = await parser.getText({ first: 100 });
+                    pageCount = typeof data.total === 'number'
+                        ? data.total
+                        : (Array.isArray(data.pages) ? data.pages.length : 0);
+                    if (Array.isArray(data.pages) && data.pages.length > 0) {
+                        content = data.pages
+                            .filter((p) => p && typeof p.text === 'string' && p.text.trim().length > 0)
+                            .map((p) => `[Page ${p.num}]\n${p.text.trim()}`)
+                            .join('\n\n');
+                    } else {
+                        content = data.text || '';
+                    }
+                } finally {
+                    await parser.destroy().catch(() => undefined);
+                }
+            } else if (this.legacyPdfParser) {
+                const data = await this.legacyPdfParser(buffer, {
+                    // Limit pages for performance
+                    max: 100,
+                });
+                content = data.text || '';
+                pageCount = data.numpages || 0;
+            }
 
             // Handle empty PDFs (might be image-based/scanned)
             if (!content.trim()) {
@@ -263,7 +318,7 @@ export class FileContentExtractor {
                     contentType: 'metadata',
                     fileType: ext,
                     metadata: {
-                        pageCount: data.numpages,
+                        pageCount,
                     },
                 };
             }
@@ -283,7 +338,7 @@ export class FileContentExtractor {
                 contentType: 'full',
                 fileType: ext,
                 metadata: {
-                    pageCount: data.numpages,
+                    pageCount,
                     charCount: content.length,
                     wordCount: this.countWords(content),
                 },
@@ -291,18 +346,160 @@ export class FileContentExtractor {
 
         } catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
+            const errName = error instanceof Error ? error.name : '';
+            const lowerMsg = msg.toLowerCase();
 
             // Common PDF errors
-            if (msg.includes('password') || msg.includes('encrypted')) {
+            if (lowerMsg.includes('password') || lowerMsg.includes('encrypted') || errName === 'PasswordException') {
                 return this.createMetadataResult(filePath, 'PDF is password protected');
             }
 
-            if (msg.includes('Invalid') || msg.includes('corrupt')) {
+            if (msg.includes('Invalid') || lowerMsg.includes('corrupt') || errName === 'InvalidPDFException') {
                 return this.createMetadataResult(filePath, 'PDF appears to be corrupted');
             }
 
             return this.createMetadataResult(filePath, `PDF extraction failed: ${msg}`);
         }
+    }
+
+    /**
+     * Extract plain text from `.docx` Word documents using `mammoth`.
+     */
+    private async extractDOCX(filePath: string, buffer: Buffer): Promise<ExtractionResult> {
+        const ext = 'docx';
+        try {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const mammothMod = require('mammoth') as {
+                extractRawText?: (input: { buffer: Buffer }) => Promise<{ value?: string }>;
+            };
+            if (!mammothMod || typeof mammothMod.extractRawText !== 'function') {
+                return this.createMetadataResult(filePath, 'DOCX parsing not available (mammoth missing)');
+            }
+
+            const result = await mammothMod.extractRawText({ buffer });
+            let content = this.cleanText(result?.value || '');
+            if (!content) {
+                return this.createMetadataResult(filePath, 'DOCX document contains no extractable text');
+            }
+
+            if (content.length > this.config.maxCharacters) {
+                content =
+                    content.substring(0, this.config.maxCharacters) +
+                    '\n\n[Content truncated - DOCX exceeds maximum extraction size]';
+            }
+
+            return {
+                success: true,
+                content,
+                contentType: 'full',
+                fileType: ext,
+                metadata: {
+                    charCount: content.length,
+                    wordCount: this.countWords(content),
+                },
+            };
+        } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            return this.createMetadataResult(filePath, `DOCX extraction failed: ${msg}`);
+        }
+    }
+
+    /**
+     * Extract markdown & code cells from Jupyter `.ipynb` notebooks while dropping
+     * noisy binary/base64 image outputs.
+     */
+    private async extractNotebook(filePath: string, buffer: Buffer): Promise<ExtractionResult> {
+        const ext = 'ipynb';
+        try {
+            const parsed = JSON.parse(buffer.toString('utf-8')) as {
+                cells?: Array<{
+                    cell_type?: string;
+                    source?: string | string[];
+                    outputs?: Array<{
+                        text?: string | string[];
+                        data?: Record<string, unknown>;
+                    }>;
+                }>;
+            };
+            if (!Array.isArray(parsed?.cells)) {
+                return this.createMetadataResult(filePath, 'Invalid Jupyter notebook structure');
+            }
+
+            const parts: string[] = [];
+            parsed.cells.forEach((cell, idx) => {
+                const cellType = cell?.cell_type || 'unknown';
+                if (cellType === 'raw') return;
+
+                const rawSource = Array.isArray(cell?.source)
+                    ? cell.source.join('')
+                    : String(cell?.source ?? '');
+                const cleanedSource = rawSource.trim();
+                if (!cleanedSource) return;
+
+                const blockLines = [`[Cell ${idx + 1} (${cellType})]`, cleanedSource];
+                if (Array.isArray(cell?.outputs) && cell.outputs.length > 0) {
+                    const textOutputs: string[] = [];
+                    for (const out of cell.outputs) {
+                        const rawOut = out?.text
+                            ? Array.isArray(out.text)
+                                ? out.text.join('')
+                                : String(out.text)
+                            : typeof out?.data?.['text/plain'] === 'string'
+                              ? out.data['text/plain']
+                              : Array.isArray(out?.data?.['text/plain'])
+                                ? (out.data['text/plain'] as string[]).join('')
+                                : '';
+                        if (rawOut.trim()) {
+                            textOutputs.push(rawOut.trim().slice(0, 400));
+                        }
+                    }
+                    if (textOutputs.length > 0) {
+                        blockLines.push(`Output: ${textOutputs.join(' | ').slice(0, 600)}`);
+                    }
+                }
+                parts.push(blockLines.join('\n'));
+            });
+
+            let content = this.cleanText(parts.join('\n\n'));
+            if (!content) {
+                return this.createMetadataResult(filePath, 'Jupyter notebook contains no text/code cells');
+            }
+            if (content.length > this.config.maxCharacters) {
+                content =
+                    content.substring(0, this.config.maxCharacters) +
+                    '\n\n[Content truncated - notebook exceeds maximum extraction size]';
+            }
+
+            return {
+                success: true,
+                content,
+                contentType: 'full',
+                fileType: ext,
+                metadata: {
+                    charCount: content.length,
+                    wordCount: this.countWords(content),
+                },
+            };
+        } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            return this.createMetadataResult(filePath, `Notebook extraction failed: ${msg}`);
+        }
+    }
+
+    private formatDelimitedText(raw: string, delimiter: string): string {
+        const lines = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter((l) => l.trim().length > 0);
+        if (lines.length <= 1) {
+            return raw;
+        }
+        const headers = lines[0].split(delimiter).map((h) => h.trim().replace(/^"|"$/g, ''));
+        if (headers.length <= 1) {
+            return raw;
+        }
+        const out = [`Headers: ${headers.join(' | ')}`];
+        for (let i = 1; i < lines.length; i++) {
+            out.push(lines[i]);
+        }
+        return out.join('\n');
     }
 
     /**

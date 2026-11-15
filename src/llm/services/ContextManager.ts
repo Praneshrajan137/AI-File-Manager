@@ -21,43 +21,65 @@ export interface CompressionOptions {
     /** Number of top chunks to keep verbatim */
     verbatimCount?: number;
 
-    /** Model to use for summarization */
+    /** Model to use for summarization (kept for API compatibility) */
     summarizationModel?: string;
+
+    /** Optional user query for extractive sentence scoring */
+    query?: string;
 }
 
 const DEFAULT_OPTIONS: Required<CompressionOptions> = {
     maxTokens: 4000,
     verbatimCount: 3,
     summarizationModel: 'llama3.2',
+    query: '',
 };
+
+/**
+ * Format passive workspace content inside explicit untrusted_workspace_data isolation
+ * fences so embedded instructions cannot override system or tool boundaries.
+ */
+export function formatUntrustedWorkspaceData(
+    source: string,
+    citation: string,
+    content: string,
+    heading?: string
+): string {
+    const safeSource = source.replace(/"/g, '&quot;');
+    const safeCitation = citation.replace(/"/g, '&quot;');
+    return `<untrusted_workspace_data source="${safeSource}" citation="${safeCitation}">
+📄 **FILE: ${citation}**${heading ? ` (${heading})` : ''}
+📍 PATH: ${source}
+---
+${content}
+---
+</untrusted_workspace_data>`;
+}
 
 export class ContextManager {
     private llmInterface: LLMInterface | null = null;
 
     /**
-     * Initialize with optional LLM interface for summarization.
-     * If not provided, falls back to truncation-based compression.
+     * Initialize with optional LLM interface.
      */
     constructor(llmInterface?: LLMInterface) {
         this.llmInterface = llmInterface || null;
     }
 
     /**
-     * Set LLM interface for summarization.
+     * Retained for API compatibility.
      */
     setLLMInterface(llmInterface: LLMInterface): void {
         this.llmInterface = llmInterface;
     }
 
+    getLLMInterface(): LLMInterface | null {
+        return this.llmInterface;
+    }
+
     /**
-     * Compress context intelligently.
-     * 
-     * Keeps top N chunks verbatim (most relevant), summarizes rest.
-     * Falls back to truncation if LLM not available.
-     * 
-     * @param records - Vector records sorted by relevance
-     * @param options - Compression options
-     * @returns Compressed context string
+     * Fast deterministic extractive context budgeting & injection-fence formatting.
+     * Eliminates blocking secondary Ollama summarization calls during RAG retrieval.
      */
     async compress(
         records: VectorRecord[],
@@ -69,115 +91,110 @@ export class ContextManager {
             return '';
         }
 
-        // Split into verbatim (top) and summarizable (rest)
+        // Split into verbatim (top) and extractively compressed tail
         const verbatimRecords = records.slice(0, opts.verbatimCount);
         const remainingRecords = records.slice(opts.verbatimCount);
 
-        // Format verbatim chunks with full content
         const verbatimContext = this.formatVerbatimContext(verbatimRecords);
         const verbatimTokens = this.estimateTokens(verbatimContext);
 
-        // If no remaining or verbatim already exceeds limit
         if (remainingRecords.length === 0 || verbatimTokens >= opts.maxTokens) {
             return this.truncateToTokenLimit(verbatimContext, opts.maxTokens);
         }
 
-        // Calculate remaining token budget for summary
-        const remainingBudget = opts.maxTokens - verbatimTokens - 100; // Reserve 100 for formatting
-
-        // Summarize remaining chunks
-        let summaryContent: string;
-
-        if (this.llmInterface && remainingBudget > 200) {
-            try {
-                summaryContent = await this.summarizeWithLLM(
-                    remainingRecords,
-                    Math.min(remainingBudget, 500),
-                    opts.summarizationModel
-                );
-            } catch {
-                // Fallback to simple truncation on LLM error
-                summaryContent = this.createSimpleSummary(remainingRecords, remainingBudget);
-            }
-        } else {
-            summaryContent = this.createSimpleSummary(remainingRecords, remainingBudget);
+        const remainingTokenBudget = Math.max(0, opts.maxTokens - verbatimTokens - 40);
+        if (remainingTokenBudget < 30) {
+            return this.truncateToTokenLimit(verbatimContext, opts.maxTokens);
         }
 
-        // Combine verbatim and summary
-        return `${verbatimContext}\n\n---\n📝 **Additional Context Summary:**\n${summaryContent}`;
+        const summaryContent = this.createExtractiveSummary(
+            remainingRecords,
+            remainingTokenBudget * 4,
+            opts.query
+        );
+
+        const combined = summaryContent
+            ? `${verbatimContext}\n\n---\n📝 **Additional Extractive Context:**\n${summaryContent}`
+            : verbatimContext;
+        return this.truncateToTokenLimit(combined, opts.maxTokens);
     }
 
     /**
-     * Format top chunks with full content for verbatim inclusion.
+     * Format top chunks inside explicit untrusted_workspace_data isolation fences
+     * with [basename#Lx-Ly] line-range headers.
      */
     private formatVerbatimContext(records: VectorRecord[]): string {
-        return records.map((record) => {
-            const fileName = path.basename(record.file_path);
-            return `📄 **FILE: ${fileName}**
-📍 PATH: ${record.file_path}
----
-${record.chunk_text}
----`;
-        }).join('\n\n');
+        return records
+            .map((record) => {
+                const fileName = path.basename(record.file_path) || record.file_path;
+                const lineTag = record.start_line
+                    ? `#L${record.start_line}${record.end_line && record.end_line !== record.start_line ? `-L${record.end_line}` : ''}`
+                    : '';
+                const citation = `${fileName}${lineTag}`;
+                return formatUntrustedWorkspaceData(
+                    record.file_path,
+                    citation,
+                    record.chunk_text,
+                    record.heading
+                );
+            })
+            .join('\n\n');
     }
 
     /**
-     * Summarize chunks using LLM.
+     * Fast extractive line/sentence summarization weighted by query term overlap.
      */
-    private async summarizeWithLLM(
+    private createExtractiveSummary(
         records: VectorRecord[],
-        maxTokens: number,
-        model: string
-    ): Promise<string> {
-        if (!this.llmInterface) {
-            throw new Error('LLM interface not available');
+        maxChars: number,
+        query: string = ''
+    ): string {
+        if (maxChars <= 20) {
+            return '';
         }
 
-        // Create summary prompt from chunks
-        const chunkSummaries = records.map(r =>
-            `[${path.basename(r.file_path)}]: ${r.chunk_text.substring(0, 300)}...`
-        ).join('\n\n');
+        const queryTerms = new Set(
+            (query.toLowerCase().match(/[a-z0-9_]{2,}/g) ?? []).slice(0, 12)
+        );
 
-        const prompt = `Summarize these file contents concisely, preserving key information:
+        const extracts: string[] = [];
+        let usedChars = 0;
 
-${chunkSummaries}
+        for (const r of records) {
+            const fileName = path.basename(r.file_path) || r.file_path;
+            const lineTag = r.start_line ? `#L${r.start_line}` : '';
+            const rawLines = r.chunk_text
+                .split(/\r?\n/)
+                .map((l) => l.trim())
+                .filter((l) => l.length > 0);
 
-Provide a brief summary focusing on the most important points.`;
+            let bestLine = rawLines[0] ?? '';
+            if (queryTerms.size > 0 && rawLines.length > 1) {
+                let bestScore = -1;
+                for (const line of rawLines) {
+                    const lower = line.toLowerCase();
+                    let hits = 0;
+                    for (const term of queryTerms) {
+                        if (lower.includes(term)) hits++;
+                    }
+                    if (hits > bestScore) {
+                        bestScore = hits;
+                        bestLine = line;
+                    }
+                }
+            }
 
-        // Use queryFull for non-streaming summary
-        const retrievalResult = {
-            context: '',
-            sources: [],
-            tokenCount: 0,
-        };
+            const snippet = bestLine.slice(0, 180).replace(/\s+/g, ' ');
+            const entry = `<untrusted_workspace_data source="${r.file_path}" citation="${fileName}${lineTag}">• ${fileName}${lineTag}: ${snippet}</untrusted_workspace_data>`;
 
-        // Get summary (this is a simplified call - in production use dedicated summarize endpoint)
-        let summary = '';
-        for await (const chunk of this.llmInterface.query(prompt, retrievalResult, {
-            maxTokens,
-            model,
-            temperature: 0.3, // Lower temperature for factual summary
-        })) {
-            summary += chunk;
+            if (usedChars + entry.length + 1 > maxChars) {
+                break;
+            }
+            extracts.push(entry);
+            usedChars += entry.length + 1;
         }
 
-        return summary.trim();
-    }
-
-    /**
-     * Create simple summary without LLM (truncation-based).
-     */
-    private createSimpleSummary(records: VectorRecord[], maxChars: number): string {
-        const summaries = records.map(r => {
-            const fileName = path.basename(r.file_path);
-            const preview = r.chunk_text.substring(0, 100).replace(/\n/g, ' ');
-            return `• ${fileName}: ${preview}...`;
-        });
-
-        const combined = summaries.join('\n');
-        return combined.length > maxChars
-            ? combined.substring(0, maxChars - 3) + '...'
-            : combined;
+        return extracts.join('\n');
     }
 
     /**

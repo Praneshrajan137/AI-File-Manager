@@ -9,6 +9,8 @@ interface ToastProps extends ToastMessage {
 export const Toast: React.FC<ToastProps> = ({
   type,
   message,
+  actionLabel,
+  onAction,
   onClose,
 }) => {
   // Note: Auto-dismiss is handled by useToast hook, not here
@@ -52,6 +54,20 @@ export const Toast: React.FC<ToastProps> = ({
       <div className="flex-shrink-0 mt-0.5">{config.icon}</div>
 
       <div className="flex-1 text-sm font-medium">{message}</div>
+
+      {actionLabel && onAction && (
+        <button
+          type="button"
+          onClick={() => {
+            onAction();
+            onClose();
+          }}
+          data-testid="toast-action-button"
+          className="flex-shrink-0 px-2.5 py-1 text-xs font-semibold bg-white/20 hover:bg-white/30 rounded transition-colors"
+        >
+          {actionLabel}
+        </button>
+      )}
 
       <button
         onClick={onClose}

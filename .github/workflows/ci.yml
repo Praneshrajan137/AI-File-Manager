@@ -1,0 +1,111 @@
+name: Frontier Workspace OS CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'frontier/**'
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-and-unit:
+    name: Typecheck, Lint & Unit Tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npm run type-check
+
+      - name: ESLint check
+        run: npm run lint
+
+      - name: Run Jest test suite
+        run: npx jest --runInBand
+
+      - name: Report Jest coverage telemetry (unrelaxed local threshold reality check)
+        run: npx jest --coverage --coverageThreshold='{}' --coverageReporters=text-summary --runInBand
+
+  build-and-e2e:
+    name: Build & Electron E2E (${{ matrix.os }})
+    needs: quality-and-unit
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Linux Xvfb & Electron system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libnotify4 libnss3 libxss1 libasound2t64 libgbm1 libgtk-3-0 libxtst6 || sudo apt-get install -y xvfb libnotify4 libnss3 libxss1 libasound2 libgbm1 libgtk-3-0 libxtst6
+          npx playwright install-deps chromium
+
+      - name: Build Electron main, preload & renderer
+        run: npm run build
+
+      - name: Verify Electron 45 runtime ABI smoke check
+        run: node scripts/smoke-electron-stack.mjs --in-electron
+
+      - name: Run Playwright Electron E2E tests (Linux Xvfb)
+        if: runner.os == 'Linux'
+        env:
+          CI: 'true'
+          ELECTRON_DISABLE_SECURITY_WARNINGS: 'true'
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x960x24" npx playwright test --reporter=list
+
+      - name: Run Playwright Electron E2E tests (Windows)
+        if: runner.os == 'Windows'
+        env:
+          CI: 'true'
+          ELECTRON_DISABLE_SECURITY_WARNINGS: 'true'
+        run: npx playwright test --reporter=list
+
+      - name: Package unpacked Electron build (ASAR & unpacked native modules)
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --dir --publish never
+
+      - name: Verify unpacked Electron bundle contents
+        run: node scripts/verify-unpacked-build.mjs
+
+      - name: Upload Playwright report & failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failure-${{ matrix.os }}
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

@@ -3,6 +3,7 @@ import { EventEmitter } from 'events';
 import * as path from 'path';
 import { EventQueue } from '@main/dsa/EventQueue';
 import { FileEvent, EventPriority } from '@shared/contracts';
+import { FileSystemLogger } from '@shared/logging';
 
 /**
  * Options for file watching.
@@ -330,8 +331,7 @@ export class FileWatcher extends EventEmitter {
      * @param error - Error object
      */
     private handleError(error: Error): void {
-        // Log error for debugging
-        console.error('[FileWatcher] Error:', error.message);
+        FileSystemLogger.error('FileWatcher error', { error: error.message });
 
         // Emit error event for consumers
         this.emit('error', error);

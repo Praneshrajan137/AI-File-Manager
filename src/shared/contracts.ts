@@ -100,11 +100,137 @@ export interface FilePreviewResult {
   fromCache: boolean;
 }
 
+export interface FileRangeLine {
+  lineNumber: number;
+  text: string;
+}
+
+export interface FileLineRangeResult {
+  path: string;
+  name: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+  lines: FileRangeLine[];
+  truncated: boolean;
+}
+
+export interface ContentSearchMatch {
+  chunkId: string;
+  filePath: string;
+  fileName: string;
+  chunkIndex: number;
+  startLine?: number;
+  endLine?: number;
+  heading?: string;
+  snippet: string;
+  score?: number;
+}
+
+export interface GraphInsightDuplicateCluster {
+  sha256: string;
+  files: string[];
+  fileSize: number;
+  wastedBytes: number;
+}
+
+export interface GraphInsightHubTarget {
+  targetRef: string;
+  backlinkCount: number;
+}
+
+export interface GraphInsightRecentFile {
+  path: string;
+  fileType: string;
+  chunkCount: number;
+  indexedAt: number;
+}
+
+export interface GraphInsightsResponse {
+  stats: {
+    totalFiles: number;
+    totalChunks: number;
+    totalTokens: number;
+    lastIndexed: number;
+    duplicateClusters: GraphInsightDuplicateCluster[];
+    totalWastedBytes: number;
+    topHubs: GraphInsightHubTarget[];
+    recentFiles: GraphInsightRecentFile[];
+  };
+  symbolMatches?: Array<{
+    filePath: string;
+    symbolName: string;
+    kind: string;
+    lineNumber: number;
+  }>;
+  backlinks?: Array<{
+    sourcePath: string;
+    targetRef: string;
+    kind: string;
+    lineNumber: number;
+  }>;
+}
+
+export interface LLMModelsSnapshot {
+  available: boolean;
+  models: string[];
+  activeModel: string;
+  embeddingModel: string;
+  rerankerModel: string;
+  temperature: number;
+  maxTokens: number;
+}
+
 export interface SystemPaths {
   home: string;
   documents: string;
   downloads: string;
   pictures: string;
+}
+
+export type FileDeleteMode = 'vault' | 'trash' | 'permanent';
+
+export interface OperationRecord {
+  id: string;
+  type: 'delete' | 'move' | 'rename' | 'create_file' | 'create_dir' | 'batch';
+  timestamp: number;
+  sourcePath: string;
+  destinationPath?: string;
+  vaultPayloadPath?: string;
+  symlinkTarget?: string;
+  children?: OperationRecord[];
+  isDirectory: boolean;
+  isSymlink?: boolean;
+  size: number;
+  undoable: boolean;
+  mode?: FileDeleteMode;
+  description: string;
+}
+
+export interface OperationJournalState {
+  canUndo: boolean;
+  canRedo: boolean;
+  undoCount: number;
+  redoCount: number;
+  lastUndoDescription?: string;
+  lastRedoDescription?: string;
+  vaultItemCount: number;
+  vaultTotalBytes: number;
+}
+
+export interface UndoRedoResult {
+  success: boolean;
+  operation?: OperationRecord;
+  restoredPath?: string;
+  state: OperationJournalState;
+}
+
+export interface VaultConfigSnapshot {
+  allowedRoots: string[];
+  indexedRoots: string[];
+  excludedDirs: string[];
+  favorites: string[];
+  defaultDeleteMode: 'vault' | 'trash';
 }
 
 /**
@@ -291,6 +417,15 @@ export interface TextChunk {
 
   /** Chunk number (0-indexed) */
   chunkIndex: number;
+
+  /** Optional 1-based start line in original file */
+  startLine?: number;
+
+  /** Optional 1-based end line in original file */
+  endLine?: number;
+
+  /** Optional active structural heading / symbol label */
+  heading?: string;
 }
 
 /**
@@ -334,6 +469,27 @@ export interface VectorRecord {
 
   /** Indexing timestamp */
   indexed_at: number;
+
+  /** Optional 1-based start line in source file */
+  start_line?: number;
+
+  /** Optional 1-based end line in source file */
+  end_line?: number;
+
+  /** Optional active structural heading / symbol label */
+  heading?: string;
+}
+
+/**
+ * Structured source citation for clickable inspector navigation (#Lx-Ly).
+ */
+export interface RetrievalSource {
+  filePath: string;
+  startLine?: number;
+  endLine?: number;
+  heading?: string;
+  score?: number;
+  snippet?: string;
 }
 
 /**
@@ -348,6 +504,9 @@ export interface RetrievalResult {
 
   /** Total token count of context */
   tokenCount: number;
+
+  /** Optional structured source citations with line ranges */
+  structuredSources?: RetrievalSource[];
 }
 
 /**
@@ -440,7 +599,14 @@ export interface ILLMService {
 // ============================================================================
 
 /**
- * Embedding vector (384 dimensions for all-MiniLM-L6-v2)
+ * Default local AI embedding and reranking model identifiers.
+ */
+export const DEFAULT_EMBEDDING_MODEL = 'Xenova/bge-small-en-v1.5';
+export const FALLBACK_EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
+export const DEFAULT_RERANKER_MODEL = 'Xenova/ms-marco-MiniLM-L-6-v2';
+
+/**
+ * Embedding vector (384 dimensions for bge-small-en-v1.5 / all-MiniLM-L6-v2)
  */
 export type Embedding = number[];
 
@@ -448,7 +614,7 @@ export type Embedding = number[];
  * Embedding generation options
  */
 export interface EmbeddingOptions {
-  /** Model name (default: 'all-MiniLM-L6-v2') */
+  /** Model name (default: 'Xenova/bge-small-en-v1.5') */
   model?: string;
 
   /** Normalize embeddings (default: true) */
@@ -507,6 +673,11 @@ export interface IEmbeddingModel {
    * @returns Similarity score (-1 to 1, where 1 = identical)
    */
   similarity(a: Embedding, b: Embedding): number;
+
+  /**
+   * Optional cross-encoder reranking scores for `(query, passage)` pairs.
+   */
+  rerank?(query: string, passages: string[]): Promise<number[]>;
 }
 
 // ============================================================================
@@ -615,6 +786,9 @@ export interface RetrievalResult {
 
   /** Estimated token count of context */
   tokenCount: number;
+
+  /** Optional structured source citations with line ranges */
+  structuredSources?: RetrievalSource[];
 }
 
 // ============================================================================
@@ -875,4 +1049,79 @@ export const MAX_HISTORY_SIZE = 50;
  * Ring buffer capacity (log lines).
  */
 export const RING_BUFFER_CAPACITY = 100;
+
+// ============================================================================
+// STAGE 5: COPILOT AGENT & AI ORGANIZER CONTRACTS
+// ============================================================================
+
+export type CopilotQueryMode = 'rag' | 'agent';
+
+export interface CopilotContextScope {
+  currentPath?: string;
+  selectedPaths?: string[];
+  useFolder?: boolean;
+  useSelection?: boolean;
+}
+
+export type AgentToolName =
+  | 'search_files'
+  | 'search_content'
+  | 'read_file_range'
+  | 'graph_lookup';
+
+export interface AgentTraceStep {
+  step: number;
+  thought?: string;
+  tool: string;
+  arguments: Record<string, unknown>;
+  allowed: boolean;
+  observationSummary: string;
+  durationMs: number;
+}
+
+export interface AgentRunResult {
+  answer: string;
+  steps: AgentTraceStep[];
+  sources: RetrievalSource[];
+  stepLimitReached: boolean;
+  aborted: boolean;
+}
+
+export type OrganizeStrategy =
+  | 'auto'
+  | 'smart_category'
+  | 'by_type'
+  | 'by_date'
+  | 'ai_suggested';
+
+export interface OrganizePlanOperation {
+  id: string;
+  action: 'move' | 'rename';
+  sourcePath: string;
+  destinationPath: string;
+  sourceSha256: string;
+  size: number;
+  category: string;
+  reason: string;
+}
+
+export interface OrganizePlanResult {
+  planId: string;
+  targetDir: string;
+  strategy: OrganizeStrategy;
+  usedLLM: boolean;
+  createdAt: number;
+  operations: OrganizePlanOperation[];
+  skippedFiles: number;
+  summary: string;
+}
+
+export interface OrganizeApplyResult {
+  success: boolean;
+  planId: string;
+  appliedCount: number;
+  operationId: string;
+  journalState: OperationJournalState;
+}
+
 

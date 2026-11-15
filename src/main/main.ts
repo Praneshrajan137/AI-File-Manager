@@ -24,17 +24,26 @@
  * 5. IPC handlers
  */
 
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, protocol } from 'electron';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { ConfigManager } from '@shared/config';
 import { Logger, getLogger } from '@shared/logging';
+import { suppressSqliteExperimentalWarning } from '@shared/utils/processWarnings';
 import { ErrorHandler } from './middleware/ErrorHandler';
+import {
+  getPrivilegedSchemeConfig,
+  registerVaultAssetProtocol,
+} from './services/AssetProtocol';
 import {
   configureKernelHooks,
   getReactiveWorkspaceKernel,
   resetReactiveWorkspaceKernel,
 } from './services/ReactiveWorkspaceKernel';
+
+if (typeof protocol?.registerSchemesAsPrivileged === 'function') {
+  protocol.registerSchemesAsPrivileged([getPrivilegedSchemeConfig()]);
+}
 
 /**
  * Reference to main application window.
@@ -53,6 +62,7 @@ const isDevelopment = process.env.NODE_ENV === 'development';
  * Must be called before app.whenReady().
  */
 function initializeSystems(): void {
+  suppressSqliteExperimentalWarning();
   // 1. Initialize Configuration
   ConfigManager.initialize({
     watchConfig: isDevelopment, // Hot-reload in development
@@ -283,6 +293,8 @@ app.whenReady().then(async () => {
     throw error;
   }
 
+  registerVaultAssetProtocol();
+
   createWindow();
 
   // macOS: Re-create window when dock icon clicked
@@ -302,7 +314,7 @@ app.on('window-all-closed', () => {
   const logger = getLogger();
   logger.info('All windows closed');
 
-  void (async () => {
+  void (async (): Promise<void> => {
     const [kernelResult, llmResult] = await Promise.allSettled([
       resetReactiveWorkspaceKernel(),
       import('./handlers/llmHandlers').then(({ cleanupLLMServices }) => cleanupLLMServices()),

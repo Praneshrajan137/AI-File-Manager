@@ -41,6 +41,30 @@ function getDefaultForbiddenPaths(): string[] {
   }
 }
 
+export const DEFAULT_EXCLUDED_DIRS: string[] = [
+  'node_modules',
+  '.git',
+  '.hg',
+  '.svn',
+  '__pycache__',
+  '.venv',
+  'venv',
+  '.mypy_cache',
+  '.pytest_cache',
+  '.next',
+  '.nuxt',
+  '.turbo',
+  '.cache',
+  'dist-packages',
+  'coverage',
+  '$RECYCLE.BIN',
+  'System Volume Information',
+  'AppData',
+  '.Trash',
+  '.file-manager',
+  'trash-vault',
+];
+
 /**
  * Get default allowed roots.
  */
@@ -73,6 +97,10 @@ export const defaultConfig: AppConfig = {
 
   fileSystem: {
     allowedRoots: getDefaultAllowedRoots(),
+    indexedRoots: [],
+    excludedDirs: [...DEFAULT_EXCLUDED_DIRS],
+    favorites: [],
+    defaultDeleteMode: 'vault',
     maxFileSize: 10 * 1024 * 1024, // 10MB
     cacheSize: 100 * 1024 * 1024, // 100MB
     chunkSize: 500,
@@ -84,6 +112,10 @@ export const defaultConfig: AppConfig = {
     maxTokens: 2048,
     temperature: 0.7,
     embeddingDimensions: 384,
+    embeddingModel: process.env.EMBEDDING_MODEL || 'Xenova/bge-small-en-v1.5',
+    embeddingDtype: 'q8',
+    rerankerModel: 'Xenova/ms-marco-MiniLM-L-6-v2',
+    enableWebGPU: false,
   },
 
   logging: {
