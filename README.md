@@ -1,68 +1,69 @@
-# 🗂️ AI File Manager
+# 🗂️ PrivateVault OS File Manager
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue?logo=typescript)](https://www.typescriptlang.org/)
-[![Electron](https://img.shields.io/badge/Electron-28.0-47848F?logo=electron)](https://www.electronjs.org/)
+[![Electron](https://img.shields.io/badge/Electron-45.3-47848F?logo=electron)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18.2-61DAFB?logo=react)](https://reactjs.org/)
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 
-> **Industrial-grade OS File Manager with Local AI Integration**
-> 
-> A privacy-first desktop file manager featuring **custom DSA implementations**, **local LLM chat** (via Ollama), and **semantic file search** powered by RAG.
+> **Local-First Spatial Knowledge & Agentic File OS**
+>
+> A privacy-first desktop file manager and local knowledge operating system combining **custom OS data structures**, **hybrid SQLite FTS5 + LanceDB vector RAG**, **spatial knowledge lenses**, **atomic link-safe file organization**, **offline synthesis resilience**, and an **opt-in read-only MCP server**.
 
 ---
 
 ## ✨ Features
 
-### 🔒 Privacy-First Architecture
-- **100% Local Processing** — No cloud APIs, no telemetry
-- **Sandboxed Renderer** — Context isolation enabled, no direct fs access
-- **Path Traversal Protection** — All paths validated before fs operations
+### 🔒 Privacy-First Vault & Crash-Safe Operations
+- **100% Local Processing** — No mandatory cloud APIs or telemetry; zero-trust prompt fencing for untrusted file contents
+- **Sandboxed Renderer & Strict Guards** — `contextIsolation: true`, `PathValidator` canonical/symlink enforcement, and `SecretGuard` blocking/redacting `.env`, keys, and tokens across preview, search, indexing, and MCP
+- **Crash-Safe `OperationJournal`** — Transactional undo/redo for moves, renames, deletes, and multi-file AI organize batches (with OS Trash staging and clean restoration)
 
-### 🧠 AI-Powered File Intelligence
-- **Chat with Your Files** — Ask questions about your codebase using local LLM
-- **Semantic Search** — Find files by meaning, not just filename
-- **RAG Pipeline** — Chunks, embeds, and retrieves file context automatically
-- **PDF & Code Support** — Extracts content from PDFs, text files, and source code
+### 🧭 Spatial Workspace Explorer
+- **Four Workspace Lenses** — `Files` (virtualized Grid/List + `F6` Split-Pane Dual Explorer), `Graph` (interactive SVG knowledge topology & backlinks), `Collections` (topic & symbol clusters), and `Duplicates` (exact SHA-256 reclaim)
+- **Universal Command Omnibar (`Ctrl+K` / `Cmd+K`)** — Cross-mode fuzzy filename, lexical content `#Lx-Ly`, symbol, and quick-action search
+- **Line-Range Quick Preview** — Clickable `#Lx-Ly` citations jump straight into highlighted lines alongside outgoing links, backlinks, and associative neighbors
 
-### ⚡ Advanced Data Structures
-Custom implementations demonstrating OS-level concepts:
+### 🧠 Hybrid Local Intelligence & Offline Resilience
+- **Three-Layer Hybrid Retrieval** — SQLite WAL + FTS5 lexical BM25 + LanceDB `@huggingface/transformers` (`Xenova/bge-small-en-v1.5`) dense vectors + 2-hop Personalized PageRank (PPR) graph boost + RRF & optional Cross-Encoder reranking
+- **Dual-Provider Local LLM + Deterministic Fallback** — Works with `Ollama` or OpenAI-compatible local endpoints (`LM Studio`, `llama.cpp`), and automatically falls back to grounded `OfflineSynthesisService` answers when no LLM server is running
+- **Multi-Turn ReAct Copilot & Link-Safe Organizer** — Dry-run previews (`auto`, `type`, `date`, `deduplicate`, `semantic_cluster`), atomic relative Markdown link repair on file moves, and transactional batch undo
 
+### 🔌 Opt-In Read-Only MCP Server (`stdio`)
+- Standalone pure-Node JSON-RPC 2.0 server (`dist/main/mcpServer.js`) exposing 6 read-only tools (`list_directory`, `search_files`, `search_content`, `read_file_range`, `graph_lookup`, `organize_dry_run`) gated by `PathValidator` and `SecretGuard`
+- Copyable `mcp.json` configuration snippet directly inside Runtime Diagnostics (`Claude Desktop` / `Cursor`)
+
+### ⚡ Core Data Structures
 | DSA | Purpose | Complexity |
 |-----|---------|------------|
-| **PathTrie** | File path autocomplete | O(L) search |
-| **LRU Cache** | Thumbnail caching | O(1) access |
-| **Priority Queue** | Event processing | O(log n) operations |
+| **PathTrie** | Prefix file path autocomplete | O(L) search |
+| **LRU Cache** | Bounded file/preview caching with live hit-rate telemetry | O(1) access |
+| **Priority Queue** | Scheduling background embedding & watcher tasks | O(log n) ops |
 | **History Stack** | Back/Forward navigation | O(1) traversal |
-| **Ring Buffer** | Log file preview | O(1) append |
-
-### 🎨 Modern UI
-- Dual view modes (Grid/List)
-- Real-time file watching
-- Keyboard shortcuts
-- Context menus
-- Drag-and-drop support
+| **Ring Buffer** | Bounded log & telemetry stream preview | O(1) append |
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│              Renderer Process (React 18)                │
-│     UI Components • Hooks • No direct fs access         │
-└───────────────────────┬─────────────────────────────────┘
-                        │ IPC Bridge (preload.ts)
-┌───────────────────────▼─────────────────────────────────┐
-│                Main Process (Node.js)                   │
-│  FileSystemService • PathValidator • FileWatcher        │
-│  DSA Implementations • IPC Handlers                     │
-└───────────────────────┬─────────────────────────────────┘
-                        │
-┌───────────────────────▼─────────────────────────────────┐
-│              Intelligence Layer (LLM)                   │
-│  IndexingService • VectorStore (LanceDB) • Ollama       │
-│  EmbeddingWorkerPool • RetrievalService                 │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                   Renderer Process (React 18, Dark Slate)           │
+│  SpatialWorkspacePane • KnowledgeGraphCanvas • SplitPaneExplorer    │
+│  CommandOmnibar (Ctrl+K) • DryRunPlanModal • DiagnosticsModal       │
+└──────────────────────────────┬───────────────────────────────────────┘
+                               │ Typed IPC Bridge (preload.ts)
+┌──────────────────────────────▼───────────────────────────────────────┐
+│                 Main Process Kernel (Electron 45 / Node)            │
+│  PathValidator • SecretGuard • OperationJournal • FileWatcher       │
+│  AIOrganizerService (Atomic Markdown Link Repair + Batch Undo)      │
+└──────────────────────────────┬───────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼───────────────────────────────────────┐
+│               Intelligence & Interoperability Layer                  │
+│  SQLite WAL + FTS5 KnowledgeGraph • LanceDB • EmbeddingWorkerPool   │
+│  Dual LLM (Ollama / OpenAI-Compat) + OfflineSynthesisService         │
+│  Standalone JSON-RPC 2.0 MCP Server (dist/main/mcpServer.js)        │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Project Structure
@@ -177,19 +178,19 @@ npm run test:coverage
 # Run E2E tests
 npm run test:e2e
 
-# Run all tests
-npm run test:all
+# Typecheck, lint, and evaluate local RAG benchmark
+npm run type-check
+npm run lint
+npm run eval:rag
 ```
 
 ---
 
-## 📊 Code Statistics
+## 🧪 Evaluation & Verification
 
-| Category | Files | Lines of Code |
-|----------|-------|---------------|
-| Source | 88 | 6,868 |
-| Tests | 26 | 3,756 |
-| **Total** | **114** | **10,624** |
+- **Lightweight Local Checks:** `npm run type-check`, `npm run lint`, and targeted `npx jest <spec> --runInBand`
+- **Retrieval Benchmark:** `npm run eval:rag` measures BM25 vs. Dense (`Xenova/bge-small-en-v1.5`) vs. Hybrid RRF + Cross-Encoder Recall@5, MRR@5, NDCG@5, and embed/rerank latency percentiles
+- **Cloud CI & Cross-Platform Matrix (`.github/workflows/ci.yml`):** Full thresholded Jest coverage gate + Webpack production bundle + ASAR/unpacked verification + real Electron Playwright E2E across `ubuntu-24.04` and `windows-latest`
 
 ---
 
@@ -197,23 +198,24 @@ npm run test:all
 
 | Layer | Technology |
 |-------|------------|
-| **Runtime** | Electron 28 |
+| **Runtime** | Electron 45 |
 | **Language** | TypeScript 5.3 (strict) |
-| **Frontend** | React 18 + Tailwind CSS |
-| **Vector DB** | LanceDB (embedded) |
-| **LLM** | Ollama (local) |
-| **Embeddings** | @xenova/transformers |
-| **Testing** | Jest + Playwright |
-| **Build** | Webpack 5 |
+| **Frontend** | React 18 + Tailwind CSS (`react-window` virtualization) |
+| **Knowledge & Vector DB** | SQLite WAL + FTS5 (`better-sqlite3`) + LanceDB (embedded) |
+| **LLM Runtimes** | Ollama + OpenAI-Compatible Local (`LM Studio` / `llama.cpp`) + Offline Synthesis |
+| **Embeddings & Rerank** | `@huggingface/transformers` v4 (`bge-small-en-v1.5`, Cross-Encoder, ONNX Runtime EP) |
+| **Agent Interop** | Standalone JSON-RPC 2.0 MCP Server (`dist/main/mcpServer.js`) |
+| **Testing** | Jest + Playwright Electron E2E |
+| **Build** | Webpack 5 + Electron Builder |
 
 ---
 
 ## 🔐 Security Model
 
-1. **Process Isolation** — Renderer has no Node.js access
-2. **Context Isolation** — Preload script bridges IPC securely
-3. **Path Validation** — All paths checked for traversal attacks
-4. **No Remote Code Execution** — No eval(), no shell commands without validation
+1. **Process & Context Isolation** — Sandboxed renderer with zero direct Node.js or `fs` access
+2. **Canonical Path & Symlink Validation** — `PathValidator` confines all fs, preview, organize, and MCP operations to configured vault roots
+3. **SecretGuard Redaction & Exclusion** — Excludes keys, `.env`, credentials, and token patterns across preview, indexing, chat context, and MCP outputs
+4. **Prompt-Injection Fencing & Read-Only MCP** — Untrusted workspace snippets are structurally fenced inside agent prompts, and the stdio MCP server exposes read-only inspection & dry-run planning tools only
 
 ---
 

@@ -22,6 +22,7 @@
     "test:all": "npm run test && npm run build && npm run test:e2e",
     "lint": "eslint src --ext .ts,.tsx --max-warnings=0",
     "type-check": "tsc --noEmit",
+    "eval:rag": "node scripts/eval-real-rag.mjs",
     "package": "electron-builder"
   },
   "dependencies": {

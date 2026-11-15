@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Trash2, Archive, AlertTriangle } from 'lucide-react';
-import { FileDeleteMode } from '@shared/contracts';
+import { Trash2, Archive, AlertTriangle, Link2 } from 'lucide-react';
+import { FileDeleteMode, GraphImpactCheckResult } from '@shared/contracts';
 
 interface DeleteConfirmDialogProps {
   isOpen: boolean;
@@ -18,11 +18,37 @@ export const DeleteConfirmDialog: React.FC<DeleteConfirmDialogProps> = ({
   onCancel,
 }) => {
   const [mode, setMode] = useState<FileDeleteMode>(defaultMode);
+  const [impact, setImpact] = useState<GraphImpactCheckResult | null>(null);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      setImpact(null);
+      return;
+    }
     setMode(defaultMode);
-  }, [isOpen, defaultMode]);
+
+    const checkImpact = window.electronAPI?.graph?.checkImpact;
+    if (typeof checkImpact !== 'function' || targetPaths.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    void checkImpact(targetPaths)
+      .then((res) => {
+        if (!cancelled) {
+          setImpact(res);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setImpact(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, defaultMode, targetPaths]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -67,6 +93,27 @@ export const DeleteConfirmDialog: React.FC<DeleteConfirmDialogProps> = ({
         <p className="text-sm text-gray-600 mb-4">
           Choose how to remove {targetPaths.length === 1 ? 'this item' : 'these items'}.
         </p>
+
+        {impact && impact.totalAffectedFiles > 0 && (
+          <div
+            data-testid="delete-impact-warning"
+            className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 space-y-1"
+          >
+            <div className="font-semibold flex items-center gap-1.5">
+              <Link2 className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
+              <span>
+                Link Impact Warning: {impact.totalAffectedFiles} indexed file(s) reference this target
+              </span>
+            </div>
+            <div className="text-[11px] text-amber-800 truncate">
+              Examples:{' '}
+              {impact.references
+                .slice(0, 3)
+                .map((r) => `${r.sourcePath.split(/[\\/]/).pop() ?? r.sourcePath}:L${r.lineNumber}`)
+                .join(', ')}
+            </div>
+          </div>
+        )}
 
         <div className="space-y-2 mb-5">
           <button

@@ -796,10 +796,25 @@ linux:
 **DOCUMENT APPROVAL**:
 
 - [x] Architecture Review: Praneshrajan137 Date: December 4, 2025
+- [x] Frontier Spatial OS Architecture Sync: Praneshrajan137 Date: November 15, 2026
 - [ ] Security Review: _______________ Date: ______
 - [ ] Performance Review: _______________ Date: ______
 
-
-
 ---
+
+## 10. FRONTIER ARCHITECTURE ADDENDUM (SPATIAL KNOWLEDGE & AGENTIC FILE OS)
+
+The system evolved beyond single-pane file browsing + naive vector search into an integrated Spatial Knowledge & Agentic File OS:
+
+1. **Three-Layer Hybrid Retrieval + 2-Hop Personalized PageRank (`WorkspaceKnowledgeGraph`, `RetrievalService`, `VectorStore`)**:
+   - SQLite WAL + FTS5 lexical BM25 index combined with LanceDB `@huggingface/transformers` dense embeddings (`Xenova/bge-small-en-v1.5`), reciprocal rank fusion (RRF), 2-hop Personalized PageRank (PPR) associative graph boosts, and Cross-Encoder reranking on auto-selected ONNX Runtime execution providers (`dml` / `cuda` / `webgpu` / `cpu`).
+2. **Spatial Explorer & Dual-Pane Workspace (`SpatialWorkspacePane`, `KnowledgeGraphCanvas`, `SmartCollectionsLens`, `DuplicateReclaimLens`, `SplitPaneExplorer`, `CommandOmnibar`)**:
+   - Four interactive workspace lenses (`Files` + `F6` dual-pane copy/move, `Graph` SVG topology & backlink inspection, `Collections` symbol/domain clusters, `Duplicates` exact SHA-256 reclaim) plus `Ctrl+K` Command Omnibar and `#Lx-Ly` citation-highlighting `FilePreviewDrawer`.
+   - `App.tsx` decomposed into `useSpatialLens`, `useWorkspaceShortcuts`, `SpatialWorkspacePane`, and `WorkspaceDialogs` (`442` lines in root shell).
+3. **Dual-Provider Transport, Offline Synthesis & Link-Safe ReAct Organizer (`LocalModelTransport`, `OfflineSynthesisService`, `WorkspaceReActAgent`, `AIOrganizerService`)**:
+   - Unified local transport supports `Ollama` (`/api/chat`, `/api/tags`) and OpenAI-compatible local servers (`LM Studio` / `llama.cpp` `/v1/chat/completions`, `/v1/models`) with graceful fallback to deterministic `OfflineSynthesisService` when no local daemon responds.
+   - Multi-turn ReAct agent proposes `DryRunPlanModal` plans; `AIOrganizerService` executes `auto`, `type`, `date`, `deduplicate`, and `semantic_cluster` operations paired with `repairMarkdownLinks` and full transactional batch undo via `OperationJournal`.
+4. **Opt-In Read-Only MCP Server (`src/mcp/WorkspaceMcpServer.ts` -> `dist/main/mcpServer.js`)**:
+   - Pure-Node JSON-RPC 2.0 `stdio` entrypoint (zero Electron runtime dependencies; logs routed strictly to `stderr`) exposing `list_directory`, `search_files`, `search_content`, `read_file_range`, `graph_lookup`, and `organize_dry_run` protected by `PathValidator` and `SecretGuard`. Runtime Diagnostics surfaces an opt-in copyable `mcp.json` snippet for external desktop clients.
+
 

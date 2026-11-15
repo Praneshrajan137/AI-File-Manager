@@ -16,6 +16,7 @@ module.exports = {
         main: './src/main/main.ts',
         preload: './src/main/preload.ts',
         embeddingWorker: './src/llm/workers/embeddingWorker.ts',
+        mcpServer: './src/mcp/WorkspaceMcpServer.ts',
     },
 
     // Output configuration

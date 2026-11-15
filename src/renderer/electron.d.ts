@@ -7,11 +7,13 @@ import type {
   ContentSearchMatch,
   CopilotContextScope,
   CopilotQueryMode,
+  FileConnectionsSummary,
   FileDeleteMode,
   FileLineRangeResult,
   FileNode,
   FilePreviewResult,
   FileStats,
+  GraphImpactCheckResult,
   GraphInsightsResponse,
   IndexingStatus,
   LLMModelsSnapshot,
@@ -22,8 +24,11 @@ import type {
   OrganizeStrategy,
   RetrievalSource,
   SystemPaths,
+  UIPreferencesSnapshot,
   UndoRedoResult,
   VaultConfigSnapshot,
+  WorkspaceCollectionGroup,
+  WorkspaceGraphMap,
 } from '../shared/contracts';
 import type { RuntimeDiagnosticsSnapshot } from '../shared/diagnostics';
 
@@ -49,7 +54,12 @@ interface ElectronAPI {
       name: string
     ) => Promise<{ success: boolean; path: string }>;
     delete: (path: string, recursive?: boolean, mode?: FileDeleteMode) => Promise<{ success: boolean }>;
-    move: (source: string, destination: string) => Promise<{ success: boolean; newPath: string }>;
+    move: (
+      source: string,
+      destination: string,
+      repairMarkdownLinks?: boolean
+    ) => Promise<{ success: boolean; newPath: string; repairedLinksCount?: number }>;
+    copy: (source: string, destination: string) => Promise<{ success: boolean; copiedPath: string }>;
     getStats: (path: string) => Promise<FileStats>;
     getSystemPaths: () => Promise<SystemPaths>;
     rename: (oldPath: string, newName: string) => Promise<{ success: boolean; newPath: string }>;
@@ -57,6 +67,7 @@ interface ElectronAPI {
     redo: () => Promise<UndoRedoResult>;
     getJournalState: () => Promise<OperationJournalState>;
     emptyTrashVault: () => Promise<OperationJournalState>;
+    watchSplitDir?: (path: string | null) => Promise<{ watching: boolean; path: string | null }>;
   };
 
   vault: {
@@ -68,6 +79,7 @@ interface ElectronAPI {
     removeRoot: (path: string) => Promise<VaultConfigSnapshot>;
     setIndexed: (path: string, enabled: boolean) => Promise<VaultConfigSnapshot>;
     toggleFavorite: (path: string) => Promise<VaultConfigSnapshot>;
+    setUiPrefs?: (prefs: Partial<UIPreferencesSnapshot>) => Promise<UIPreferencesSnapshot>;
   };
 
   navigation: {
@@ -88,19 +100,35 @@ interface ElectronAPI {
       symbolQuery?: string;
       backlinkTarget?: string;
     }) => Promise<GraphInsightsResponse>;
+    checkImpact?: (paths: string[]) => Promise<GraphImpactCheckResult>;
+    getWorkspaceMap?: (options?: {
+      rootPrefix?: string;
+      maxNodes?: number;
+    }) => Promise<WorkspaceGraphMap>;
+    getCollections?: (options?: { rootPrefix?: string }) => Promise<WorkspaceCollectionGroup[]>;
+    getFileConnections?: (filePath: string) => Promise<FileConnectionsSummary>;
   };
 
   llm: {
     query: (
       query: string,
       callback: (chunk: string) => void,
-      options?: { mode?: CopilotQueryMode; contextScope?: CopilotContextScope }
+      options?: {
+        mode?: CopilotQueryMode;
+        contextScope?: CopilotContextScope;
+        history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+        onStep?: (step: AgentTraceStep) => void;
+        onChannelCreated?: (channel: string) => void;
+      }
     ) => Promise<{
       success: boolean;
       error?: string;
       sources?: RetrievalSource[];
       agentSteps?: AgentTraceStep[];
+      offlineSynthesis?: boolean;
+      proposedPlan?: OrganizePlanResult;
     }>;
+    abortQuery?: (channel: string) => Promise<{ aborted: boolean }>;
     getIndexingStatus: () => Promise<IndexingStatus>;
     onIndexingProgress: (callback: (status: IndexingStatus) => void) => () => void;
     startIndexing: (
@@ -114,11 +142,15 @@ interface ElectronAPI {
     clearIndex: () => Promise<{ success: boolean; error?: string }>;
     listModels: () => Promise<LLMModelsSnapshot>;
     setModelConfig: (config: {
+      provider?: 'ollama' | 'openai_compatible';
+      openAiBaseUrl?: string;
       model?: string;
       temperature?: number;
       maxTokens?: number;
       embeddingModel?: string;
       rerankerModel?: string;
+      embeddingDevice?: 'auto' | 'cpu' | 'dml' | 'webgpu';
+      enableVisionCaptioning?: boolean;
     }) => Promise<{ success: boolean; config: LLMModelsSnapshot }>;
   };
 
@@ -126,12 +158,14 @@ interface ElectronAPI {
     planOrganize: (
       targetDir: string,
       strategy?: OrganizeStrategy,
-      useLLM?: boolean
+      useLLM?: boolean,
+      recursive?: boolean
     ) => Promise<OrganizePlanResult>;
     applyOrganize: (input: {
       planId: string;
       targetDir: string;
       operations: OrganizePlanOperation[];
+      repairMarkdownLinks?: boolean;
     }) => Promise<OrganizeApplyResult>;
   };
 

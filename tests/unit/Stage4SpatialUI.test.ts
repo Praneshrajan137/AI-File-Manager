@@ -25,9 +25,11 @@ import { IPCChannel, IPCEnvelope } from '@shared/ipc/contracts';
 import {
   ContentSearchMatch,
   FileNode,
+  FilePreviewResult,
   GraphInsightsResponse,
   LLMModelsSnapshot,
 } from '@shared/contracts';
+import { PREVIEW_LINE_LIMIT } from '@renderer/hooks/usePreviewDrawer';
 import {
   computeGridGeometry,
   extractDraggedPaths,
@@ -353,7 +355,7 @@ describe('Stage 4 (M10): Spatial UI, vault-asset:// Protocol, Citation Reader & 
 
       registerAllHandlers();
 
-      const fakeEvent = { sender: { isDestroyed: () => false, send: jest.fn() } };
+      const fakeEvent = { sender: { isDestroyed: (): boolean => false, send: jest.fn() } };
 
       const contentHandler = registeredHandlers.get('SEARCH:CONTENT');
       expect(contentHandler).toBeDefined();
@@ -407,6 +409,24 @@ describe('Stage 4 (M10): Spatial UI, vault-asset:// Protocol, Citation Reader & 
         expect(setModelEnv.data.config.activeModel).toBe('qwen2.5-coder:7b');
         expect(setModelEnv.data.config.temperature).toBe(0.25);
       }
+
+      const previewHandler = registeredHandlers.get('FS:PREVIEW_FILE');
+      expect(previewHandler).toBeDefined();
+      const validPreviewEnv = (await previewHandler!(fakeEvent, {
+        path: noteA,
+        maxLines: PREVIEW_LINE_LIMIT,
+      })) as IPCEnvelope<FilePreviewResult>;
+      expect(validPreviewEnv.ok).toBe(true);
+      if (validPreviewEnv.ok) {
+        expect(validPreviewEnv.data.binary).toBe(false);
+        expect(validPreviewEnv.data.lines.length).toBeGreaterThanOrEqual(2);
+      }
+
+      const oversizePreviewEnv = (await previewHandler!(fakeEvent, {
+        path: noteA,
+        maxLines: 500,
+      })) as IPCEnvelope<FilePreviewResult>;
+      expect(oversizePreviewEnv.ok).toBe(false);
     });
   });
 

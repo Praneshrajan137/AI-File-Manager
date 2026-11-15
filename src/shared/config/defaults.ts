@@ -107,15 +107,26 @@ export const defaultConfig: AppConfig = {
   },
 
   llm: {
+    provider: 'ollama',
     ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
+    openAiBaseUrl: process.env.OPENAI_BASE_URL || 'http://localhost:1234',
     model: process.env.OLLAMA_MODEL || 'llama3.2',
     maxTokens: 2048,
     temperature: 0.7,
     embeddingDimensions: 384,
     embeddingModel: process.env.EMBEDDING_MODEL || 'Xenova/bge-small-en-v1.5',
     embeddingDtype: 'q8',
+    embeddingDevice: 'auto',
     rerankerModel: 'Xenova/ms-marco-MiniLM-L-6-v2',
     enableWebGPU: false,
+    enableVisionCaptioning: false,
+  },
+
+  ui: {
+    theme: 'dark',
+    explorerLens: 'files',
+    viewMode: 'list',
+    splitPaneOpen: false,
   },
 
   logging: {

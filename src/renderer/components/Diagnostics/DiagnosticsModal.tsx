@@ -1,16 +1,52 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, RefreshCw, X, ShieldCheck, Cpu, Database, HardDrive, Layers } from 'lucide-react';
+import {
+  Activity,
+  RefreshCw,
+  X,
+  ShieldCheck,
+  Cpu,
+  Database,
+  HardDrive,
+  Layers,
+  Terminal,
+  Copy,
+  Check,
+} from 'lucide-react';
 import type { RuntimeDiagnosticsSnapshot } from '@shared/diagnostics';
 
 interface DiagnosticsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  initialSnapshot?: RuntimeDiagnosticsSnapshot;
 }
 
-export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onClose }) => {
-  const [snapshot, setSnapshot] = useState<RuntimeDiagnosticsSnapshot | null>(null);
+export function buildMcpSnippetJson(allowedRoots: string[]): string {
+  const roots = allowedRoots.length > 0 ? allowedRoots : ['<workspace-root-path>'];
+  return JSON.stringify(
+    {
+      mcpServers: {
+        'privatevault-workspace': {
+          command: 'node',
+          args: ['dist/main/mcpServer.js', '--roots', roots.join(',')],
+        },
+      },
+    },
+    null,
+    2
+  );
+}
+
+export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
+  isOpen,
+  onClose,
+  initialSnapshot,
+}) => {
+  const [snapshot, setSnapshot] = useState<RuntimeDiagnosticsSnapshot | null>(
+    initialSnapshot ?? null
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copiedMcp, setCopiedMcp] = useState(false);
   const isOpenRef = useRef(isOpen);
   const requestSeqRef = useRef(0);
   isOpenRef.current = isOpen;
@@ -236,6 +272,22 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
                       <dd className="font-mono text-gray-900">{snapshot.vectorStore.lexicalDocs}</dd>
                     </div>
                     <div className="flex justify-between">
+                      <dt>ONNX Execution Provider:</dt>
+                      <dd className="font-mono text-gray-900" data-testid="diagnostics-onnx-ep">
+                        {snapshot.vectorStore.activeExecutionProvider || 'cpu'}
+                        {snapshot.vectorStore.supportedDevices && snapshot.vectorStore.supportedDevices.length > 0
+                          ? ` (${snapshot.vectorStore.supportedDevices.join(', ')})`
+                          : ''}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt>Active Local LLM:</dt>
+                      <dd className="font-mono text-gray-900" data-testid="diagnostics-llm-provider">
+                        {snapshot.llm.activeProvider || 'ollama'}
+                        {snapshot.llm.activeModel ? ` · ${snapshot.llm.activeModel}` : ''}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between">
                       <dt>LLM Queries (ok/err):</dt>
                       <dd className="font-mono text-gray-900">
                         {snapshot.llm.successfulQueries}/{snapshot.llm.failedQueries} ({snapshot.llm.avgRetrievalMs}ms ret)
@@ -243,6 +295,43 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({ isOpen, onCl
                     </div>
                   </dl>
                 </div>
+              </div>
+
+              {/* Opt-In Local MCP Server (Claude Desktop / Cursor) */}
+              <div
+                data-testid="diagnostics-mcp-section"
+                className="bg-white rounded-lg border border-gray-200 p-3.5 shadow-sm space-y-2"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-600 flex items-center gap-1.5">
+                    <Terminal className="w-3.5 h-3.5 text-indigo-600" />
+                    Opt-In Local MCP Server (Read-Only Stdio + SecretGuard)
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="copy-mcp-config-button"
+                    onClick={(): void => {
+                      const snippet = buildMcpSnippetJson(snapshot.allowedRoots);
+                      if (window.electronAPI?.clipboard?.writeText) {
+                        void window.electronAPI.clipboard.writeText(snippet);
+                      } else if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                        void navigator.clipboard.writeText(snippet);
+                      }
+                      setCopiedMcp(true);
+                      setTimeout(() => setCopiedMcp(false), 2000);
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 text-xs font-medium"
+                  >
+                    {copiedMcp ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copiedMcp ? 'Copied MCP JSON' : 'Copy Claude/Cursor Config'}</span>
+                  </button>
+                </div>
+                <pre
+                  data-testid="diagnostics-mcp-snippet"
+                  className="text-[11px] font-mono bg-slate-900 text-slate-100 p-2.5 rounded overflow-x-auto leading-relaxed"
+                >
+                  {buildMcpSnippetJson(snapshot.allowedRoots)}
+                </pre>
               </div>
 
               {/* IPC Channels Table */}

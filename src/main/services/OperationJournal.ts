@@ -25,8 +25,10 @@ interface PersistedJournalData {
 
 export type BatchOperationStep =
   | { type: 'move' | 'rename'; source: string; destination: string }
+  | { type: 'copy'; source: string; destination: string }
   | { type: 'delete'; path: string; recursive?: boolean; mode?: FileDeleteMode }
-  | { type: 'create_dir'; path: string };
+  | { type: 'create_dir'; path: string }
+  | { type: 'edit_links'; filePath: string; previousContent: string; nextContent: string };
 
 export interface OperationJournalOptions {
   vaultDir?: string;
@@ -531,6 +533,75 @@ export class OperationJournal {
     return { ...result, operationId: id, record };
   }
 
+  private async performSingleCopyUnlocked(
+    source: string,
+    destination: string
+  ): Promise<{ success: boolean; copiedPath: string; operationId: string; record: OperationRecord }> {
+    const { resolvedPath: resolvedSource, isSymlink, lstatInfo } = await this.resolveLinkAwareTarget(source);
+    const canonicalDest = await this.validateCanonicalOrThrow(destination);
+
+    const result = await this.fileSystemService.copy(resolvedSource, canonicalDest);
+    const entrySize = isSymlink ? 0 : await this.computeEntrySize(result.copiedPath);
+    const id = randomUUID();
+    const baseSrc = path.basename(resolvedSource);
+    const baseDst = path.basename(result.copiedPath);
+
+    const record: OperationRecord = {
+      id,
+      type: 'copy',
+      timestamp: Date.now(),
+      sourcePath: resolvedSource,
+      destinationPath: result.copiedPath,
+      isDirectory: isSymlink ? false : lstatInfo.isDirectory(),
+      isSymlink,
+      size: entrySize,
+      undoable: true,
+      description: `Copy ${baseSrc} -> ${baseDst}`,
+    };
+
+    return { ...result, operationId: id, record };
+  }
+
+  private async performSingleEditLinksUnlocked(
+    filePath: string,
+    previousContent: string,
+    nextContent: string
+  ): Promise<{ record: OperationRecord }> {
+    const canonicalTarget = await this.validateCanonicalOrThrow(filePath);
+    await this.fileSystemService.writeFile(canonicalTarget, nextContent);
+
+    const id = randomUUID();
+    const record: OperationRecord = {
+      id,
+      type: 'edit_links',
+      timestamp: Date.now(),
+      sourcePath: canonicalTarget,
+      previousContent,
+      nextContent,
+      isDirectory: false,
+      size: Buffer.byteLength(nextContent, 'utf-8'),
+      undoable: true,
+      description: `Repair links in ${path.basename(canonicalTarget)}`,
+    };
+    return { record };
+  }
+
+  async copy(
+    source: string,
+    destination: string
+  ): Promise<{ success: boolean; copiedPath: string; operationId: string }> {
+    return this.serialize(async () => {
+      await this.ensureInitialized();
+      const outcome = await this.performSingleCopyUnlocked(source, destination);
+      await this.pushUndoRecord(outcome.record);
+      return {
+        success: outcome.success,
+        copiedPath: outcome.copiedPath,
+        operationId: outcome.operationId,
+      };
+    });
+  }
+
   async delete(
     requestedPath: string,
     recursive: boolean = true,
@@ -591,7 +662,7 @@ export class OperationJournal {
 
       try {
         for (const step of steps) {
-          if (step.type === 'delete') {
+            if (step.type === 'delete') {
             const mode = step.mode ?? 'vault';
             const res = await this.performSingleDeleteUnlocked(
               step.path,
@@ -617,6 +688,17 @@ export class OperationJournal {
                 description: `Create folder ${path.basename(canonicalDir)}`,
               });
             }
+          } else if (step.type === 'copy') {
+            const res = await this.performSingleCopyUnlocked(step.source, step.destination);
+            completed.push(res.record);
+            totalSize += res.record.size;
+          } else if (step.type === 'edit_links') {
+            const res = await this.performSingleEditLinksUnlocked(
+              step.filePath,
+              step.previousContent,
+              step.nextContent
+            );
+            completed.push(res.record);
           } else {
             const res = await this.performSingleMoveUnlocked(
               step.source,
@@ -798,6 +880,36 @@ export class OperationJournal {
       };
     }
 
+    if (record.type === 'copy') {
+      if (!record.destinationPath) {
+        throw ErrorFactory.createFileSystemError('UNKNOWN', record.sourcePath);
+      }
+      const canonicalCopied = await this.validateCanonicalOrThrow(record.destinationPath);
+      const vaultPayloadPath = path.join(
+        this.payloadsDir,
+        `${record.id}-copy-${path.basename(canonicalCopied)}`
+      );
+      if (await this.pathExists(canonicalCopied)) {
+        await this.movePathAtomicOrCrossDevice(canonicalCopied, vaultPayloadPath, record.isDirectory);
+        this.fileSystemService.invalidatePath(canonicalCopied);
+      }
+      return {
+        updatedRecord: { ...record, vaultPayloadPath },
+        restoredPath: canonicalCopied,
+      };
+    }
+
+    if (record.type === 'edit_links') {
+      const canonicalFile = await this.validateCanonicalOrThrow(record.sourcePath);
+      if (record.previousContent !== undefined) {
+        await this.fileSystemService.writeFile(canonicalFile, record.previousContent);
+      }
+      return {
+        updatedRecord: record,
+        restoredPath: canonicalFile,
+      };
+    }
+
     // create_file / create_dir -> move into staging vault so Redo preserves content
     const canonicalCreated = await this.validateCanonicalOrThrow(record.sourcePath);
     const vaultPayloadPath = path.join(
@@ -895,6 +1007,42 @@ export class OperationJournal {
       return {
         updatedRecord: record,
         restoredPath: canonicalDst,
+      };
+    }
+
+    if (record.type === 'copy') {
+      if (!record.destinationPath) {
+        throw ErrorFactory.createFileSystemError('UNKNOWN', record.sourcePath);
+      }
+      const canonicalDst = await this.validateCanonicalOrThrow(record.destinationPath);
+      if (await this.pathExists(canonicalDst)) {
+        throw ErrorFactory.createFileSystemError(
+          'UNKNOWN',
+          canonicalDst,
+          undefined,
+          { details: `Cannot redo copy: "${path.basename(canonicalDst)}" already exists` }
+        );
+      }
+      if (record.vaultPayloadPath && (await this.pathExists(record.vaultPayloadPath))) {
+        await this.movePathAtomicOrCrossDevice(record.vaultPayloadPath, canonicalDst, record.isDirectory);
+        this.fileSystemService.invalidatePath(canonicalDst);
+      } else {
+        await this.fileSystemService.copy(record.sourcePath, canonicalDst);
+      }
+      return {
+        updatedRecord: { ...record, vaultPayloadPath: undefined },
+        restoredPath: canonicalDst,
+      };
+    }
+
+    if (record.type === 'edit_links') {
+      const canonicalFile = await this.validateCanonicalOrThrow(record.sourcePath);
+      if (record.nextContent !== undefined) {
+        await this.fileSystemService.writeFile(canonicalFile, record.nextContent);
+      }
+      return {
+        updatedRecord: record,
+        restoredPath: canonicalFile,
       };
     }
 

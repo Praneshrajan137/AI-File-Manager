@@ -108,11 +108,14 @@ test.describe('Frontier Workflows E2E', () => {
       const getListOrderText = async (): Promise<string[]> =>
         page.locator('[data-testid="file-list"] [role="button"]').allInnerTexts();
 
-      const ascItems = await getListOrderText();
-      const ascAlphaIdx = ascItems.findIndex((t) => t.includes('alpha.txt'));
-      const ascZetaIdx = ascItems.findIndex((t) => t.includes('zeta.txt'));
-      expect(ascAlphaIdx).toBeGreaterThanOrEqual(0);
-      expect(ascZetaIdx).toBeGreaterThan(ascAlphaIdx);
+      await expect
+        .poll(async () => {
+          const items = await getListOrderText();
+          const a = items.findIndex((t) => t.includes('alpha.txt'));
+          const z = items.findIndex((t) => t.includes('zeta.txt'));
+          return a >= 0 && z > a;
+        })
+        .toBe(true);
 
       await page.locator('[data-testid="sort-direction-toggle"]').click();
       await expect
@@ -191,18 +194,11 @@ test.describe('Frontier Workflows E2E', () => {
       const toastLocator = page.locator('[role="alert"], .toast, [data-testid="toast"]', {
         hasText: 'external-signal.txt',
       });
-      if ((await toastLocator.count()) > 0) {
-        const toastText = await toastLocator.first().innerText();
-        expect(toastText).toContain('external-signal.txt');
-        expect(toastText).not.toContain('\\');
-        expect(toastText).not.toContain('/');
-      } else {
-        const exactToast = page.getByText(/File (create|change): external-signal\.txt/);
-        await expect(exactToast.first()).toBeVisible({ timeout: 5000 });
-        const toastText = await exactToast.first().innerText();
-        expect(toastText).not.toContain('\\');
-        expect(toastText).not.toContain('/');
-      }
+      await expect(toastLocator.first()).toBeVisible({ timeout: 5000 });
+      const toastText = await toastLocator.first().innerText();
+      expect(toastText).toMatch(/File (create|change): external-signal\.txt/);
+      expect(toastText).not.toContain('\\');
+      expect(toastText).not.toContain('/');
 
       // 7. DiagnosticsModal live telemetry check
       await page.locator('[data-testid="diagnostics-button"]').click();
@@ -423,6 +419,207 @@ test.describe('Frontier Workflows E2E', () => {
       }
       await new Promise<void>((resolve) => mockServer.close(() => resolve()));
       await fs.rm(aiRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  test('spatial workspace lenses, split-pane copy, deduplicate + undo, offline synthesis fallback, and diagnostics MCP snippet', async () => {
+    test.setTimeout(120000);
+
+    // Bind and immediately close an ephemeral TCP port so Ollama fails fast (ECONNREFUSED)
+    const closedServer = http.createServer((_req, res) => {
+      res.writeHead(503);
+      res.end();
+    });
+    await new Promise<void>((resolve) => closedServer.listen(0, '127.0.0.1', () => resolve()));
+    const closedAddress = closedServer.address();
+    const unreachablePort = typeof closedAddress === 'object' && closedAddress ? closedAddress.port : 19998;
+    await new Promise<void>((resolve) => closedServer.close(() => resolve()));
+
+    const rawTempBase = path.join(os.tmpdir(), `e2e-spatial-${Date.now()}`);
+    await fs.mkdir(rawTempBase, { recursive: true });
+    const tempBase = await fs.realpath(rawTempBase);
+    const spatialRootName = 'spatial-vault';
+    const spatialRoot = path.join(tempBase, spatialRootName);
+    const destFolder = path.join(spatialRoot, 'dest-folder');
+    const authGuide = path.join(spatialRoot, 'auth-guide.md');
+    const policyDoc = path.join(spatialRoot, 'notes-policy.md');
+    const dupA = path.join(spatialRoot, 'dup-a.txt');
+    const dupB = path.join(spatialRoot, 'dup-b.txt');
+    const vectorDbDir = path.join(tempBase, 'vectordb');
+
+    await fs.mkdir(destFolder, { recursive: true });
+    await fs.writeFile(
+      authGuide,
+      [
+        '# Authentication Architecture',
+        '',
+        'Session handling calls `verifyAccessToken` with strict signature checks.',
+        'See [Security Policy](./notes-policy.md) for key rotation.',
+      ].join('\n'),
+      'utf-8'
+    );
+    await fs.writeFile(
+      policyDoc,
+      [
+        '# Security Policy',
+        '',
+        'Rotate signing keys quarterly before calling `verifyAccessToken`.',
+      ].join('\n'),
+      'utf-8'
+    );
+    const dupPayload = 'Identical archive content for SHA-256 deduplicate reclaim check.\n'.repeat(3);
+    await fs.writeFile(dupA, dupPayload, 'utf-8');
+    await fs.writeFile(dupB, dupPayload, 'utf-8');
+
+    let electronApp;
+    try {
+      electronApp = await launchElectronApp({
+        env: {
+          OLLAMA_URL: `http://127.0.0.1:${unreachablePort}`,
+          FILE_MANAGER_VECTOR_DB_PATH: vectorDbDir,
+          FILE_MANAGER_ALLOWED_ROOTS: [tempBase, spatialRoot].join(path.delimiter),
+        },
+      });
+      const page = await getFirstWindow(electronApp);
+      await page.waitForLoadState('networkidle');
+
+      // 1. Navigate to spatialRoot via PathTrie-warmed SearchBar
+      const searchInput = page.locator('[data-testid="search-input"]');
+      await expect(searchInput).toBeVisible({ timeout: 15000 });
+      await page.evaluate(async (parentDir: string) => {
+        await window.electronAPI.fs.readDirectory(parentDir);
+      }, tempBase);
+
+      await expect
+        .poll(
+          async () => {
+            const snap = await page.evaluate(() => window.electronAPI.diagnostics.getSnapshot());
+            return snap.pathTrie.entryCount;
+          },
+          { timeout: 10000 }
+        )
+        .toBeGreaterThan(0);
+
+      await searchInput.fill(spatialRootName);
+      const option = page.locator('[role="listbox"] [role="option"]', { hasText: spatialRootName }).first();
+      await expect(option).toBeVisible({ timeout: 10000 });
+      await option.click();
+      await expect(
+        page.locator('[data-testid="file-explorer"] [role="button"]', { hasText: 'auth-guide.md' })
+      ).toBeVisible({ timeout: 10000 });
+
+      // 2. Index docs + identical duplicates into VectorStore & Knowledge Graph
+      for (const filePath of [authGuide, policyDoc, dupA, dupB]) {
+        const res = await page.evaluate((p: string) => window.electronAPI.llm.indexFile(p), filePath);
+        expect(res.success).toBe(true);
+      }
+
+      // 3. Spatial Lenses: Graph -> Collections -> Duplicates -> Files
+      await page.locator('[data-testid="lens-tab-graph"]').click();
+      await expect(page.locator('[data-testid="knowledge-graph-canvas"]')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('[data-testid="knowledge-graph-svg"]')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('[data-testid="graph-node-auth-guide.md"]')).toBeVisible({ timeout: 10000 });
+
+      await page.locator('[data-testid="lens-tab-collections"]').click();
+      await expect(page.locator('[data-testid="smart-collections-lens"]')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('[data-testid^="collection-card-"]').first()).toBeVisible({ timeout: 10000 });
+
+      await page.locator('[data-testid="lens-tab-duplicates"]').click();
+      await expect(page.locator('[data-testid="duplicate-reclaim-lens"]')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('[data-testid="duplicate-cluster-card"]').first()).toBeVisible({ timeout: 10000 });
+
+      await page.locator('[data-testid="lens-tab-files"]').click();
+      await expect(page.locator('[data-testid="file-explorer"]')).toBeVisible({ timeout: 10000 });
+
+      // 4. Split-Pane Dual Explorer: open, navigate right pane into dest-folder, copy selected file
+      await page.locator('[data-testid="split-pane-button"]').click();
+      const rightPane = page.locator('[data-testid="split-pane-right"]');
+      await expect(rightPane).toBeVisible({ timeout: 10000 });
+      await rightPane.locator('[role="button"]', { hasText: 'dest-folder' }).first().dblclick();
+      await expect(page.locator('[data-testid="split-pane-path"]')).toContainText('dest-folder', { timeout: 10000 });
+
+      await page.locator('[data-testid="file-explorer"] [role="button"]', { hasText: 'auth-guide.md' }).first().click();
+      await page.locator('[data-testid="split-pane-copy-button"]').click();
+      await expect
+        .poll(
+          async () =>
+            fs
+              .stat(path.join(destFolder, 'auth-guide.md'))
+              .then((s) => s.isFile())
+              .catch(() => false),
+          { timeout: 10000 }
+        )
+        .toBe(true);
+      expect((await fs.stat(authGuide)).isFile()).toBe(true);
+      await page.locator('[data-testid="split-pane-close"]').click();
+      await expect(rightPane).toHaveCount(0);
+
+      // 5. Dry-Run Deduplicate Organizer with Markdown link repair toggle + Undo restore
+      await page.locator('[data-testid="toolbar-organize-button"]').click();
+      await expect(page.locator('[data-testid="dry-run-plan-modal"]')).toBeVisible({ timeout: 10000 });
+      await page.locator('[data-testid="plan-strategy-select"]').selectOption('deduplicate');
+      await expect(page.locator('[data-testid="plan-summary"]')).toContainText('Duplicates Archive', {
+        timeout: 10000,
+      });
+      const repairCheckbox = page.locator('[data-testid="plan-repair-links-checkbox"]');
+      if (!(await repairCheckbox.isChecked())) {
+        await repairCheckbox.check();
+      }
+      const applyBtn = page.locator('[data-testid="plan-apply-button"]');
+      await expect(applyBtn).toBeEnabled({ timeout: 10000 });
+      await applyBtn.click();
+
+      await expect
+        .poll(
+          async () => {
+            const existsA = await fs.stat(dupA).then(() => true).catch(() => false);
+            const existsB = await fs.stat(dupB).then(() => true).catch(() => false);
+            return Number(existsA) + Number(existsB);
+          },
+          { timeout: 10000 }
+        )
+        .toBe(1);
+
+      const undoBtn = page.locator('[data-testid="undo-button"]');
+      await expect(undoBtn).toBeEnabled({ timeout: 10000 });
+      await undoBtn.click();
+      await expect
+        .poll(
+          async () => {
+            const existsA = await fs.stat(dupA).then(() => true).catch(() => false);
+            const existsB = await fs.stat(dupB).then(() => true).catch(() => false);
+            return existsA && existsB;
+          },
+          { timeout: 10000 }
+        )
+        .toBe(true);
+
+      // 6. Offline Synthesis fallback when local Ollama endpoint refuses connection
+      await page.locator('[data-testid="chat-toggle-button"]').click();
+      const chatInput = page.locator('[data-testid="chat-input"]');
+      await expect(chatInput).toBeVisible({ timeout: 10000 });
+      await chatInput.fill('What does verifyAccessToken do?');
+      await page.locator('[data-testid="send-button"]').click();
+
+      const chatMessages = page.locator('[data-testid="chat-messages"]');
+      await expect(chatMessages.locator('[data-testid="offline-synthesis-badge"]')).toBeVisible({
+        timeout: 20000,
+      });
+      await expect(chatMessages).toContainText('verifyAccessToken', { timeout: 10000 });
+
+      // 7. Diagnostics Modal: ONNX EP, LLM Provider, and Read-Only MCP Config Snippet
+      await page.locator('[data-testid="diagnostics-button"]').click();
+      await expect(page.locator('[data-testid="diagnostics-onnx-ep"]')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('[data-testid="diagnostics-llm-provider"]')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('[data-testid="diagnostics-mcp-section"]')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('[data-testid="diagnostics-mcp-snippet"]')).toContainText('mcpServer.js');
+      await expect(page.locator('[data-testid="copy-mcp-config-button"]')).toBeVisible();
+      await page.locator('[data-testid="copy-mcp-config-button"]').click();
+    } finally {
+      if (electronApp) {
+        await closeElectronApp(electronApp);
+      }
+      await fs.rm(rawTempBase, { recursive: true, force: true }).catch(() => {});
     }
   });
 });

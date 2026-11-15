@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Copy, Trash2, Edit, FolderOpen, Eye, Star } from 'lucide-react';
+import { Copy, Trash2, Edit, FolderOpen, Eye, Star, ArrowRightLeft, Files } from 'lucide-react';
 import { FileNode } from '@shared/contracts';
 
 interface FileContextMenuProps {
@@ -12,6 +12,8 @@ interface FileContextMenuProps {
   onDelete: () => void;
   onCopyPath: () => void;
   onToggleFavorite?: () => void;
+  onDuplicate?: () => void;
+  onCopyToOtherPane?: () => void;
   isFavorite?: boolean;
 }
 
@@ -25,6 +27,8 @@ export const FileContextMenu: React.FC<FileContextMenuProps> = ({
   onDelete,
   onCopyPath,
   onToggleFavorite,
+  onDuplicate,
+  onCopyToOtherPane,
   isFavorite = false,
 }) => {
   useEffect(() => {
@@ -55,6 +59,12 @@ export const FileContextMenu: React.FC<FileContextMenuProps> = ({
       ? [{ label: 'Quick Preview', icon: Eye, action: onPreview }]
       : []),
     { label: 'Rename', icon: Edit, action: onRename },
+    ...(onDuplicate && !file.isDirectory
+      ? [{ label: 'Duplicate File', icon: Files, action: onDuplicate }]
+      : []),
+    ...(onCopyToOtherPane
+      ? [{ label: 'Copy to Split Pane', icon: ArrowRightLeft, action: onCopyToOtherPane }]
+      : []),
     ...(onToggleFavorite
       ? [{ label: isFavorite ? 'Unpin Favorite' : 'Pin to Favorites', icon: Star, action: onToggleFavorite }]
       : []),

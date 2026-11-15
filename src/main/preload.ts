@@ -29,6 +29,7 @@ import type {
   OrganizePlanResult,
   OrganizeStrategy,
   RetrievalSource,
+  UIPreferencesSnapshot,
 } from '@shared/contracts';
 import type { IPCChannel, IPCResponse } from '@shared/ipc/contracts';
 
@@ -99,8 +100,15 @@ const electronAPI = {
     delete: (path: string, recursive?: boolean, mode?: FileDeleteMode): ContractResult<'FS:DELETE'> =>
       invokeContract('FS:DELETE', { path, recursive, mode }),
 
-    move: (source: string, destination: string): ContractResult<'FS:MOVE'> =>
-      invokeContract('FS:MOVE', { source, destination }),
+    move: (
+      source: string,
+      destination: string,
+      repairMarkdownLinks?: boolean
+    ): ContractResult<'FS:MOVE'> =>
+      invokeContract('FS:MOVE', { source, destination, repairMarkdownLinks }),
+
+    copy: (source: string, destination: string): ContractResult<'FS:COPY'> =>
+      invokeContract('FS:COPY', { source, destination }),
 
     getStats: (path: string): ContractResult<'FS:GET_STATS'> =>
       invokeContract('FS:GET_STATS', { path }),
@@ -120,6 +128,9 @@ const electronAPI = {
 
     emptyTrashVault: (): ContractResult<'FS:EMPTY_TRASH_VAULT'> =>
       invokeContract('FS:EMPTY_TRASH_VAULT'),
+
+    watchSplitDir: (path: string | null): ContractResult<'FS:WATCH_SPLIT_DIR'> =>
+      invokeContract('FS:WATCH_SPLIT_DIR', { path }),
   },
 
   /**
@@ -139,6 +150,9 @@ const electronAPI = {
 
     toggleFavorite: (path: string): ContractResult<'VAULT:TOGGLE_FAVORITE'> =>
       invokeContract('VAULT:TOGGLE_FAVORITE', { path }),
+
+    setUiPrefs: (prefs: Partial<UIPreferencesSnapshot>): ContractResult<'VAULT:SET_UI_PREFS'> =>
+      invokeContract('VAULT:SET_UI_PREFS', prefs),
   },
 
   /**
@@ -177,6 +191,21 @@ const electronAPI = {
       backlinkTarget?: string;
     }): ContractResult<'GRAPH:QUERY_INSIGHTS'> =>
       invokeContract('GRAPH:QUERY_INSIGHTS', options),
+
+    checkImpact: (paths: string[]): ContractResult<'GRAPH:IMPACT_CHECK'> =>
+      invokeContract('GRAPH:IMPACT_CHECK', { paths }),
+
+    getWorkspaceMap: (options?: {
+      rootPrefix?: string;
+      maxNodes?: number;
+    }): ContractResult<'GRAPH:WORKSPACE_MAP'> =>
+      invokeContract('GRAPH:WORKSPACE_MAP', options),
+
+    getCollections: (options?: { rootPrefix?: string }): ContractResult<'GRAPH:COLLECTIONS'> =>
+      invokeContract('GRAPH:COLLECTIONS', options),
+
+    getFileConnections: (filePath: string): ContractResult<'GRAPH:FILE_CONNECTIONS'> =>
+      invokeContract('GRAPH:FILE_CONNECTIONS', { filePath }),
   },
 
   /**
@@ -186,13 +215,22 @@ const electronAPI = {
     query: async (
       query: string,
       callback: (chunk: string) => void,
-      options?: { mode?: CopilotQueryMode; contextScope?: CopilotContextScope }
+      options?: {
+        mode?: CopilotQueryMode;
+        contextScope?: CopilotContextScope;
+        history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+        onStep?: (step: AgentTraceStep) => void;
+        onChannelCreated?: (channel: string) => void;
+      }
     ): Promise<IPCEnvelope<IPCResponse<'LLM:QUERY'>>> => {
       llmStreamCounter += 1;
       const channel = `LLM:QUERY:${Date.now()}:${llmStreamCounter}`;
+      options?.onChannelCreated?.(channel);
       let streamEnded = false;
       let streamedSources: RetrievalSource[] | undefined;
       let streamedAgentSteps: AgentTraceStep[] | undefined;
+      let streamedOfflineSynthesis: boolean | undefined;
+      let streamedProposedPlan: OrganizePlanResult | undefined;
       let safetyTimer: ReturnType<typeof setTimeout> | null = null;
       let resolveEnd: (() => void) | null = null;
       const endPromise = new Promise<void>((resolve) => {
@@ -205,12 +243,20 @@ const electronAPI = {
         }
       };
 
+      const handleStep = (_event: IpcRendererEvent, step: AgentTraceStep): void => {
+        if (step && typeof step === 'object') {
+          options?.onStep?.(step);
+        }
+      };
+
       const handleEnd = (
         _event: IpcRendererEvent,
         payload?: {
           ok?: boolean;
           sources?: RetrievalSource[];
           agentSteps?: AgentTraceStep[];
+          offlineSynthesis?: boolean;
+          proposedPlan?: OrganizePlanResult;
         }
       ): void => {
         if (Array.isArray(payload?.sources)) {
@@ -218,6 +264,12 @@ const electronAPI = {
         }
         if (Array.isArray(payload?.agentSteps)) {
           streamedAgentSteps = payload.agentSteps;
+        }
+        if (typeof payload?.offlineSynthesis === 'boolean') {
+          streamedOfflineSynthesis = payload.offlineSynthesis;
+        }
+        if (payload?.proposedPlan) {
+          streamedProposedPlan = payload.proposedPlan;
         }
         streamEnded = true;
         if (safetyTimer) {
@@ -228,6 +280,7 @@ const electronAPI = {
       };
 
       ipcRenderer.on(channel, handleChunk);
+      ipcRenderer.on(`${channel}:step`, handleStep);
       ipcRenderer.once(`${channel}:end`, handleEnd);
 
       try {
@@ -236,6 +289,7 @@ const electronAPI = {
           channel,
           mode: options?.mode,
           contextScope: options?.contextScope,
+          history: options?.history,
         });
         if (result.ok && !streamEnded) {
           await Promise.race([
@@ -251,12 +305,16 @@ const electronAPI = {
         if (
           result.ok &&
           ((streamedSources && !result.data.sources) ||
-            (streamedAgentSteps && !result.data.agentSteps))
+            (streamedAgentSteps && !result.data.agentSteps) ||
+            (streamedOfflineSynthesis !== undefined && result.data.offlineSynthesis === undefined) ||
+            (streamedProposedPlan && !result.data.proposedPlan))
         ) {
           return wrapIPCSuccess({
             ...result.data,
             sources: result.data.sources ?? streamedSources,
             agentSteps: result.data.agentSteps ?? streamedAgentSteps,
+            offlineSynthesis: result.data.offlineSynthesis ?? streamedOfflineSynthesis,
+            proposedPlan: result.data.proposedPlan ?? streamedProposedPlan,
           });
         }
         return result;
@@ -266,9 +324,13 @@ const electronAPI = {
           safetyTimer = null;
         }
         ipcRenderer.removeListener(channel, handleChunk);
+        ipcRenderer.removeListener(`${channel}:step`, handleStep);
         ipcRenderer.removeListener(`${channel}:end`, handleEnd);
       }
     },
+
+    abortQuery: (channel: string): ContractResult<'LLM:ABORT_QUERY'> =>
+      invokeContract('LLM:ABORT_QUERY', { channel }),
 
     getIndexingStatus: (): ContractResult<'LLM:INDEX_STATUS'> =>
       invokeContract('LLM:INDEX_STATUS'),
@@ -326,11 +388,15 @@ const electronAPI = {
       invokeContract('LLM:LIST_MODELS'),
 
     setModelConfig: (config: {
+      provider?: 'ollama' | 'openai_compatible';
+      openAiBaseUrl?: string;
       model?: string;
       temperature?: number;
       maxTokens?: number;
       embeddingModel?: string;
       rerankerModel?: string;
+      embeddingDevice?: 'auto' | 'cpu' | 'dml' | 'webgpu';
+      enableVisionCaptioning?: boolean;
     }): ContractResult<'LLM:SET_MODEL_CONFIG'> =>
       invokeContract('LLM:SET_MODEL_CONFIG', config),
   },
@@ -342,14 +408,16 @@ const electronAPI = {
     planOrganize: (
       targetDir: string,
       strategy?: OrganizeStrategy,
-      useLLM?: boolean
+      useLLM?: boolean,
+      recursive?: boolean
     ): Promise<IPCEnvelope<OrganizePlanResult>> =>
-      invokeContract('AI:ORGANIZE_PLAN', { targetDir, strategy, useLLM }),
+      invokeContract('AI:ORGANIZE_PLAN', { targetDir, strategy, useLLM, recursive }),
 
     applyOrganize: (input: {
       planId: string;
       targetDir: string;
       operations: OrganizePlanOperation[];
+      repairMarkdownLinks?: boolean;
     }): Promise<IPCEnvelope<OrganizeApplyResult>> =>
       invokeContract('AI:ORGANIZE_APPLY', input),
   },

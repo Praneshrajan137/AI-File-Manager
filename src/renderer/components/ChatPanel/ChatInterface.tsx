@@ -4,7 +4,7 @@ import { ChatInput } from './ChatInput';
 import { IndexingPanel } from './IndexingPanel';
 import { useLLM, UseLLMReturn } from '@renderer/hooks/useLLM';
 import { Bot, FolderKanban, Sparkles } from 'lucide-react';
-import type { CopilotQueryMode } from '@shared/contracts';
+import type { CopilotQueryMode, OrganizePlanResult } from '@shared/contracts';
 
 interface ChatInterfaceProps {
   currentPath?: string;
@@ -12,6 +12,7 @@ interface ChatInterfaceProps {
   llm?: UseLLMReturn;
   onOpenCitation?: (filePath: string, startLine?: number, endLine?: number) => void;
   onOpenOrganize?: (targetDir: string) => void;
+  onPreviewOrganizePlan?: (plan: OrganizePlanResult) => void;
 }
 
 const ChatInterfaceBody: React.FC<{
@@ -20,13 +21,22 @@ const ChatInterfaceBody: React.FC<{
   llmState: UseLLMReturn;
   onOpenCitation?: (filePath: string, startLine?: number, endLine?: number) => void;
   onOpenOrganize?: (targetDir: string) => void;
-}> = ({ currentPath, selectedPaths, llmState, onOpenCitation, onOpenOrganize }) => {
+  onPreviewOrganizePlan?: (plan: OrganizePlanResult) => void;
+}> = ({
+  currentPath,
+  selectedPaths,
+  llmState,
+  onOpenCitation,
+  onOpenOrganize,
+  onPreviewOrganizePlan,
+}) => {
   const {
     messages,
     loading,
     indexingStatus,
     modelsSnapshot,
     sendQuery,
+    cancelQuery,
     startIndexing,
     stopIndexing,
     clearIndex,
@@ -187,6 +197,7 @@ const ChatInterfaceBody: React.FC<{
             key={msg.id}
             message={msg}
             onOpenCitation={onOpenCitation}
+            onPreviewOrganizePlan={onPreviewOrganizePlan}
           />
         ))}
         {loading && (
@@ -207,6 +218,9 @@ const ChatInterfaceBody: React.FC<{
         value={input}
         onChange={setInput}
         onSend={handleSend}
+        onCancel={(): void => {
+          void cancelQuery();
+        }}
         disabled={loading}
         currentPath={currentPath}
         selectedCount={selectedPaths.length}
@@ -226,7 +240,14 @@ const ChatInterfaceStandalone: React.FC<{
   selectedPaths: string[];
   onOpenCitation?: (filePath: string, startLine?: number, endLine?: number) => void;
   onOpenOrganize?: (targetDir: string) => void;
-}> = ({ currentPath, selectedPaths, onOpenCitation, onOpenOrganize }) => {
+  onPreviewOrganizePlan?: (plan: OrganizePlanResult) => void;
+}> = ({
+  currentPath,
+  selectedPaths,
+  onOpenCitation,
+  onOpenOrganize,
+  onPreviewOrganizePlan,
+}) => {
   const internalLlm = useLLM();
   return (
     <ChatInterfaceBody
@@ -235,6 +256,7 @@ const ChatInterfaceStandalone: React.FC<{
       llmState={internalLlm}
       onOpenCitation={onOpenCitation}
       onOpenOrganize={onOpenOrganize}
+      onPreviewOrganizePlan={onPreviewOrganizePlan}
     />
   );
 };
@@ -245,6 +267,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   llm,
   onOpenCitation,
   onOpenOrganize,
+  onPreviewOrganizePlan,
 }) => {
   if (llm) {
     return (
@@ -254,6 +277,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         llmState={llm}
         onOpenCitation={onOpenCitation}
         onOpenOrganize={onOpenOrganize}
+        onPreviewOrganizePlan={onPreviewOrganizePlan}
       />
     );
   }
@@ -263,6 +287,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       selectedPaths={selectedPaths}
       onOpenCitation={onOpenCitation}
       onOpenOrganize={onOpenOrganize}
+      onPreviewOrganizePlan={onPreviewOrganizePlan}
     />
   );
 };

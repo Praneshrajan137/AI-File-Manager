@@ -7,7 +7,9 @@ import { FileSystemService } from './FileSystemService';
 import { RuntimeDiagnostics } from './RuntimeDiagnostics';
 import { resolveAllowedRoots } from '@main/handlers/securityMiddleware';
 import { EventPriority, FileEvent, FileMetadata, FileNode } from '@shared/contracts';
+import { DEFAULT_EXCLUDED_DIRS } from '@shared/config';
 import { FileSystemLogger } from '@shared/logging';
+import { isSensitiveSecretFile } from '@shared/security/SecretGuard';
 
 export type WorkspaceBroadcastChannel =
   | 'FILE_CREATED'
@@ -44,10 +46,14 @@ export interface ReactiveWorkspaceKernelOptions {
  *     -> RuntimeDiagnostics live telemetry
  *     -> Renderer IPC broadcasts
  */
+const MAX_INDEXED_WATCHERS = 4;
+
 export class ReactiveWorkspaceKernel {
   private readonly allowedRoots: string[];
   private readonly eventQueue: EventQueue;
   private readonly fileWatcher: FileWatcher;
+  private readonly secondaryWatcher: FileWatcher;
+  private readonly indexedWatchers = new Map<string, FileWatcher>();
   private readonly pathTrie: PathTrie;
   private readonly fileSystemService: FileSystemService;
   private readonly coalesceMs: number;
@@ -72,6 +78,7 @@ export class ReactiveWorkspaceKernel {
 
     this.eventQueue = new EventQueue();
     this.fileWatcher = new FileWatcher(this.eventQueue);
+    this.secondaryWatcher = new FileWatcher(this.eventQueue);
     this.pathTrie = new PathTrie();
     this.fileSystemService = new FileSystemService(this.allowedRoots);
     this.coalesceMs = options.coalesceMs ?? 40;
@@ -87,41 +94,46 @@ export class ReactiveWorkspaceKernel {
     this.indexMutationHook = options.indexMutationHook ?? null;
 
     RuntimeDiagnostics.getInstance().setAllowedRoots(this.allowedRoots);
-    this.attachWatcherListeners();
+    this.attachWatcherListeners(this.fileWatcher, true);
+    this.attachWatcherListeners(this.secondaryWatcher, false);
   }
 
-  private attachWatcherListeners(): void {
+  private attachWatcherListeners(watcher: FileWatcher, isPrimary: boolean): void {
     const diagnostics = RuntimeDiagnostics.getInstance();
 
-    this.fileWatcher.on('fileCreated', () => {
+    watcher.on('fileCreated', () => {
       diagnostics.recordWatcherEvent();
       this.scheduleDrain();
     });
 
-    this.fileWatcher.on('fileChanged', () => {
+    watcher.on('fileChanged', () => {
       diagnostics.recordWatcherEvent();
       this.scheduleDrain();
     });
 
-    this.fileWatcher.on('fileDeleted', () => {
+    watcher.on('fileDeleted', () => {
       diagnostics.recordWatcherEvent();
       this.scheduleDrain();
     });
 
-    this.fileWatcher.on('error', (error: Error) => {
-      diagnostics.setWatcherState({
-        status: 'error',
-        watchedPath: this.fileWatcher.getWatchedPath(),
-        lastError: error.message,
-      });
+    watcher.on('error', (error: Error) => {
+      if (isPrimary) {
+        diagnostics.setWatcherState({
+          status: 'error',
+          watchedPath: watcher.getWatchedPath(),
+          lastError: error.message,
+        });
+      }
       this.emitBroadcast('WATCHER:ERROR', error.message);
     });
 
-    this.fileWatcher.on('stopped', () => {
-      diagnostics.setWatcherState({
-        status: 'idle',
-        watchedPath: null,
-      });
+    watcher.on('stopped', () => {
+      if (isPrimary) {
+        diagnostics.setWatcherState({
+          status: 'idle',
+          watchedPath: null,
+        });
+      }
     });
   }
 
@@ -240,6 +252,264 @@ export class ReactiveWorkspaceKernel {
     });
 
     await this.watchTransition;
+  }
+
+  /**
+   * Watch or stop watching the split-pane secondary directory at shallow depth (depth: 0).
+   */
+  async activateSecondaryDirectory(dirPath: string | null): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+
+    if (dirPath !== null) {
+      const validation = this.fileSystemService.validatePath(dirPath);
+      if (!validation.valid) {
+        FileSystemLogger.warn('Skipping secondary watch on unvalidated directory', {
+          path: dirPath,
+          error: validation.error,
+        });
+        return;
+      }
+    }
+
+    const normalized = dirPath ? path.normalize(dirPath) : null;
+
+    this.watchTransition = this.watchTransition.then(async () => {
+      if (this.closed) {
+        return;
+      }
+
+      if (!normalized) {
+        if (this.secondaryWatcher.isWatching()) {
+          await this.secondaryWatcher.stop().catch(() => undefined);
+        }
+        return;
+      }
+
+      const currentSecondary = this.secondaryWatcher.getWatchedPath();
+      if (
+        this.secondaryWatcher.isWatching() &&
+        currentSecondary &&
+        this.canonicalKey(currentSecondary) === this.canonicalKey(normalized)
+      ) {
+        return;
+      }
+
+      try {
+        if (this.secondaryWatcher.isWatching()) {
+          await this.secondaryWatcher.stop();
+        }
+        await this.secondaryWatcher.start(normalized, this.defaultWatchOptions);
+      } catch (error: unknown) {
+        FileSystemLogger.warn('Failed to switch secondary split watcher', {
+          path: normalized,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+
+    await this.watchTransition;
+  }
+
+  /**
+   * Register an opt-in indexed workspace root watcher bounded to shallow subtree depth (<= 4),
+   * skipping build/VCS noise and SecretGuard artifacts while capping total active roots.
+   */
+  async watchIndexedRoot(rootPath: string, maxDepth = 4): Promise<boolean> {
+    if (this.closed) {
+      return false;
+    }
+
+    const validation = this.fileSystemService.validatePath(rootPath);
+    if (!validation.valid) {
+      return false;
+    }
+
+    const normalized = path.normalize(rootPath);
+    const key = this.canonicalKey(normalized);
+    const boundedDepth = Math.max(0, Math.min(4, maxDepth));
+    let started = false;
+
+    this.watchTransition = this.watchTransition.then(async () => {
+      if (this.closed) {
+        return;
+      }
+
+      const existing = this.indexedWatchers.get(key);
+      if (existing && existing.isWatching()) {
+        // Refresh insertion order (LRU)
+        this.indexedWatchers.delete(key);
+        this.indexedWatchers.set(key, existing);
+        started = true;
+        return;
+      }
+
+      // Evict oldest indexed root watcher if cap reached
+      while (this.indexedWatchers.size >= MAX_INDEXED_WATCHERS) {
+        const oldestKey = this.indexedWatchers.keys().next().value;
+        if (!oldestKey) {
+          break;
+        }
+        const oldestWatcher = this.indexedWatchers.get(oldestKey);
+        this.indexedWatchers.delete(oldestKey);
+        if (oldestWatcher) {
+          if (oldestWatcher.isWatching()) {
+            await oldestWatcher.stop().catch(() => undefined);
+          }
+          oldestWatcher.removeAllListeners();
+        }
+      }
+
+      const excludedNames = new Set(DEFAULT_EXCLUDED_DIRS.map((name) => name.toLowerCase()));
+      const watcher = new FileWatcher(this.eventQueue);
+      this.attachWatcherListeners(watcher, false);
+
+      try {
+        await watcher.start(normalized, {
+          ...this.defaultWatchOptions,
+          depth: boundedDepth,
+          ignored: (candidatePath: string): boolean => this.shouldIgnoreIndexedWatchPath(normalized, candidatePath, excludedNames),
+        });
+        this.indexedWatchers.set(key, watcher);
+        started = true;
+      } catch (error: unknown) {
+        watcher.removeAllListeners();
+        FileSystemLogger.warn('Failed to start indexed root watcher', {
+          path: normalized,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+
+    await this.watchTransition;
+    return started;
+  }
+
+  /**
+   * Stop watching an indexed workspace root cleanly.
+   */
+  async unwatchIndexedRoot(rootPath: string): Promise<void> {
+    const key = this.canonicalKey(path.normalize(rootPath));
+    this.watchTransition = this.watchTransition.then(async () => {
+      const watcher = this.indexedWatchers.get(key);
+      if (!watcher) {
+        return;
+      }
+      this.indexedWatchers.delete(key);
+      if (watcher.isWatching()) {
+        await watcher.stop().catch(() => undefined);
+      }
+      watcher.removeAllListeners();
+    });
+
+    await this.watchTransition;
+  }
+
+  /**
+   * Return all actively watched root directories (primary, secondary split, indexed roots).
+   */
+  getActiveWatchedPaths(): string[] {
+    const seen = new Map<string, string>();
+    const pushIfPresent = (candidate: string | null): void => {
+      if (!candidate) {
+        return;
+      }
+      const key = this.canonicalKey(candidate);
+      if (!seen.has(key)) {
+        seen.set(key, candidate);
+      }
+    };
+
+    if (this.fileWatcher.isWatching()) {
+      pushIfPresent(this.fileWatcher.getWatchedPath());
+    }
+    if (this.secondaryWatcher.isWatching()) {
+      pushIfPresent(this.secondaryWatcher.getWatchedPath());
+    }
+    for (const watcher of this.indexedWatchers.values()) {
+      if (watcher.isWatching()) {
+        pushIfPresent(watcher.getWatchedPath());
+      }
+    }
+    return Array.from(seen.values());
+  }
+
+  /**
+   * Reconcile persisted index paths against current disk state + SecretGuard policy,
+   * removing offline-deleted or newly blocked secret paths from PathTrie and vector/graph stores.
+   */
+  async reconcileIndexedFiles(
+    indexedPaths: readonly string[],
+    onMissingOrBlocked: (stalePath: string) => Promise<void> | void
+  ): Promise<number> {
+    let purged = 0;
+    for (const rawPath of indexedPaths) {
+      if (this.closed) {
+        break;
+      }
+      const normalized = path.normalize(rawPath);
+      const blockedBySecretGuard = isSensitiveSecretFile(normalized).blocked;
+      let missing = false;
+      if (!blockedBySecretGuard) {
+        try {
+          const stat = await fs.stat(normalized);
+          if (!stat.isFile()) {
+            missing = true;
+          }
+        } catch {
+          missing = true;
+        }
+      }
+
+      if (blockedBySecretGuard || missing) {
+        this.pathTrie.remove(normalized);
+        this.fileSystemService.invalidatePath(normalized);
+        await Promise.resolve(onMissingOrBlocked(normalized));
+        purged += 1;
+      }
+    }
+
+    if (purged > 0) {
+      RuntimeDiagnostics.getInstance().setPathTrieStats({
+        entryCount: this.pathTrie.size(),
+      });
+    }
+    return purged;
+  }
+
+  private shouldIgnoreIndexedWatchPath(
+    watchRoot: string,
+    candidatePath: string,
+    excludedDirs: ReadonlySet<string>
+  ): boolean {
+    const normalizedCandidate = path.normalize(candidatePath);
+    const rootLower = watchRoot.toLowerCase().replace(/[\\/]+$/, '');
+    const candLower = normalizedCandidate.toLowerCase().replace(/[\\/]+$/, '');
+    if (candLower === rootLower) {
+      return false;
+    }
+
+    const base = path.basename(normalizedCandidate);
+    const baseLower = base.toLowerCase();
+    if (base.startsWith('.') && baseLower !== '.env.example' && baseLower !== '.env.sample') {
+      return true;
+    }
+
+    if (isSensitiveSecretFile(normalizedCandidate).blocked) {
+      return true;
+    }
+
+    const rel = candLower.startsWith(rootLower + path.sep)
+      ? candLower.slice(rootLower.length + 1)
+      : candLower;
+    const segments = rel.split(/[\\/]+/).filter(Boolean);
+    if (segments.some((seg) => excludedDirs.has(seg))) {
+      return true;
+    }
+
+    const ext = path.extname(baseLower);
+    return ext === '.tmp' || ext === '.swp' || ext === '.ldb' || base.startsWith('~$');
   }
 
   /**
@@ -480,8 +750,19 @@ export class ReactiveWorkspaceKernel {
     if (this.fileWatcher.isWatching()) {
       await this.fileWatcher.stop().catch(() => undefined);
     }
+    if (this.secondaryWatcher.isWatching()) {
+      await this.secondaryWatcher.stop().catch(() => undefined);
+    }
+    for (const watcher of this.indexedWatchers.values()) {
+      if (watcher.isWatching()) {
+        await watcher.stop().catch(() => undefined);
+      }
+      watcher.removeAllListeners();
+    }
+    this.indexedWatchers.clear();
 
     this.fileWatcher.removeAllListeners();
+    this.secondaryWatcher.removeAllListeners();
     this.eventQueue.clear();
     this.pathTrie.clear();
     this.fileSystemService.clearCache();

@@ -13,6 +13,8 @@ import * as os from 'os';
 const appLogs = new WeakMap<ElectronApplication, string[]>();
 const appSandboxDirs = new WeakMap<ElectronApplication, string>();
 const appExitFailures = new WeakMap<ElectronApplication, string>();
+const intentionalCloses = new WeakSet<ElectronApplication>();
+const WINDOWS_CRASHPAD_TEARDOWN_EXIT = 4294930435; // -36861 (0xFFFF7003) on Windows close
 const MAX_LOG_LINES = 80;
 
 function recordAppLog(buffer: string[], stream: 'stdout' | 'stderr', chunk: Buffer | string): void {
@@ -116,6 +118,13 @@ export async function launchElectronApp(options: {
     child.stdout?.on('data', (chunk) => recordAppLog(logBuffer, 'stdout', chunk));
     child.stderr?.on('data', (chunk) => recordAppLog(logBuffer, 'stderr', chunk));
     child.once('exit', (code, signal) => {
+      if (
+        intentionalCloses.has(electronApp) &&
+        code === WINDOWS_CRASHPAD_TEARDOWN_EXIT &&
+        signal === null
+      ) {
+        return;
+      }
       if ((code !== null && code !== 0) || signal !== null) {
         appExitFailures.set(
           electronApp,
@@ -191,6 +200,7 @@ export async function closeElectronApp(electronApp: ElectronApplication): Promis
   const child = electronApp.process();
 
   try {
+    intentionalCloses.add(electronApp);
     if (!child || child.exitCode === null) {
       await electronApp.close();
     }

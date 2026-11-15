@@ -146,6 +146,30 @@ export interface GraphInsightRecentFile {
   indexedAt: number;
 }
 
+export type ExplorerLens = 'files' | 'graph' | 'collections' | 'duplicates';
+
+export interface UIPreferencesSnapshot {
+  theme: 'light' | 'dark';
+  explorerLens: ExplorerLens;
+  viewMode: 'grid' | 'list';
+  splitPaneOpen: boolean;
+}
+
+export interface GraphImpactReference {
+  targetPath: string;
+  sourcePath: string;
+  targetRef: string;
+  kind: string;
+  lineNumber: number;
+  isMarkdownLink: boolean;
+}
+
+export interface GraphImpactCheckResult {
+  totalAffectedFiles: number;
+  markdownRepairableCount: number;
+  references: GraphImpactReference[];
+}
+
 export interface GraphInsightsResponse {
   stats: {
     totalFiles: number;
@@ -168,6 +192,7 @@ export interface GraphInsightsResponse {
     targetRef: string;
     kind: string;
     lineNumber: number;
+    targetPath?: string;
   }>;
 }
 
@@ -179,6 +204,11 @@ export interface LLMModelsSnapshot {
   rerankerModel: string;
   temperature: number;
   maxTokens: number;
+  provider?: 'ollama' | 'openai_compatible';
+  openAiBaseUrl?: string;
+  embeddingDevice?: 'auto' | 'cpu' | 'dml' | 'webgpu';
+  activeExecutionProvider?: string;
+  enableVisionCaptioning?: boolean;
 }
 
 export interface SystemPaths {
@@ -192,12 +222,22 @@ export type FileDeleteMode = 'vault' | 'trash' | 'permanent';
 
 export interface OperationRecord {
   id: string;
-  type: 'delete' | 'move' | 'rename' | 'create_file' | 'create_dir' | 'batch';
+  type:
+    | 'delete'
+    | 'move'
+    | 'rename'
+    | 'create_file'
+    | 'create_dir'
+    | 'copy'
+    | 'edit_links'
+    | 'batch';
   timestamp: number;
   sourcePath: string;
   destinationPath?: string;
   vaultPayloadPath?: string;
   symlinkTarget?: string;
+  previousContent?: string;
+  nextContent?: string;
   children?: OperationRecord[];
   isDirectory: boolean;
   isSymlink?: boolean;
@@ -231,6 +271,7 @@ export interface VaultConfigSnapshot {
   excludedDirs: string[];
   favorites: string[];
   defaultDeleteMode: 'vault' | 'trash';
+  ui?: UIPreferencesSnapshot;
 }
 
 /**
@@ -1067,7 +1108,8 @@ export type AgentToolName =
   | 'search_files'
   | 'search_content'
   | 'read_file_range'
-  | 'graph_lookup';
+  | 'graph_lookup'
+  | 'propose_organize_plan';
 
 export interface AgentTraceStep {
   step: number;
@@ -1085,6 +1127,7 @@ export interface AgentRunResult {
   sources: RetrievalSource[];
   stepLimitReached: boolean;
   aborted: boolean;
+  proposedPlan?: OrganizePlanResult;
 }
 
 export type OrganizeStrategy =
@@ -1092,7 +1135,9 @@ export type OrganizeStrategy =
   | 'smart_category'
   | 'by_type'
   | 'by_date'
-  | 'ai_suggested';
+  | 'ai_suggested'
+  | 'deduplicate'
+  | 'semantic_cluster';
 
 export interface OrganizePlanOperation {
   id: string;
@@ -1114,6 +1159,8 @@ export interface OrganizePlanResult {
   operations: OrganizePlanOperation[];
   skippedFiles: number;
   summary: string;
+  linkImpact?: GraphImpactCheckResult;
+  repairedLinksCount?: number;
 }
 
 export interface OrganizeApplyResult {
@@ -1122,6 +1169,75 @@ export interface OrganizeApplyResult {
   appliedCount: number;
   operationId: string;
   journalState: OperationJournalState;
+  repairedLinksCount?: number;
+}
+
+// ============================================================================
+// STAGE 2-4: SCOPED HYBRID GRAPH-RAG & SPATIAL WORKSPACE CONTRACTS
+// ============================================================================
+
+export interface SearchScopeFilter {
+  /** Restrict retrieval strictly to files under this directory subtree */
+  folderPath?: string;
+  /** Restrict retrieval strictly to an explicit set of files */
+  filePaths?: string[];
+  /** Restrict retrieval to specific lowercase extensions (without leading dot) */
+  fileExtensions?: string[];
+}
+
+export interface AssociativeBoostResult {
+  filePath: string;
+  score: number;
+  hopDistance: 1 | 2;
+  viaPath?: string;
+}
+
+export interface WorkspaceGraphNode {
+  path: string;
+  name: string;
+  fileType: string;
+  chunkCount: number;
+  inDegree: number;
+  outDegree: number;
+  topSymbols: string[];
+  folder: string;
+}
+
+export interface WorkspaceGraphEdge {
+  source: string;
+  target: string;
+  targetRef: string;
+  kind: string;
+  lineNumber: number;
+}
+
+export interface WorkspaceGraphMap {
+  rootPrefix: string | null;
+  nodes: WorkspaceGraphNode[];
+  edges: WorkspaceGraphEdge[];
+  totalFilesIndexed: number;
+}
+
+export interface WorkspaceCollectionGroup {
+  id: string;
+  label: string;
+  reason: string;
+  files: Array<{
+    path: string;
+    name: string;
+    fileType: string;
+    chunkCount: number;
+    topSymbol?: string;
+  }>;
+  dominantSymbols: string[];
+}
+
+export interface FileConnectionsSummary {
+  filePath: string;
+  symbols: Array<{ name: string; kind: string; lineNumber: number }>;
+  outgoingLinks: Array<{ targetRef: string; targetPath?: string; kind: string; lineNumber: number }>;
+  backlinks: Array<{ sourcePath: string; targetRef: string; kind: string; lineNumber: number }>;
+  associativeNeighbors: AssociativeBoostResult[];
 }
 
 

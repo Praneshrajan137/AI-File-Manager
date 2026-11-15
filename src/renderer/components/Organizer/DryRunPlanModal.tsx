@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { FolderKanban, RefreshCw, ShieldCheck, X, AlertTriangle, ArrowRight } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FolderKanban, RefreshCw, ShieldCheck, X, AlertTriangle, ArrowRight, Link2 } from 'lucide-react';
 import {
   OrganizeApplyResult,
   OrganizePlanOperation,
@@ -11,6 +11,8 @@ import { getErrorMessage } from '@renderer/utils/formatters';
 interface DryRunPlanModalProps {
   isOpen: boolean;
   targetDir: string;
+  initialStrategy?: OrganizeStrategy;
+  initialPlan?: OrganizePlanResult | null;
   onClose: () => void;
   onApplied: (result: OrganizeApplyResult) => Promise<void> | void;
 }
@@ -20,50 +22,91 @@ const STRATEGY_LABELS: Array<{ value: OrganizeStrategy; label: string }> = [
   { value: 'smart_category', label: 'Smart Categories' },
   { value: 'by_type', label: 'By File Type' },
   { value: 'by_date', label: 'By Month (YYYY-MM)' },
+  { value: 'semantic_cluster', label: 'Semantic Content Clusters' },
+  { value: 'deduplicate', label: 'Remove Redundant Duplicates' },
   { value: 'ai_suggested', label: 'Local AI Suggested' },
 ];
 
 export const DryRunPlanModal: React.FC<DryRunPlanModalProps> = ({
   isOpen,
   targetDir,
+  initialStrategy = 'auto',
+  initialPlan = null,
   onClose,
   onApplied,
 }) => {
-  const [strategy, setStrategy] = useState<OrganizeStrategy>('auto');
+  const [strategy, setStrategy] = useState<OrganizeStrategy>(initialStrategy);
   const [useLLM, setUseLLM] = useState<boolean>(false);
-  const [plan, setPlan] = useState<OrganizePlanResult | null>(null);
+  const [recursive, setRecursive] = useState<boolean>(false);
+  const [repairMarkdownLinks, setRepairMarkdownLinks] = useState<boolean>(true);
+  const [plan, setPlan] = useState<OrganizePlanResult | null>(initialPlan);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [loadingPlan, setLoadingPlan] = useState<boolean>(false);
   const [applying, setApplying] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const consumedInitialPlanRef = useRef<string | null>(null);
+  const planSeqRef = useRef<number>(0);
 
   const loadPlan = useCallback(
-    async (nextStrategy: OrganizeStrategy, nextUseLLM: boolean): Promise<void> => {
+    async (
+      nextStrategy: OrganizeStrategy,
+      nextUseLLM: boolean,
+      nextRecursive: boolean
+    ): Promise<void> => {
       if (!targetDir || !window.electronAPI?.ai?.planOrganize) return;
+      const seq = ++planSeqRef.current;
       setLoadingPlan(true);
       setErrorMessage(null);
+      setPlan(null);
+      setCheckedIds(new Set());
       try {
         const result = await window.electronAPI.ai.planOrganize(
           targetDir,
           nextStrategy,
-          nextUseLLM
+          nextUseLLM,
+          nextRecursive
         );
+        if (seq !== planSeqRef.current) return;
         setPlan(result);
         setCheckedIds(new Set(result.operations.map((op) => op.id)));
       } catch (err: unknown) {
+        if (seq !== planSeqRef.current) return;
         setPlan(null);
         setErrorMessage(getErrorMessage(err, 'Failed to compute organization dry-run plan'));
       } finally {
-        setLoadingPlan(false);
+        if (seq === planSeqRef.current) {
+          setLoadingPlan(false);
+        }
       }
     },
     [targetDir]
   );
 
   useEffect(() => {
-    if (!isOpen || !targetDir) return;
-    void loadPlan(strategy, useLLM);
-  }, [isOpen, targetDir, strategy, useLLM, loadPlan]);
+    if (!isOpen) {
+      consumedInitialPlanRef.current = null;
+      ++planSeqRef.current;
+      return;
+    }
+    if (initialPlan && consumedInitialPlanRef.current !== initialPlan.planId) {
+      consumedInitialPlanRef.current = initialPlan.planId;
+      ++planSeqRef.current;
+      setStrategy(initialPlan.strategy);
+      setUseLLM(initialPlan.usedLLM);
+      setPlan(initialPlan);
+      setCheckedIds(new Set(initialPlan.operations.map((op) => op.id)));
+      setLoadingPlan(false);
+      return;
+    }
+    if (!targetDir || (initialPlan && consumedInitialPlanRef.current === initialPlan.planId)) {
+      return;
+    }
+    const nextUseLLM = initialStrategy === 'ai_suggested';
+    setStrategy(initialStrategy);
+    setUseLLM(nextUseLLM);
+    setRecursive(false);
+    void loadPlan(initialStrategy, nextUseLLM, false);
+  }, [isOpen, targetDir, initialStrategy, initialPlan, loadPlan]);
 
   const selectedOperations = useMemo<OrganizePlanOperation[]>(() => {
     if (!plan) return [];
@@ -93,6 +136,7 @@ export const DryRunPlanModal: React.FC<DryRunPlanModalProps> = ({
         planId: plan.planId,
         targetDir: plan.targetDir,
         operations: selectedOperations,
+        repairMarkdownLinks,
       });
       await onApplied(res);
       onClose();
@@ -145,10 +189,12 @@ export const DryRunPlanModal: React.FC<DryRunPlanModalProps> = ({
                 value={strategy}
                 onChange={(e): void => {
                   const next = e.target.value as OrganizeStrategy;
+                  const nextUseLLM = next === 'ai_suggested' ? true : useLLM;
                   setStrategy(next);
                   if (next === 'ai_suggested') {
                     setUseLLM(true);
                   }
+                  void loadPlan(next, nextUseLLM, recursive);
                 }}
                 disabled={loadingPlan || applying}
                 data-testid="plan-strategy-select"
@@ -166,19 +212,51 @@ export const DryRunPlanModal: React.FC<DryRunPlanModalProps> = ({
               <input
                 type="checkbox"
                 checked={useLLM}
-                onChange={(e): void => setUseLLM(e.target.checked)}
+                onChange={(e): void => {
+                  const nextUseLLM = e.target.checked;
+                  setUseLLM(nextUseLLM);
+                  void loadPlan(strategy, nextUseLLM, recursive);
+                }}
                 disabled={loadingPlan || applying}
                 data-testid="plan-use-llm-checkbox"
                 className="rounded border-primary-300 dark:border-slate-600"
               />
               <span>Ask Ollama</span>
             </label>
+
+            <label className="inline-flex items-center gap-1.5 text-xs text-primary-700 dark:text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={recursive}
+                onChange={(e): void => {
+                  const nextRecursive = e.target.checked;
+                  setRecursive(nextRecursive);
+                  void loadPlan(strategy, useLLM, nextRecursive);
+                }}
+                disabled={loadingPlan || applying}
+                data-testid="plan-recursive-checkbox"
+                className="rounded border-primary-300 dark:border-slate-600"
+              />
+              <span>Recursive</span>
+            </label>
+
+            <label className="inline-flex items-center gap-1.5 text-xs text-primary-700 dark:text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={repairMarkdownLinks}
+                onChange={(e): void => setRepairMarkdownLinks(e.target.checked)}
+                disabled={loadingPlan || applying}
+                data-testid="plan-repair-links-checkbox"
+                className="rounded border-primary-300 dark:border-slate-600"
+              />
+              <span>Repair Markdown Links</span>
+            </label>
           </div>
 
           <button
             type="button"
             onClick={(): void => {
-              void loadPlan(strategy, useLLM);
+              void loadPlan(strategy, useLLM, recursive);
             }}
             disabled={loadingPlan || applying}
             data-testid="plan-refresh-button"
@@ -188,6 +266,20 @@ export const DryRunPlanModal: React.FC<DryRunPlanModalProps> = ({
             <span>Recompute Plan</span>
           </button>
         </div>
+
+        {plan?.linkImpact && plan.linkImpact.totalAffectedFiles > 0 && (
+          <div
+            data-testid="plan-link-impact-banner"
+            className="mx-5 mt-3 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300 flex items-center justify-between gap-2"
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <Link2 className="w-3.5 h-3.5 flex-shrink-0" />
+              <span>
+                {plan.linkImpact.totalAffectedFiles} referencing file(s) found ({plan.linkImpact.markdownRepairableCount} repairable Markdown link(s) will update atomically)
+              </span>
+            </span>
+          </div>
+        )}
 
         {/* Summary & Error Banner */}
         {errorMessage && (

@@ -10,10 +10,12 @@ import { z } from 'zod';
 import type {
   AgentTraceStep,
   ContentSearchMatch,
+  FileConnectionsSummary,
   FileLineRangeResult,
   FileNode,
   FilePreviewResult,
   FileStats,
+  GraphImpactCheckResult,
   GraphInsightsResponse,
   IndexingStatus,
   LLMModelsSnapshot,
@@ -22,8 +24,11 @@ import type {
   OrganizePlanResult,
   RetrievalSource,
   SystemPaths,
+  UIPreferencesSnapshot,
   UndoRedoResult,
   VaultConfigSnapshot,
+  WorkspaceCollectionGroup,
+  WorkspaceGraphMap,
 } from '../contracts';
 import type { RuntimeDiagnosticsSnapshot } from '../diagnostics';
 export {
@@ -116,7 +121,12 @@ export const IPC_SCHEMAS = {
     recursive: z.boolean().optional(),
     mode: z.enum(['vault', 'trash', 'permanent']).optional(),
   }),
-  'FS:MOVE': z.object({ source: z.string().min(1), destination: z.string().min(1) }),
+  'FS:MOVE': z.object({
+    source: z.string().min(1),
+    destination: z.string().min(1),
+    repairMarkdownLinks: z.boolean().optional(),
+  }),
+  'FS:COPY': z.object({ source: z.string().min(1), destination: z.string().min(1) }),
   'FS:CREATE_FILE': z.object({
     path: z.string().min(1),
     name: safeEntryNameSchema,
@@ -136,6 +146,9 @@ export const IPC_SCHEMAS = {
   'FS:REDO': optionalEmptyObjectSchema,
   'FS:GET_JOURNAL_STATE': optionalEmptyObjectSchema,
   'FS:EMPTY_TRASH_VAULT': optionalEmptyObjectSchema,
+  'FS:WATCH_SPLIT_DIR': z.object({
+    path: z.string().min(1).nullable(),
+  }),
   'VAULT:GET_CONFIG': optionalEmptyObjectSchema,
   'VAULT:ADD_ROOT': z.object({
     path: z.string().min(1).optional(),
@@ -144,6 +157,12 @@ export const IPC_SCHEMAS = {
   'VAULT:REMOVE_ROOT': z.object({ path: z.string().min(1) }),
   'VAULT:SET_INDEXED': z.object({ path: z.string().min(1), enabled: z.boolean() }),
   'VAULT:TOGGLE_FAVORITE': z.object({ path: z.string().min(1) }),
+  'VAULT:SET_UI_PREFS': z.object({
+    theme: z.enum(['light', 'dark']).optional(),
+    explorerLens: z.enum(['files', 'graph', 'collections', 'duplicates']).optional(),
+    viewMode: z.enum(['grid', 'list']).optional(),
+    splitPaneOpen: z.boolean().optional(),
+  }),
   'NAV:BACK': optionalEmptyObjectSchema,
   'NAV:FORWARD': optionalEmptyObjectSchema,
   'NAV:PUSH': z.union([
@@ -174,6 +193,31 @@ export const IPC_SCHEMAS = {
       }),
     ])
     .transform((v) => v ?? {}),
+  'GRAPH:IMPACT_CHECK': z.object({
+    paths: z.array(z.string().min(1)).min(1).max(250),
+  }),
+  'GRAPH:WORKSPACE_MAP': z
+    .union([
+      z.undefined(),
+      z.null(),
+      z.object({
+        rootPrefix: z.string().min(1).max(1000).optional(),
+        maxNodes: z.number().int().min(10).max(500).optional(),
+      }),
+    ])
+    .transform((v) => v ?? {}),
+  'GRAPH:COLLECTIONS': z
+    .union([
+      z.undefined(),
+      z.null(),
+      z.object({
+        rootPrefix: z.string().min(1).max(1000).optional(),
+      }),
+    ])
+    .transform((v) => v ?? {}),
+  'GRAPH:FILE_CONNECTIONS': z.object({
+    filePath: z.string().min(1),
+  }),
   'LLM:QUERY': z.object({
     query: z.string().min(1).max(8000),
     channel: z
@@ -189,13 +233,37 @@ export const IPC_SCHEMAS = {
         useSelection: z.boolean().optional(),
       })
       .optional(),
+    history: z
+      .array(
+        z.object({
+          role: z.enum(['user', 'assistant']),
+          content: z.string().min(1).max(8000),
+        })
+      )
+      .max(12)
+      .optional(),
+  }),
+  'LLM:ABORT_QUERY': z.object({
+    channel: z
+      .string()
+      .min(1)
+      .regex(/^LLM:QUERY:[A-Za-z0-9:_-]+$/, 'Invalid stream channel name'),
   }),
   'AI:ORGANIZE_PLAN': z.object({
     targetDir: z.string().min(1),
     strategy: z
-      .enum(['auto', 'smart_category', 'by_type', 'by_date', 'ai_suggested'])
+      .enum([
+        'auto',
+        'smart_category',
+        'by_type',
+        'by_date',
+        'ai_suggested',
+        'deduplicate',
+        'semantic_cluster',
+      ])
       .optional(),
     useLLM: z.boolean().optional(),
+    recursive: z.boolean().optional(),
   }),
   'AI:ORGANIZE_APPLY': z.object({
     planId: z.string().min(1).max(120),
@@ -215,6 +283,7 @@ export const IPC_SCHEMAS = {
       )
       .min(1)
       .max(500),
+    repairMarkdownLinks: z.boolean().optional(),
   }),
   'LLM:INDEX_STATUS': optionalEmptyObjectSchema,
   'LLM:START_INDEXING': z.object({ path: z.string().min(1) }),
@@ -227,11 +296,15 @@ export const IPC_SCHEMAS = {
   'LLM:CLEAR_INDEX': optionalEmptyObjectSchema,
   'LLM:LIST_MODELS': optionalEmptyObjectSchema,
   'LLM:SET_MODEL_CONFIG': z.object({
+    provider: z.enum(['ollama', 'openai_compatible']).optional(),
+    openAiBaseUrl: z.string().min(1).max(200).optional(),
     model: z.string().min(1).max(120).optional(),
     temperature: z.number().min(0).max(1).optional(),
     maxTokens: z.number().int().min(64).max(32768).optional(),
     embeddingModel: z.string().min(1).max(120).optional(),
     rerankerModel: z.string().min(1).max(120).optional(),
+    embeddingDevice: z.enum(['auto', 'cpu', 'dml', 'webgpu']).optional(),
+    enableVisionCaptioning: z.boolean().optional(),
   }),
   'CLIPBOARD:WRITE_TEXT': z.union([
     z.string().max(1024 * 1024).transform((text) => ({ text })),
@@ -254,7 +327,8 @@ export interface IPCResponseMap {
   'FS:READ_FILE_RANGE': FileLineRangeResult;
   'FS:WRITE_FILE': { success: boolean };
   'FS:DELETE': { success: boolean };
-  'FS:MOVE': { success: boolean; newPath: string };
+  'FS:MOVE': { success: boolean; newPath: string; repairedLinksCount?: number };
+  'FS:COPY': { success: boolean; copiedPath: string };
   'FS:CREATE_FILE': { success: boolean; path: string };
   'FS:CREATE_DIR': { success: boolean; path: string };
   'FS:GET_STATS': FileStats;
@@ -264,11 +338,13 @@ export interface IPCResponseMap {
   'FS:REDO': UndoRedoResult;
   'FS:GET_JOURNAL_STATE': OperationJournalState;
   'FS:EMPTY_TRASH_VAULT': OperationJournalState;
+  'FS:WATCH_SPLIT_DIR': { watching: boolean; path: string | null };
   'VAULT:GET_CONFIG': VaultConfigSnapshot;
   'VAULT:ADD_ROOT': { cancelled: boolean; addedPath?: string; config: VaultConfigSnapshot };
   'VAULT:REMOVE_ROOT': VaultConfigSnapshot;
   'VAULT:SET_INDEXED': VaultConfigSnapshot;
   'VAULT:TOGGLE_FAVORITE': VaultConfigSnapshot;
+  'VAULT:SET_UI_PREFS': UIPreferencesSnapshot;
   'NAV:BACK': string | null;
   'NAV:FORWARD': string | null;
   'NAV:PUSH': { success: boolean };
@@ -277,12 +353,19 @@ export interface IPCResponseMap {
   'SEARCH:QUERY': FileNode[];
   'SEARCH:CONTENT': ContentSearchMatch[];
   'GRAPH:QUERY_INSIGHTS': GraphInsightsResponse;
+  'GRAPH:IMPACT_CHECK': GraphImpactCheckResult;
+  'GRAPH:WORKSPACE_MAP': WorkspaceGraphMap;
+  'GRAPH:COLLECTIONS': WorkspaceCollectionGroup[];
+  'GRAPH:FILE_CONNECTIONS': FileConnectionsSummary;
   'LLM:QUERY': {
     success: boolean;
     error?: string;
     sources?: RetrievalSource[];
     agentSteps?: AgentTraceStep[];
+    offlineSynthesis?: boolean;
+    proposedPlan?: OrganizePlanResult;
   };
+  'LLM:ABORT_QUERY': { aborted: boolean };
   'AI:ORGANIZE_PLAN': OrganizePlanResult;
   'AI:ORGANIZE_APPLY': OrganizeApplyResult;
   'LLM:INDEX_STATUS': IndexingStatus;
@@ -363,6 +446,14 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     linkSafePathFields: ['source'],
     rateLimit: WRITE_RATE_LIMIT,
   },
+  'FS:COPY': {
+    channel: 'FS:COPY',
+    group: 'fileSystem',
+    schema: IPC_SCHEMAS['FS:COPY'],
+    pathFields: ['destination'],
+    linkSafePathFields: ['source'],
+    rateLimit: WRITE_RATE_LIMIT,
+  },
   'FS:CREATE_FILE': {
     channel: 'FS:CREATE_FILE',
     group: 'fileSystem',
@@ -425,6 +516,13 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     pathFields: [],
     rateLimit: WRITE_RATE_LIMIT,
   },
+  'FS:WATCH_SPLIT_DIR': {
+    channel: 'FS:WATCH_SPLIT_DIR',
+    group: 'fileSystem',
+    schema: IPC_SCHEMAS['FS:WATCH_SPLIT_DIR'],
+    pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
+  },
   'VAULT:GET_CONFIG': {
     channel: 'VAULT:GET_CONFIG',
     group: 'vault',
@@ -458,6 +556,13 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     group: 'vault',
     schema: IPC_SCHEMAS['VAULT:TOGGLE_FAVORITE'],
     pathFields: ['path'],
+    rateLimit: WRITE_RATE_LIMIT,
+  },
+  'VAULT:SET_UI_PREFS': {
+    channel: 'VAULT:SET_UI_PREFS',
+    group: 'vault',
+    schema: IPC_SCHEMAS['VAULT:SET_UI_PREFS'],
+    pathFields: [],
     rateLimit: WRITE_RATE_LIMIT,
   },
   'NAV:BACK': {
@@ -516,6 +621,34 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     pathFields: [],
     rateLimit: READ_RATE_LIMIT,
   },
+  'GRAPH:IMPACT_CHECK': {
+    channel: 'GRAPH:IMPACT_CHECK',
+    group: 'graph',
+    schema: IPC_SCHEMAS['GRAPH:IMPACT_CHECK'],
+    pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
+  },
+  'GRAPH:WORKSPACE_MAP': {
+    channel: 'GRAPH:WORKSPACE_MAP',
+    group: 'graph',
+    schema: IPC_SCHEMAS['GRAPH:WORKSPACE_MAP'],
+    pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
+  },
+  'GRAPH:COLLECTIONS': {
+    channel: 'GRAPH:COLLECTIONS',
+    group: 'graph',
+    schema: IPC_SCHEMAS['GRAPH:COLLECTIONS'],
+    pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
+  },
+  'GRAPH:FILE_CONNECTIONS': {
+    channel: 'GRAPH:FILE_CONNECTIONS',
+    group: 'graph',
+    schema: IPC_SCHEMAS['GRAPH:FILE_CONNECTIONS'],
+    pathFields: ['filePath'],
+    rateLimit: READ_RATE_LIMIT,
+  },
   'LLM:QUERY': {
     channel: 'LLM:QUERY',
     group: 'llm',
@@ -566,6 +699,12 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     channel: 'LLM:LIST_MODELS',
     group: 'llm',
     schema: IPC_SCHEMAS['LLM:LIST_MODELS'],
+    pathFields: [],
+  },
+  'LLM:ABORT_QUERY': {
+    channel: 'LLM:ABORT_QUERY',
+    group: 'llm',
+    schema: IPC_SCHEMAS['LLM:ABORT_QUERY'],
     pathFields: [],
   },
   'LLM:SET_MODEL_CONFIG': {

@@ -56,6 +56,8 @@ export interface VectorStoreDiagnostics {
   modelId?: string;
   needsReindex?: boolean;
   migrationReason?: string;
+  activeExecutionProvider?: string;
+  supportedDevices?: string[];
 }
 
 export interface LlmPipelineDiagnostics {
@@ -65,6 +67,8 @@ export interface LlmPipelineDiagnostics {
   avgRetrievalMs: number;
   avgGenerationMs: number;
   lastError: string | null;
+  activeProvider?: string;
+  activeModel?: string;
 }
 
 export interface IpcChannelMetric {

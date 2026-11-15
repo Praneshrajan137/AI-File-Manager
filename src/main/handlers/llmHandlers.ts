@@ -36,6 +36,8 @@ import {
   ContentSearchMatch,
   CopilotContextScope,
   CopilotQueryMode,
+  FileConnectionsSummary,
+  GraphImpactCheckResult,
   GraphInsightsResponse,
   IndexingStatus,
   LLMModelsSnapshot,
@@ -45,9 +47,12 @@ import {
   OrganizePlanResult,
   OrganizeStrategy,
   RetrievalSource,
+  WorkspaceCollectionGroup,
+  WorkspaceGraphMap,
 } from '../../shared/contracts';
 import { IPCChannel } from '@shared/ipc/contracts';
 import { IPCLogger, LLMLogger } from '../../shared/logging';
+import { isSensitiveSecretFile } from '../../shared/security/SecretGuard';
 import { VectorStore } from '../../llm/services/VectorStore';
 import { WorkspaceKnowledgeGraph } from '../services/WorkspaceKnowledgeGraph';
 import { EmbeddingWorkerPool } from '../../llm/workers/EmbeddingWorkerPool';
@@ -57,6 +62,8 @@ import { ContextManager, formatUntrustedWorkspaceData } from '../../llm/services
 import { WorkspaceReActAgent } from '../../llm/agent/WorkspaceReActAgent';
 import { LLMMetrics, MetricOperation } from '../../llm/services/LLMMetrics';
 import { LLMInterface } from '../../llm/services/LLMInterface';
+import { LocalLLMProvider } from '../../llm/services/LocalModelTransport';
+import { OfflineSynthesisService } from '../../llm/services/OfflineSynthesisService';
 import { FileSystemService } from '../services/FileSystemService';
 import { DirectoryScanner } from '../services/DirectoryScanner';
 import { PathValidator } from '../services/PathValidator';
@@ -107,6 +114,23 @@ let totalToIndex = 0;
 let currentFile = '';
 let abortIndexing = false;
 let activeIndexingPromise: Promise<void> | null = null;
+const activeQueryAbortControllers = new Map<string, AbortController>();
+const offlineSynthesis = new OfflineSynthesisService();
+
+function resolveActiveTransportSettings(): {
+  provider: LocalLLMProvider;
+  baseUrl: string;
+  model: string;
+} {
+  const llmCfg = readLlmConfig();
+  const provider: LocalLLMProvider = llmCfg?.provider ?? 'ollama';
+  const baseUrl =
+    provider === 'openai_compatible'
+      ? (llmCfg?.openAiBaseUrl?.trim() || 'http://127.0.0.1:1234')
+      : (resolveOllamaUrl() || 'http://localhost:11434');
+  const model = llmCfg?.model?.trim() || 'llama3.2';
+  return { provider, baseUrl, model };
+}
 
 export function resolveVectorDbPath(): string {
   const allowTestOverrides =
@@ -212,6 +236,38 @@ export function queryWorkspaceGraphInsights(input: {
   });
 }
 
+export function checkWorkspaceGraphImpact(targetPaths: string[]): GraphImpactCheckResult {
+  return withKnowledgeGraph((kg) => {
+    const references = kg.findImpactForPaths(targetPaths);
+    const uniqueSourceFiles = new Set(references.map((r) => r.sourcePath));
+    const markdownRepairableCount = references.filter((r) => r.isMarkdownLink).length;
+    return {
+      totalAffectedFiles: uniqueSourceFiles.size,
+      markdownRepairableCount,
+      references,
+    };
+  });
+}
+
+export function getWorkspaceGraphMapData(input?: {
+  rootPrefix?: string;
+  maxNodes?: number;
+}): WorkspaceGraphMap {
+  return withKnowledgeGraph((kg) =>
+    kg.getWorkspaceGraphMap(input?.rootPrefix, input?.maxNodes ?? 240)
+  );
+}
+
+export function getWorkspaceCollectionsData(input?: {
+  rootPrefix?: string;
+}): WorkspaceCollectionGroup[] {
+  return withKnowledgeGraph((kg) => kg.getSemanticCollections(input?.rootPrefix));
+}
+
+export function getWorkspaceFileConnectionsData(filePath: string): FileConnectionsSummary {
+  return withKnowledgeGraph((kg) => kg.getFileConnections(filePath));
+}
+
 /**
  * Initialize LLM services (lazy, concurrency-safe).
  */
@@ -250,8 +306,33 @@ async function ensureServicesInitialized(): Promise<void> {
       const kernel = getReactiveWorkspaceKernel();
       fileSystemService = kernel.getFileSystemService();
 
-      const localLlm = new LLMInterface(resolveOllamaUrl(), {
-        model: llmConfig?.model,
+      // Reconcile offline-deleted or newly SecretGuard-blocked index records
+      const storeRef = localVectorStore;
+      const indexedPaths = storeRef.getKnowledgeGraph()?.getIndexedFiles() ?? [];
+      if (indexedPaths.length > 0) {
+        const purged = await kernel.reconcileIndexedFiles(indexedPaths, async (stalePath) => {
+          await storeRef.deleteFile(stalePath);
+        });
+        if (purged > 0) {
+          LLMLogger.info('Purged stale or SecretGuard-blocked index entries', { purged });
+        }
+      }
+
+      if (!process.env.JEST_WORKER_ID) {
+        try {
+          const roots = ConfigManager.getInstance().getAll()?.fileSystem?.indexedRoots ?? [];
+          for (const root of roots.slice(0, 4)) {
+            void kernel.watchIndexedRoot(root).catch(() => undefined);
+          }
+        } catch {
+          // Non-fatal in minimal environments
+        }
+      }
+
+      const transportCfg = resolveActiveTransportSettings();
+      const localLlm = new LLMInterface(transportCfg.baseUrl, {
+        provider: transportCfg.provider,
+        model: transportCfg.model,
       });
       const contextManager = new ContextManager(localLlm);
 
@@ -295,14 +376,17 @@ async function handleQuery(
     channel: string;
     mode?: CopilotQueryMode;
     contextScope?: CopilotContextScope;
+    history?: Array<{ role: 'user' | 'assistant'; content: string }>;
   }
 ): Promise<{
   success: boolean;
   error?: string;
   sources?: RetrievalSource[];
   agentSteps?: AgentTraceStep[];
+  offlineSynthesis?: boolean;
+  proposedPlan?: OrganizePlanResult;
 }> {
-  const { query, channel, mode = 'rag', contextScope } = input;
+  const { query, channel, mode = 'rag', contextScope, history } = input;
   LLMLogger.info('LLM query received', { query: query.substring(0, 100), mode });
 
   const safeSend = (streamChannel: string, payload: unknown): void => {
@@ -314,6 +398,7 @@ async function handleQuery(
   let retrievalMs = 0;
   let generationMs = 0;
   const queryAbort = new AbortController();
+  activeQueryAbortControllers.set(channel, queryAbort);
   const abortOnDestroy = (): void => {
     queryAbort.abort();
   };
@@ -323,22 +408,74 @@ async function handleQuery(
 
   try {
     const llmConfig = readLlmConfig();
+    const transportCfg = resolveActiveTransportSettings();
 
     if (mode === 'agent') {
-      const ollamaUrl = resolveOllamaUrl() || 'http://localhost:11434';
-      const activeClient = llmInterface ?? new LLMInterface(ollamaUrl, { model: llmConfig?.model });
-      const ollamaAvailable = await activeClient.checkConnection();
-      if (!ollamaAvailable) {
-        const msg = 'Ollama is not running. Please start Ollama with: ollama serve';
-        safeSend(channel, msg);
-        safeSend(`${channel}:end`, { ok: false, error: 'Ollama not available' });
-        RuntimeDiagnostics.getInstance().recordLlmQuery({
-          success: false,
-          retrievalMs: 0,
-          generationMs: 0,
-          error: 'Ollama not available',
+      const activeClient =
+        llmInterface ??
+        new LLMInterface(transportCfg.baseUrl, {
+          provider: transportCfg.provider,
+          model: transportCfg.model,
         });
-        return { success: false, error: 'Ollama not available' };
+      const runtimeAvailable = await activeClient.checkConnection();
+      if (!runtimeAvailable) {
+        await ensureServicesInitialized();
+        const retrievalStart = Date.now();
+        const retrievalResult = await retrievalService!.retrieve(query, contextScope);
+        retrievalMs = Date.now() - retrievalStart;
+
+        const rootScope = contextScope?.useFolder && contextScope.currentPath ? contextScope.currentPath : undefined;
+        const matchedFiles = await searchWorkspacePaths(query, rootScope).catch(() => []);
+        const contentHits = searchWorkspaceContent(query, 6, rootScope);
+        const offlineSteps: AgentTraceStep[] = [
+          {
+            step: 1,
+            thought: 'Local LLM runtime inactive; running deterministic local workspace inspection.',
+            tool: 'search_files',
+            arguments: { query, rootPath: rootScope },
+            allowed: true,
+            observationSummary: `Found ${matchedFiles.length} matching path(s)`,
+            durationMs: Math.max(1, retrievalMs),
+          },
+          {
+            step: 2,
+            thought: 'Gathering FTS5 lexical + hybrid RAG citations from Knowledge Graph.',
+            tool: 'search_content',
+            arguments: { query, topK: 6, rootPath: rootScope },
+            allowed: true,
+            observationSummary: `Matched ${contentHits.length} lexical & ${retrievalResult.sources.length} semantic sources`,
+            durationMs: 1,
+          },
+        ];
+        for (const step of offlineSteps) {
+          safeSend(`${channel}:step`, step);
+        }
+
+        const synth = offlineSynthesis.synthesize({
+          query,
+          retrievalResult,
+          knowledgeGraph: vectorStore?.getKnowledgeGraph(),
+        });
+        safeSend(channel, synth.answer);
+        safeSend(`${channel}:end`, {
+          ok: true,
+          offlineSynthesis: true,
+          sources: synth.sources,
+          agentSteps: offlineSteps,
+          retrievalMs,
+          generationMs: 0,
+        });
+        RuntimeDiagnostics.getInstance().recordLlmQuery({
+          success: true,
+          retrievalMs,
+          generationMs: 0,
+        });
+        return {
+          success: true,
+          offlineSynthesis: true,
+          sources: synth.sources,
+          agentSteps: offlineSteps,
+        };
       }
 
       const kernel = getReactiveWorkspaceKernel();
@@ -346,7 +483,8 @@ async function handleQuery(
       const validator = new PathValidator(fsService.getAllowedRoots());
 
       const agent = new WorkspaceReActAgent({
-        ollamaUrl,
+        provider: transportCfg.provider,
+        ollamaUrl: transportCfg.baseUrl,
         model: llmConfig?.model || activeClient.getModel(),
         temperature: llmConfig?.temperature,
         maxTokens: llmConfig?.maxTokens,
@@ -355,6 +493,12 @@ async function handleQuery(
         readFileRange: (filePath, startLine, endLine) =>
           fsService.readFileRange(filePath, startLine, endLine),
         queryGraph: (graphInput) => queryWorkspaceGraphInsights(graphInput),
+        proposeOrganizePlan: (targetDir, strategy) =>
+          createOrganizerService().proposeOrganizationPlan({
+            targetDir,
+            strategy,
+            useLLM: true,
+          }),
         validatePath: (candidate) => validator.validateCanonical(candidate),
       });
 
@@ -362,7 +506,11 @@ async function handleQuery(
       const agentResult = await agent.run(query, {
         maxSteps: 4,
         contextScope,
+        history,
         signal: queryAbort.signal,
+        onStep: (step): void => {
+          safeSend(`${channel}:step`, step);
+        },
       });
       generationMs = Date.now() - genStart;
       LLMMetrics.getInstance().recordTiming(MetricOperation.LLM_QUERY, generationMs);
@@ -375,6 +523,7 @@ async function handleQuery(
         ok: true,
         sources: agentResult.sources,
         agentSteps: agentResult.steps,
+        proposedPlan: agentResult.proposedPlan,
         retrievalMs: 0,
         generationMs,
       });
@@ -382,12 +531,15 @@ async function handleQuery(
         success: true,
         retrievalMs: 0,
         generationMs,
+        provider: llmConfig?.provider ?? 'ollama',
+        model: llmConfig?.model,
       });
 
       return {
         success: true,
         sources: agentResult.sources,
         agentSteps: agentResult.steps,
+        proposedPlan: agentResult.proposedPlan,
       };
     }
 
@@ -447,23 +599,38 @@ async function handleQuery(
       tokens: retrievalResult.tokenCount,
     });
 
-    const ollamaAvailable = await llmInterface!.checkConnection();
-    if (!ollamaAvailable) {
-      const msg = 'Ollama is not running. Please start Ollama with: ollama serve';
-      safeSend(channel, msg);
-      safeSend(`${channel}:end`, { ok: false, error: 'Ollama not available' });
-      RuntimeDiagnostics.getInstance().recordLlmQuery({
-        success: false,
-        retrievalMs,
-        generationMs: 0,
-        error: 'Ollama not available',
-      });
-      return { success: false, error: 'Ollama not available' };
-    }
-
     const structuredSources: RetrievalSource[] =
       retrievalResult.structuredSources ??
       retrievalResult.sources.map((filePath) => ({ filePath }));
+
+    const runtimeAvailable = await llmInterface!.checkConnection();
+    if (!runtimeAvailable) {
+      const synth = offlineSynthesis.synthesize({
+        query,
+        retrievalResult,
+        knowledgeGraph: vectorStore?.getKnowledgeGraph(),
+      });
+      safeSend(channel, synth.answer);
+      safeSend(`${channel}:end`, {
+        ok: true,
+        offlineSynthesis: true,
+        sources: structuredSources,
+        retrievalMs,
+        generationMs: 0,
+      });
+      RuntimeDiagnostics.getInstance().recordLlmQuery({
+        success: true,
+        retrievalMs,
+        generationMs: 0,
+        provider: 'offline_graph',
+        model: llmConfig?.model,
+      });
+      return {
+        success: true,
+        offlineSynthesis: true,
+        sources: structuredSources,
+      };
+    }
 
     const genStart = Date.now();
     for await (const chunk of llmInterface!.query(query, retrievalResult, {
@@ -471,8 +638,9 @@ async function handleQuery(
       temperature: llmConfig?.temperature,
       maxTokens: llmConfig?.maxTokens,
       signal: queryAbort.signal,
-    } as Parameters<LLMInterface['query']>[2])) {
-      if (event.sender.isDestroyed()) {
+      history,
+    })) {
+      if (event.sender.isDestroyed() || queryAbort.signal.aborted) {
         queryAbort.abort();
         break;
       }
@@ -491,10 +659,16 @@ async function handleQuery(
       success: true,
       retrievalMs,
       generationMs,
+      provider: llmConfig?.provider ?? 'ollama',
+      model: llmConfig?.model,
     });
 
     return { success: true, sources: structuredSources };
   } catch (error: unknown) {
+    if (queryAbort.signal.aborted) {
+      safeSend(`${channel}:end`, { ok: true, aborted: true });
+      return { success: true };
+    }
     const rawMsg = error instanceof Error ? error.message : String(error);
     const msg = ErrorSerializer.sanitizeText(rawMsg);
     safeSend(channel, `Error: ${msg}`);
@@ -504,13 +678,29 @@ async function handleQuery(
       retrievalMs,
       generationMs,
       error: msg,
+      provider: readLlmConfig()?.provider ?? 'ollama',
+      model: readLlmConfig()?.model,
     });
     return { success: false, error: msg };
   } finally {
+    activeQueryAbortControllers.delete(channel);
     if (event.sender && typeof event.sender.removeListener === 'function') {
       event.sender.removeListener('destroyed', abortOnDestroy);
     }
   }
+}
+
+async function handleAbortQuery(
+  _event: IpcMainInvokeEvent,
+  input: { channel: string }
+): Promise<{ aborted: boolean }> {
+  const controller = activeQueryAbortControllers.get(input.channel);
+  if (!controller) {
+    return { aborted: false };
+  }
+  controller.abort();
+  activeQueryAbortControllers.delete(input.channel);
+  return { aborted: true };
 }
 
 /**
@@ -569,6 +759,7 @@ async function handleStartIndexing(
     const files = await scanner.scan(canonicalDir, {
       recursive: true,
       skipErrors: true,
+      skipSensitiveFiles: true,
       extensions: [
         'txt', 'md', 'markdown', 'mdx', 'rst',
         'js', 'ts', 'jsx', 'tsx', 'py', 'java', 'cpp', 'c', 'h', 'hpp',
@@ -592,6 +783,7 @@ async function handleStartIndexing(
       if (!alreadyCovered) {
         cm.set('fileSystem.indexedRoots', [...existing, canonicalDir], true);
       }
+      void getReactiveWorkspaceKernel().watchIndexedRoot(canonicalDir).catch(() => undefined);
     } catch {
       // Non-fatal in minimal test environments
     }
@@ -647,13 +839,16 @@ async function indexFilesBackground(
     try {
       currentFile = filePath;
 
-      // Adaptive yield based on file type and progress
-      const yieldDuration = calculateAdaptiveYield(filePath, indexedCount);
-      await new Promise(resolve => setTimeout(resolve, yieldDuration));
-
       const canonicalPath = await validateCanonicalPathOrThrow(filePath);
-      await indexingService!.indexFile(canonicalPath, false, { skipMetadataStubs: true });
-      indexedCount++;
+      if (isSensitiveSecretFile(canonicalPath).blocked) {
+        continue;
+      }
+
+      const indexResult = await indexingService!.indexFile(canonicalPath, false, { skipMetadataStubs: true });
+      const didEmbedWork = indexResult.success && indexResult.chunksCreated > 0;
+      if (didEmbedWork) {
+        indexedCount++;
+      }
 
       if (!event.sender.isDestroyed()) {
         event.sender.send('LLM:INDEXING_PROGRESS', {
@@ -663,10 +858,17 @@ async function indexFilesBackground(
         });
       }
 
-      // Batch pause every N files with adaptive duration
-      if (indexedCount % BATCH_SIZE === 0) {
-        const batchYield = Math.min(300 + indexedCount * 2, 600);
-        await new Promise(resolve => setTimeout(resolve, batchYield));
+      // Only yield / sleep after real embedding work; unchanged skipped files fly past without idle sleep
+      if (didEmbedWork) {
+        const yieldDuration = calculateAdaptiveYield(filePath, indexedCount);
+        await new Promise(resolve => setTimeout(resolve, yieldDuration));
+
+        if (indexedCount % BATCH_SIZE === 0) {
+          const batchYield = Math.min(300 + indexedCount * 2, 600);
+          await new Promise(resolve => setTimeout(resolve, batchYield));
+        }
+      } else {
+        await new Promise(resolve => setImmediate(resolve));
       }
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -727,6 +929,10 @@ async function handleIndexFile(
   try {
     await ensureServicesInitialized();
     const canonicalPath = await validateCanonicalPathOrThrow(input.filePath);
+    const secretCheck = isSensitiveSecretFile(canonicalPath);
+    if (secretCheck.blocked) {
+      return { success: false, chunksCreated: 0, error: secretCheck.reason };
+    }
     const result = await indexingService!.indexFile(canonicalPath, true);
 
     return {
@@ -757,6 +963,10 @@ async function handleKernelIndexMutation(
     }
 
     const canonicalPath = await validateCanonicalPathOrThrow(filePath);
+    if (isSensitiveSecretFile(canonicalPath).blocked) {
+      await indexingService.removeFile(canonicalPath).catch(() => undefined);
+      return;
+    }
 
     // Enforce opt-in Vault boundary for background incremental indexing
     try {
@@ -818,7 +1028,13 @@ async function handleCheckOllama(
   _input: Record<string, never>
 ): Promise<{ available: boolean; models: string[] }> {
   try {
-    const client = llmInterface ?? new LLMInterface(resolveOllamaUrl());
+    const transportCfg = resolveActiveTransportSettings();
+    const client =
+      llmInterface ??
+      new LLMInterface(transportCfg.baseUrl, {
+        provider: transportCfg.provider,
+        model: transportCfg.model,
+      });
     const available = await client.checkConnection();
     const models = available ? await client.getAvailableModels() : [];
 
@@ -830,11 +1046,17 @@ async function handleCheckOllama(
 
 async function buildModelsSnapshot(): Promise<LLMModelsSnapshot> {
   const llmCfg = readLlmConfig();
+  const transportCfg = resolveActiveTransportSettings();
 
   let available = false;
   let models: string[] = [];
   try {
-    const client = llmInterface ?? new LLMInterface(resolveOllamaUrl(), { model: llmCfg?.model });
+    const client =
+      llmInterface ??
+      new LLMInterface(transportCfg.baseUrl, {
+        provider: transportCfg.provider,
+        model: transportCfg.model,
+      });
     available = await client.checkConnection();
     models = available ? await client.getAvailableModels() : [];
   } catch {
@@ -850,6 +1072,10 @@ async function buildModelsSnapshot(): Promise<LLMModelsSnapshot> {
     rerankerModel: llmCfg?.rerankerModel ?? 'Xenova/ms-marco-MiniLM-L-6-v2',
     temperature: llmCfg?.temperature ?? 0.7,
     maxTokens: llmCfg?.maxTokens ?? 2048,
+    provider: transportCfg.provider,
+    openAiBaseUrl: llmCfg?.openAiBaseUrl ?? 'http://127.0.0.1:1234',
+    embeddingDevice: llmCfg?.embeddingDevice ?? 'auto',
+    enableVisionCaptioning: llmCfg?.enableVisionCaptioning ?? false,
   };
 }
 
@@ -863,14 +1089,24 @@ async function handleListModels(
 async function handleSetModelConfig(
   _event: IpcMainInvokeEvent,
   input: {
+    provider?: LocalLLMProvider;
+    openAiBaseUrl?: string;
     model?: string;
     temperature?: number;
     maxTokens?: number;
     embeddingModel?: string;
     rerankerModel?: string;
+    embeddingDevice?: 'auto' | 'cpu' | 'dml' | 'webgpu';
+    enableVisionCaptioning?: boolean;
   }
 ): Promise<{ success: boolean; config: LLMModelsSnapshot }> {
   const updates: Array<[string, unknown]> = [];
+  if (input.provider !== undefined) {
+    updates.push(['llm.provider', input.provider]);
+  }
+  if (input.openAiBaseUrl !== undefined) {
+    updates.push(['llm.openAiBaseUrl', input.openAiBaseUrl.trim()]);
+  }
   if (input.model !== undefined) {
     updates.push(['llm.model', input.model.trim()]);
   }
@@ -886,6 +1122,12 @@ async function handleSetModelConfig(
   if (input.rerankerModel !== undefined) {
     updates.push(['llm.rerankerModel', input.rerankerModel.trim()]);
   }
+  if (input.embeddingDevice !== undefined) {
+    updates.push(['llm.embeddingDevice', input.embeddingDevice]);
+  }
+  if (input.enableVisionCaptioning !== undefined) {
+    updates.push(['llm.enableVisionCaptioning', input.enableVisionCaptioning]);
+  }
 
   if (updates.length > 0) {
     const cm = ConfigManager.getInstance();
@@ -895,11 +1137,17 @@ async function handleSetModelConfig(
     }
   }
 
-  if (input.model && llmInterface) {
-    llmInterface.setModel(input.model.trim());
+  if (llmInterface) {
+    const nextTransport = resolveActiveTransportSettings();
+    llmInterface.setTransportConfig({
+      provider: nextTransport.provider,
+      baseUrl: nextTransport.baseUrl,
+      model: input.model?.trim() || nextTransport.model,
+    });
   }
 
   LLMLogger.info('Updated LLM configuration', {
+    provider: input.provider,
     model: input.model,
     temperature: input.temperature,
     maxTokens: input.maxTokens,
@@ -948,25 +1196,28 @@ function createOrganizerService(): AIOrganizerService {
   const kernel = getReactiveWorkspaceKernel();
   const fsService = kernel.getFileSystemService();
   const validator = new PathValidator(fsService.getAllowedRoots());
-  const llmCfg = readLlmConfig();
+  const transportCfg = resolveActiveTransportSettings();
 
   return new AIOrganizerService({
     validator,
     operationJournal: getOperationJournal(),
-    ollamaUrl: resolveOllamaUrl(),
-    model: llmCfg?.model,
+    provider: transportCfg.provider,
+    ollamaUrl: transportCfg.baseUrl,
+    model: transportCfg.model,
+    findImpactForPaths: (targetPaths) => withKnowledgeGraph((kg) => kg.findImpactForPaths(targetPaths)),
   });
 }
 
 async function handlePlanOrganize(
   _event: IpcMainInvokeEvent,
-  input: { targetDir: string; strategy?: OrganizeStrategy; useLLM?: boolean }
+  input: { targetDir: string; strategy?: OrganizeStrategy; useLLM?: boolean; recursive?: boolean }
 ): Promise<OrganizePlanResult> {
   const canonicalTarget = await validateCanonicalPathOrThrow(input.targetDir);
   return createOrganizerService().proposeOrganizationPlan({
     targetDir: canonicalTarget,
     strategy: input.strategy,
     useLLM: input.useLLM,
+    recursive: input.recursive,
   });
 }
 
@@ -976,6 +1227,7 @@ async function handleApplyOrganize(
     planId: string;
     targetDir: string;
     operations: OrganizePlanOperation[];
+    repairMarkdownLinks?: boolean;
   }
 ): Promise<OrganizeApplyResult> {
   const canonicalTarget = await validateCanonicalPathOrThrow(input.targetDir);
@@ -983,11 +1235,13 @@ async function handleApplyOrganize(
     planId: input.planId,
     targetDir: canonicalTarget,
     operations: input.operations,
+    repairMarkdownLinks: input.repairMarkdownLinks,
   });
 }
 
 const LLM_CHANNELS: IPCChannel[] = [
   'LLM:QUERY',
+  'LLM:ABORT_QUERY',
   'LLM:INDEX_STATUS',
   'LLM:START_INDEXING',
   'LLM:STOP_INDEXING',
@@ -1007,6 +1261,7 @@ export function registerLLMHandlers(): IPCChannel[] {
   IPCLogger.info('Registering LLM IPC handlers');
 
   ipcMain.handle('LLM:QUERY', withContract('LLM:QUERY', handleQuery));
+  ipcMain.handle('LLM:ABORT_QUERY', withContract('LLM:ABORT_QUERY', handleAbortQuery));
   ipcMain.handle('LLM:INDEX_STATUS', withContract('LLM:INDEX_STATUS', handleIndexStatus));
   ipcMain.handle('LLM:START_INDEXING', withContract('LLM:START_INDEXING', handleStartIndexing));
   ipcMain.handle('LLM:STOP_INDEXING', withContract('LLM:STOP_INDEXING', handleStopIndexing));
@@ -1028,17 +1283,37 @@ export function registerLLMHandlers(): IPCChannel[] {
  * Cleanup LLM services on app shutdown.
  * Call this before app.quit() to properly terminate worker threads.
  */
+async function awaitBounded(promise: Promise<unknown> | null, timeoutMs: number): Promise<void> {
+  if (!promise) {
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, timeoutMs);
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+  });
+  try {
+    await Promise.race([promise.catch(() => undefined), timeoutPromise]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export async function cleanupLLMServices(): Promise<void> {
   LLMLogger.info('Cleaning up LLM services...');
   configureKernelHooks({ indexMutationHook: null });
   abortIndexing = true;
+  for (const ctrl of activeQueryAbortControllers.values()) {
+    ctrl.abort();
+  }
+  activeQueryAbortControllers.clear();
 
-  if (initPromise) {
-    await initPromise.catch(() => undefined);
-  }
-  if (activeIndexingPromise) {
-    await activeIndexingPromise.catch(() => undefined);
-  }
+  await awaitBounded(initPromise, 1000);
+  await awaitBounded(activeIndexingPromise, 1000);
 
   // Terminate embedding worker if active
   if (embeddingModel) {

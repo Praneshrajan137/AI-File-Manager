@@ -174,6 +174,24 @@ const CORPUS: EvalCorpusDoc[] = [
     relPath: 'hr/onboarding-checklist.md',
     content: '# Engineering Onboarding\nComplete YubiKey hardware MFA enrollment and SSH signed certificate setup on day one.',
   },
+  // Global high-scoring distractors for deep @folder pre-filter evaluation
+  ...Array.from({ length: 8 }, (_, idx) => ({
+    relPath: `noise/scheduler-report-${idx + 1}.md`,
+    content: `# Distractor Key Rotation Report ${idx + 1}\nGlobal scheduler rotation gateway telemetry shard ${idx + 1} outside deep security scope.`,
+  })),
+  {
+    relPath: 'deep/security/key-rotation-policy.md',
+    content: '# Deep Security Key Rotation Policy\nRotate envelope encryption master keys every 90 days via offline HSM scheduler gateway attestation.',
+  },
+  // 2-hop Knowledge Graph associative multi-hop evaluation pair
+  {
+    relPath: 'docs/vault-hub.md',
+    content: '# Vault Disaster Hub\nPrimary vault hub coordinates encrypted snapshots. See [Vault Recovery Runbook](./vault-recovery-runbook.md) for failover.',
+  },
+  {
+    relPath: 'docs/vault-recovery-runbook.md',
+    content: '# Quorum Failover Procedure\nPromote standby quorum replica and verify SHA-256 tombstone ledger integrity before reopening writes.',
+  },
 ];
 
 const EVAL_QUERIES: EvalQueryCase[] = [
@@ -216,12 +234,13 @@ const EVAL_QUERIES: EvalQueryCase[] = [
 
 describe('Stage 3 RAG 35-Query Evaluation Benchmark (Hybrid LanceDB + FTS5 BM25 + Cross-Encoder)', () => {
   let tmpDir: string;
+  let vaultDir: string;
   let vectorStore: VectorStore;
   let retrieval: RetrievalService;
 
   beforeAll(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'osfm-rag-eval-'));
-    const vaultDir = path.join(tmpDir, 'vault');
+    vaultDir = path.join(tmpDir, 'vault');
     const dbDir = path.join(tmpDir, 'vectordb');
     await fs.mkdir(vaultDir, { recursive: true });
 
@@ -274,4 +293,19 @@ describe('Stage 3 RAG 35-Query Evaluation Benchmark (Hybrid LanceDB + FTS5 BM25 
     expect(mrr).toBeGreaterThanOrEqual(0.85);
     expect(recallAt5).toBeGreaterThanOrEqual(0.9);
   }, 60000);
+
+  it('prevents deep @folder starvation under 8+ global distractors and retrieves 1-hop/2-hop graph-linked runbooks', async () => {
+    const deepScope = path.join(vaultDir, 'deep', 'security');
+    const scopedResult = await retrieval.retrieve('scheduler rotation gateway policy', {
+      useFolder: true,
+      currentPath: deepScope,
+    });
+    expect(scopedResult.sources.length).toBeGreaterThanOrEqual(1);
+    expect(scopedResult.sources[0].replace(/\\/g, '/')).toContain('deep/security/key-rotation-policy.md');
+
+    const assocResult = await retrieval.retrieve('Vault Disaster Hub encrypted snapshots');
+    const assocPaths = assocResult.sources.map((s) => s.replace(/\\/g, '/'));
+    expect(assocPaths.some((p) => p.endsWith('docs/vault-hub.md'))).toBe(true);
+    expect(assocPaths.some((p) => p.endsWith('docs/vault-recovery-runbook.md'))).toBe(true);
+  }, 30000);
 });

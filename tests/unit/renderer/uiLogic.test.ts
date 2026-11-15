@@ -19,7 +19,17 @@ import { VaultSection } from '@renderer/components/Sidebar/VaultSection';
 import { FavoritesList } from '@renderer/components/Sidebar/FavoritesList';
 import { Toolbar } from '@renderer/components/Toolbar/Toolbar';
 import { DiagnosticsModal } from '@renderer/components/Diagnostics/DiagnosticsModal';
-import type { FileNode, FilePreviewResult } from '@shared/contracts';
+import { WorkspaceLensBar } from '@renderer/components/Spatial/WorkspaceLensBar';
+import { KnowledgeGraphCanvas } from '@renderer/components/Spatial/KnowledgeGraphCanvas';
+import { SmartCollectionsLens } from '@renderer/components/Spatial/SmartCollectionsLens';
+import { DuplicateReclaimLens } from '@renderer/components/Spatial/DuplicateReclaimLens';
+import { SplitPaneExplorer } from '@renderer/components/FileExplorer/SplitPaneExplorer';
+import { ChatInput } from '@renderer/components/ChatPanel/ChatInput';
+import { MessageBubble } from '@renderer/components/ChatPanel/MessageBubble';
+import { DryRunPlanModal } from '@renderer/components/Organizer/DryRunPlanModal';
+import { resolveQuickLookAction, PREVIEW_LINE_LIMIT } from '@renderer/hooks/usePreviewDrawer';
+import { IPC_SCHEMAS } from '@shared/ipc/contracts';
+import type { FileNode, FilePreviewResult, OrganizePlanResult } from '@shared/contracts';
 
 const SAMPLE_FILES: FileNode[] = [
   {
@@ -271,6 +281,19 @@ describe('Renderer UI & M5 Control Upgrades', () => {
         React.createElement(DiagnosticsModal, {
           isOpen: true,
           onClose: () => undefined,
+          initialSnapshot: {
+            capturedAt: Date.now(),
+            uptimeMs: 1200,
+            allowedRoots: ['C:\\vault'],
+            watcher: { status: 'watching', watchedPath: 'C:\\vault', eventsReceived: 2, lastEventAt: null, lastError: null },
+            eventQueue: { pending: 0, processed: 4, coalesced: 1, dropped: 0, lastFlushAt: null, lastFlushDurationMs: 2 },
+            pathTrie: { entryCount: 10, indexedRoots: ['C:\\vault'], lastIndexDurationMs: 3 },
+            cache: { entries: 2, capacity: 100, currentBytes: 120, maxBytes: 1024, hits: 5, misses: 1, hitRate: 0.83, invalidations: 0 },
+            preview: { capacityPerFile: 50, previewsServed: 2, cacheHits: 1 },
+            vectorStore: { initialized: true, totalChunks: 20, indexedFiles: 4, lexicalDocs: 4, pendingBuffer: 0, activeExecutionProvider: 'dml', supportedDevices: ['cpu', 'dml'] },
+            llm: { queriesExecuted: 1, successfulQueries: 1, failedQueries: 0, avgRetrievalMs: 12, avgGenerationMs: 150, lastError: null, activeProvider: 'openai_compatible', activeModel: 'qwen2.5-7b' },
+            ipc: { registeredChannels: 30, totalCalls: 5, totalErrors: 0, channels: [] },
+          },
         })
       );
 
@@ -283,6 +306,13 @@ describe('Renderer UI & M5 Control Upgrades', () => {
       expect(toolbarHtml).toContain('data-testid="diagnostics-button"');
       expect(modalHtml).toContain('Kernel Runtime Diagnostics');
       expect(modalHtml).toContain('data-testid="diagnostics-modal"');
+      expect(modalHtml).toContain('data-testid="diagnostics-onnx-ep"');
+      expect(modalHtml).toContain('dml (cpu, dml)');
+      expect(modalHtml).toContain('data-testid="diagnostics-llm-provider"');
+      expect(modalHtml).toContain('openai_compatible');
+      expect(modalHtml).toContain('data-testid="diagnostics-mcp-section"');
+      expect(modalHtml).toContain('dist/main/mcpServer.js');
+      expect(modalHtml).toContain('data-testid="copy-mcp-config-button"');
     });
 
     it('renders M7 Stage 1 DeleteConfirmDialog, VaultSection, FavoritesList, Toast Undo action, and Toolbar Undo/Redo', () => {
@@ -427,6 +457,298 @@ describe('Renderer UI & M5 Control Upgrades', () => {
       expect(caught?.code).toBe('UNAUTHORIZED_ACCESS');
       expect(caught?.message).toBe('Access denied outside workspace');
       expect(caught?.details).toEqual({ rootCount: 1 });
+    });
+  });
+
+  describe('Stage 4 Spatial Lenses & Copilot Controls UI rendering', () => {
+    it('renders WorkspaceLensBar, KnowledgeGraphCanvas, SmartCollectionsLens, DuplicateReclaimLens, SplitPaneExplorer, ChatInput Cancel, MessageBubble badges, Connections tab, and DryRunPlanModal Stage 4 options', () => {
+      const lensBarHtml = renderToStaticMarkup(
+        React.createElement(WorkspaceLensBar, {
+          activeLens: 'graph',
+          onChangeLens: () => undefined,
+          totalFiles: 12,
+          duplicateClustersCount: 3,
+          onRefresh: () => undefined,
+        })
+      );
+
+      const graphHtml = renderToStaticMarkup(
+        React.createElement(KnowledgeGraphCanvas, {
+          graphMap: {
+            rootPrefix: 'C:\\vault',
+            totalFilesIndexed: 2,
+            nodes: [
+              {
+                path: 'C:\\vault\\index.md',
+                name: 'index.md',
+                fileType: 'md',
+                chunkCount: 2,
+                inDegree: 1,
+                outDegree: 2,
+                topSymbols: ['setupVault'],
+                folder: 'C:\\vault',
+              },
+              {
+                path: 'C:\\vault\\auth.ts',
+                name: 'auth.ts',
+                fileType: 'ts',
+                chunkCount: 3,
+                inDegree: 2,
+                outDegree: 0,
+                topSymbols: ['verifyToken'],
+                folder: 'C:\\vault',
+              },
+            ],
+            edges: [
+              {
+                source: 'C:\\vault\\index.md',
+                target: 'C:\\vault\\auth.ts',
+                targetRef: './auth.ts',
+                kind: 'markdown_link',
+                lineNumber: 3,
+              },
+            ],
+          },
+          loading: false,
+          selectedNodePath: 'C:\\vault\\index.md',
+          scopeToFolder: false,
+          onToggleScopeToFolder: () => undefined,
+          onSelectNode: () => undefined,
+          onOpenPreview: () => undefined,
+        })
+      );
+
+      const collectionsHtml = renderToStaticMarkup(
+        React.createElement(SmartCollectionsLens, {
+          collections: [
+            {
+              id: 'topic:security',
+              label: 'Security & Auth',
+              reason: 'Shared security tokens',
+              dominantSymbols: ['jwt', 'oauth'],
+              files: [
+                {
+                  path: 'C:\\vault\\auth.ts',
+                  name: 'auth.ts',
+                  fileType: 'ts',
+                  chunkCount: 3,
+                  topSymbol: 'jwt',
+                },
+                {
+                  path: 'C:\\vault\\index.md',
+                  name: 'index.md',
+                  fileType: 'md',
+                  chunkCount: 1,
+                },
+              ],
+            },
+          ],
+          loading: false,
+          onSelectFile: () => undefined,
+          onOpenSemanticOrganize: () => undefined,
+        })
+      );
+
+      const duplicatesHtml = renderToStaticMarkup(
+        React.createElement(DuplicateReclaimLens, {
+          duplicateClusters: [
+            {
+              sha256: 'abc123def4567890abc123def4567890',
+              fileSize: 2048,
+              wastedBytes: 2048,
+              files: ['C:\\vault\\orig.bin', 'C:\\vault\\orig-copy.bin'],
+            },
+          ],
+          totalWastedBytes: 2048,
+          loading: false,
+          onPreviewFile: () => undefined,
+          onQuarantineDuplicates: () => undefined,
+        })
+      );
+
+      const splitHtml = renderToStaticMarkup(
+        React.createElement(SplitPaneExplorer, {
+          secondaryPath: 'C:\\vault\\dest',
+          files: SAMPLE_FILES,
+          selectedFiles: [],
+          loading: false,
+          sortBy: 'name',
+          sortDirection: 'asc',
+          viewMode: 'list',
+          primarySelectedCount: 2,
+          onNavigate: () => undefined,
+          onRefresh: () => undefined,
+          onClose: () => undefined,
+          onCopyFromPrimary: () => undefined,
+          onFileClick: () => undefined,
+          onFileDoubleClick: () => undefined,
+          onFileContextMenu: () => undefined,
+          onDropMove: () => undefined,
+        })
+      );
+
+      const cancelInputHtml = renderToStaticMarkup(
+        React.createElement(ChatInput, {
+          value: 'searching...',
+          onChange: () => undefined,
+          onSend: () => undefined,
+          onCancel: () => undefined,
+          disabled: true,
+        })
+      );
+
+      const samplePlan: OrganizePlanResult = {
+        planId: 'plan-1',
+        targetDir: 'C:\\vault',
+        strategy: 'semantic_cluster',
+        createdAt: Date.now(),
+        summary: '1 move ready for dry-run review',
+        skippedFiles: 0,
+        usedLLM: false,
+        linkImpact: {
+          totalAffectedFiles: 1,
+          markdownRepairableCount: 1,
+          references: [
+            {
+              sourcePath: 'C:\\vault\\index.md',
+              targetPath: 'C:\\vault\\auth.ts',
+              targetRef: './auth.ts',
+              kind: 'markdown_link',
+              lineNumber: 3,
+              isMarkdownLink: true,
+            },
+          ],
+        },
+        operations: [
+          {
+            id: 'op-1',
+            action: 'move',
+            sourcePath: 'C:\\vault\\auth.ts',
+            destinationPath: 'C:\\vault\\Security & Auth\\auth.ts',
+            category: 'Security & Auth',
+            reason: 'Matched security tokens',
+            size: 120,
+            sourceSha256: 'deadbeef',
+          },
+        ],
+      };
+
+      const assistantHtml = renderToStaticMarkup(
+        React.createElement(MessageBubble, {
+          message: {
+            id: 42,
+            role: 'assistant',
+            content: 'Auth logic lives in [auth.ts#L1-L10].',
+            sources: ['C:\\vault\\auth.ts'],
+            offlineSynthesis: true,
+            proposedPlan: samplePlan,
+            timestamp: Date.now(),
+          },
+          onPreviewOrganizePlan: () => undefined,
+        })
+      );
+
+      const drawerHtml = renderToStaticMarkup(
+        React.createElement(FilePreviewDrawer, {
+          isOpen: true,
+          file: SAMPLE_FILES[0],
+          preview: {
+            path: SAMPLE_FILES[0].path,
+            name: SAMPLE_FILES[0].name,
+            extension: 'txt',
+            size: 120,
+            modified: 1000,
+            lines: ['Hello'],
+            totalLinesBuffered: 1,
+            truncated: false,
+            binary: false,
+            fromCache: false,
+          },
+          fileConnections: {
+            filePath: SAMPLE_FILES[0].path,
+            symbols: [{ name: 'greet', kind: 'function', lineNumber: 1 }],
+            backlinks: [],
+            outgoingLinks: [],
+            associativeNeighbors: [],
+          },
+          loading: false,
+          error: null,
+          onClose: () => undefined,
+          onRefresh: () => undefined,
+          onOpenExternal: () => undefined,
+          onCopyPath: () => undefined,
+        })
+      );
+
+      const planModalHtml = renderToStaticMarkup(
+        React.createElement(DryRunPlanModal, {
+          isOpen: true,
+          targetDir: 'C:\\vault',
+          initialStrategy: 'deduplicate',
+          initialPlan: samplePlan,
+          onClose: () => undefined,
+          onApplied: () => undefined,
+        })
+      );
+
+      expect(lensBarHtml).toContain('data-testid="lens-tab-files"');
+      expect(lensBarHtml).toContain('data-testid="lens-tab-graph"');
+      expect(lensBarHtml).toContain('data-testid="lens-tab-collections"');
+      expect(lensBarHtml).toContain('data-testid="lens-tab-duplicates"');
+      expect(lensBarHtml).toContain('data-testid="lens-duplicates-badge"');
+
+      expect(graphHtml).toContain('data-testid="knowledge-graph-canvas"');
+      expect(graphHtml).toContain('data-testid="knowledge-graph-svg"');
+      expect(graphHtml).toContain('index.md');
+      expect(graphHtml).toContain('auth.ts');
+
+      expect(collectionsHtml).toContain('data-testid="smart-collections-lens"');
+      expect(collectionsHtml).toContain('Security &amp; Auth');
+      expect(collectionsHtml).toContain('data-testid="collections-organize-button"');
+
+      expect(duplicatesHtml).toContain('data-testid="duplicate-reclaim-lens"');
+      expect(duplicatesHtml).toContain('data-testid="duplicate-cluster-card"');
+      expect(duplicatesHtml).toContain('data-testid="quarantine-duplicates-button"');
+
+      expect(splitHtml).toContain('data-testid="split-pane-right"');
+      expect(splitHtml).toContain('data-testid="split-pane-copy-button"');
+
+      expect(cancelInputHtml).toContain('data-testid="cancel-query-button"');
+
+      expect(assistantHtml).toContain('data-testid="offline-synthesis-badge"');
+      expect(assistantHtml).toContain('data-testid="message-proposed-plan-card"');
+      expect(assistantHtml).toContain('data-testid="review-proposed-plan-button"');
+
+      expect(drawerHtml).toContain('data-testid="preview-tab-connections"');
+
+      expect(planModalHtml).toContain('data-testid="plan-repair-links-checkbox"');
+      expect(planModalHtml).toContain('data-testid="plan-recursive-checkbox"');
+      expect(planModalHtml).toContain('data-testid="plan-link-impact-banner"');
+      expect(planModalHtml).toContain('value="deduplicate"');
+      expect(planModalHtml).toContain('value="semantic_cluster"');
+
+      expect(
+        IPC_SCHEMAS['FS:PREVIEW_FILE'].safeParse({
+          path: SAMPLE_FILES[0].path,
+          maxLines: PREVIEW_LINE_LIMIT,
+        }).success
+      ).toBe(true);
+      expect(resolveQuickLookAction(null, [SAMPLE_FILES[0].path], SAMPLE_FILES)).toEqual({
+        kind: 'load',
+        file: SAMPLE_FILES[0],
+      });
+      expect(
+        resolveQuickLookAction(SAMPLE_FILES[0], [SAMPLE_FILES[1].path], SAMPLE_FILES)
+      ).toEqual({
+        kind: 'load',
+        file: SAMPLE_FILES[1],
+      });
+      expect(
+        resolveQuickLookAction(SAMPLE_FILES[0], [SAMPLE_FILES[0].path], SAMPLE_FILES)
+      ).toEqual({ kind: 'close' });
+      expect(resolveQuickLookAction(null, [SAMPLE_FILES[2].path], SAMPLE_FILES)).toEqual({
+        kind: 'noop',
+      });
     });
   });
 });

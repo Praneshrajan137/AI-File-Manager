@@ -315,26 +315,45 @@ app.on('window-all-closed', () => {
   logger.info('All windows closed');
 
   void (async (): Promise<void> => {
-    const [kernelResult, llmResult] = await Promise.allSettled([
-      resetReactiveWorkspaceKernel(),
-      import('./handlers/llmHandlers').then(({ cleanupLLMServices }) => cleanupLLMServices()),
-    ]);
+    let shutdownTimer: ReturnType<typeof setTimeout> | null = null;
+    const shutdownGrace = new Promise<void>((resolve) => {
+      shutdownTimer = setTimeout(resolve, 1500);
+      if (typeof shutdownTimer.unref === 'function') {
+        shutdownTimer.unref();
+      }
+    });
 
-    if (kernelResult.status === 'fulfilled') {
-      logger.info('ReactiveWorkspaceKernel stopped');
-    } else {
-      logger.error('Error stopping ReactiveWorkspaceKernel', {
-        error:
-          kernelResult.reason instanceof Error
-            ? kernelResult.reason.message
-            : String(kernelResult.reason),
-      });
+    const cleanupResults = await Promise.race([
+      Promise.allSettled([
+        resetReactiveWorkspaceKernel(),
+        import('./handlers/llmHandlers').then(({ cleanupLLMServices }) => cleanupLLMServices()),
+      ]),
+      shutdownGrace.then(() => null),
+    ]);
+    if (shutdownTimer) {
+      clearTimeout(shutdownTimer);
     }
 
-    if (llmResult.status === 'fulfilled') {
-      logger.info('LLM services cleaned up');
+    if (cleanupResults === null) {
+      logger.warn('Bounded shutdown grace elapsed; continuing app quit');
     } else {
-      logger.debug('LLM cleanup skipped (not initialized)');
+      const [kernelResult, llmResult] = cleanupResults;
+      if (kernelResult.status === 'fulfilled') {
+        logger.info('ReactiveWorkspaceKernel stopped');
+      } else {
+        logger.error('Error stopping ReactiveWorkspaceKernel', {
+          error:
+            kernelResult.reason instanceof Error
+              ? kernelResult.reason.message
+              : String(kernelResult.reason),
+        });
+      }
+
+      if (llmResult.status === 'fulfilled') {
+        logger.info('LLM services cleaned up');
+      } else {
+        logger.debug('LLM cleanup skipped (not initialized)');
+      }
     }
 
     if (process.platform !== 'darwin') {
