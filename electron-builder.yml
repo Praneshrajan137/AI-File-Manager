@@ -3,7 +3,14 @@
 
 appId: com.project2.filemanager
 productName: Project-2 File Manager
-copyright: Copyright © 2025
+copyright: Copyright © 2025-2026 Praneshrajan
+asar: true
+asarUnpack:
+  - "node_modules/**/*.node"
+  - "node_modules/@lancedb/**"
+  - "node_modules/onnxruntime-node/**"
+  - "node_modules/@huggingface/transformers/**"
+  - "node_modules/sharp/**"
 
 # Directories
 directories:

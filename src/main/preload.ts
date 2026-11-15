@@ -32,6 +32,8 @@ import type {
 } from '@shared/contracts';
 import type { IPCChannel, IPCResponse } from '@shared/ipc/contracts';
 
+type ContractResult<C extends IPCChannel> = Promise<IPCEnvelope<IPCResponse<C>>>;
+
 let llmStreamCounter = 0;
 
 /**
@@ -68,88 +70,101 @@ const electronAPI = {
    * File System Operations
    */
   fs: {
-    readDirectory: (path: string) => invokeContract('FS:READ_DIR', { path }),
+    readDirectory: (path: string): ContractResult<'FS:READ_DIR'> =>
+      invokeContract('FS:READ_DIR', { path }),
 
-    readFile: (path: string) => invokeContract('FS:READ_FILE', { path }),
+    readFile: (path: string): ContractResult<'FS:READ_FILE'> =>
+      invokeContract('FS:READ_FILE', { path }),
 
-    previewFile: (path: string, maxLines?: number) =>
+    previewFile: (path: string, maxLines?: number): ContractResult<'FS:PREVIEW_FILE'> =>
       invokeContract('FS:PREVIEW_FILE', { path, maxLines }),
 
-    readFileRange: (path: string, startLine: number, endLine?: number, contextLines?: number) =>
+    readFileRange: (
+      path: string,
+      startLine: number,
+      endLine?: number,
+      contextLines?: number
+    ): ContractResult<'FS:READ_FILE_RANGE'> =>
       invokeContract('FS:READ_FILE_RANGE', { path, startLine, endLine, contextLines }),
 
-    writeFile: (path: string, content: string) =>
+    writeFile: (path: string, content: string): ContractResult<'FS:WRITE_FILE'> =>
       invokeContract('FS:WRITE_FILE', { path, content }),
 
-    createFile: (path: string, name: string, content?: string) =>
+    createFile: (path: string, name: string, content?: string): ContractResult<'FS:CREATE_FILE'> =>
       invokeContract('FS:CREATE_FILE', { path, name, content }),
 
-    createDirectory: (path: string, name: string) =>
+    createDirectory: (path: string, name: string): ContractResult<'FS:CREATE_DIR'> =>
       invokeContract('FS:CREATE_DIR', { path, name }),
 
-    delete: (path: string, recursive?: boolean, mode?: FileDeleteMode) =>
+    delete: (path: string, recursive?: boolean, mode?: FileDeleteMode): ContractResult<'FS:DELETE'> =>
       invokeContract('FS:DELETE', { path, recursive, mode }),
 
-    move: (source: string, destination: string) =>
+    move: (source: string, destination: string): ContractResult<'FS:MOVE'> =>
       invokeContract('FS:MOVE', { source, destination }),
 
-    getStats: (path: string) => invokeContract('FS:GET_STATS', { path }),
+    getStats: (path: string): ContractResult<'FS:GET_STATS'> =>
+      invokeContract('FS:GET_STATS', { path }),
 
-    getSystemPaths: () => invokeContract('FS:GET_SYSTEM_PATHS'),
+    getSystemPaths: (): ContractResult<'FS:GET_SYSTEM_PATHS'> =>
+      invokeContract('FS:GET_SYSTEM_PATHS'),
 
-    rename: (oldPath: string, newName: string) =>
+    rename: (oldPath: string, newName: string): ContractResult<'FS:RENAME'> =>
       invokeContract('FS:RENAME', { oldPath, newName }),
 
-    undo: () => invokeContract('FS:UNDO'),
+    undo: (): ContractResult<'FS:UNDO'> => invokeContract('FS:UNDO'),
 
-    redo: () => invokeContract('FS:REDO'),
+    redo: (): ContractResult<'FS:REDO'> => invokeContract('FS:REDO'),
 
-    getJournalState: () => invokeContract('FS:GET_JOURNAL_STATE'),
+    getJournalState: (): ContractResult<'FS:GET_JOURNAL_STATE'> =>
+      invokeContract('FS:GET_JOURNAL_STATE'),
 
-    emptyTrashVault: () => invokeContract('FS:EMPTY_TRASH_VAULT'),
+    emptyTrashVault: (): ContractResult<'FS:EMPTY_TRASH_VAULT'> =>
+      invokeContract('FS:EMPTY_TRASH_VAULT'),
   },
 
   /**
    * Scoped Workspace (Vault) Configuration & Opt-In Indexing
    */
   vault: {
-    getConfig: () => invokeContract('VAULT:GET_CONFIG'),
+    getConfig: (): ContractResult<'VAULT:GET_CONFIG'> => invokeContract('VAULT:GET_CONFIG'),
 
-    addRoot: (options?: { path?: string; pickDialog?: boolean }) =>
+    addRoot: (options?: { path?: string; pickDialog?: boolean }): ContractResult<'VAULT:ADD_ROOT'> =>
       invokeContract('VAULT:ADD_ROOT', options ?? { pickDialog: true }),
 
-    removeRoot: (path: string) => invokeContract('VAULT:REMOVE_ROOT', { path }),
+    removeRoot: (path: string): ContractResult<'VAULT:REMOVE_ROOT'> =>
+      invokeContract('VAULT:REMOVE_ROOT', { path }),
 
-    setIndexed: (path: string, enabled: boolean) =>
+    setIndexed: (path: string, enabled: boolean): ContractResult<'VAULT:SET_INDEXED'> =>
       invokeContract('VAULT:SET_INDEXED', { path, enabled }),
 
-    toggleFavorite: (path: string) => invokeContract('VAULT:TOGGLE_FAVORITE', { path }),
+    toggleFavorite: (path: string): ContractResult<'VAULT:TOGGLE_FAVORITE'> =>
+      invokeContract('VAULT:TOGGLE_FAVORITE', { path }),
   },
 
   /**
    * Navigation Operations
    */
   navigation: {
-    back: () => invokeContract('NAV:BACK'),
+    back: (): ContractResult<'NAV:BACK'> => invokeContract('NAV:BACK'),
 
-    forward: () => invokeContract('NAV:FORWARD'),
+    forward: (): ContractResult<'NAV:FORWARD'> => invokeContract('NAV:FORWARD'),
 
-    push: (path: string) => invokeContract('NAV:PUSH', { path }),
+    push: (path: string): ContractResult<'NAV:PUSH'> => invokeContract('NAV:PUSH', { path }),
 
-    getState: () => invokeContract('NAV:GET_STATE'),
+    getState: (): ContractResult<'NAV:GET_STATE'> => invokeContract('NAV:GET_STATE'),
   },
 
   /**
    * Search Operations
    */
   search: {
-    autocomplete: (prefix: string, maxResults?: number) =>
+    autocomplete: (prefix: string, maxResults?: number): ContractResult<'SEARCH:AUTOCOMPLETE'> =>
       invokeContract('SEARCH:AUTOCOMPLETE', { prefix, maxResults }),
 
-    query: (query: string, searchRoot: string) =>
+    query: (query: string, searchRoot: string): ContractResult<'SEARCH:QUERY'> =>
       invokeContract('SEARCH:QUERY', { query, searchRoot }),
 
-    content: (query: string, topK?: number, searchRoot?: string) =>
+    content: (query: string, topK?: number, searchRoot?: string): ContractResult<'SEARCH:CONTENT'> =>
       invokeContract('SEARCH:CONTENT', { query, topK, searchRoot }),
   },
 
@@ -157,7 +172,10 @@ const electronAPI = {
    * Workspace Knowledge Graph Insights
    */
   graph: {
-    queryInsights: (options?: { symbolQuery?: string; backlinkTarget?: string }) =>
+    queryInsights: (options?: {
+      symbolQuery?: string;
+      backlinkTarget?: string;
+    }): ContractResult<'GRAPH:QUERY_INSIGHTS'> =>
       invokeContract('GRAPH:QUERY_INSIGHTS', options),
   },
 
@@ -252,13 +270,14 @@ const electronAPI = {
       }
     },
 
-    getIndexingStatus: () => invokeContract('LLM:INDEX_STATUS'),
+    getIndexingStatus: (): ContractResult<'LLM:INDEX_STATUS'> =>
+      invokeContract('LLM:INDEX_STATUS'),
 
-    onIndexingProgress: (callback: (status: IndexingStatus) => void) => {
+    onIndexingProgress: (callback: (status: IndexingStatus) => void): (() => void) => {
       const handleProgress = (
         _event: IpcRendererEvent,
         payload: { indexed?: number; total?: number; currentFile?: string }
-      ) => {
+      ): void => {
         callback({
           indexed: payload?.indexed ?? 0,
           total: payload?.total ?? 0,
@@ -270,7 +289,7 @@ const electronAPI = {
       const handleComplete = (
         _event: IpcRendererEvent,
         payload: { indexed?: number; total?: number }
-      ) => {
+      ): void => {
         callback({
           indexed: payload?.indexed ?? 0,
           total: payload?.total ?? 0,
@@ -282,23 +301,29 @@ const electronAPI = {
       ipcRenderer.on('LLM:INDEXING_PROGRESS', handleProgress);
       ipcRenderer.on('LLM:INDEXING_COMPLETE', handleComplete);
 
-      return () => {
+      return (): void => {
         ipcRenderer.removeListener('LLM:INDEXING_PROGRESS', handleProgress);
         ipcRenderer.removeListener('LLM:INDEXING_COMPLETE', handleComplete);
       };
     },
 
-    startIndexing: (path: string) => invokeContract('LLM:START_INDEXING', { path }),
+    startIndexing: (path: string): ContractResult<'LLM:START_INDEXING'> =>
+      invokeContract('LLM:START_INDEXING', { path }),
 
-    stopIndexing: () => invokeContract('LLM:STOP_INDEXING'),
+    stopIndexing: (): ContractResult<'LLM:STOP_INDEXING'> =>
+      invokeContract('LLM:STOP_INDEXING'),
 
-    indexFile: (filePath: string) => invokeContract('LLM:INDEX_FILE', { filePath }),
+    indexFile: (filePath: string): ContractResult<'LLM:INDEX_FILE'> =>
+      invokeContract('LLM:INDEX_FILE', { filePath }),
 
-    checkOllama: () => invokeContract('LLM:CHECK_OLLAMA'),
+    checkOllama: (): ContractResult<'LLM:CHECK_OLLAMA'> =>
+      invokeContract('LLM:CHECK_OLLAMA'),
 
-    clearIndex: () => invokeContract('LLM:CLEAR_INDEX'),
+    clearIndex: (): ContractResult<'LLM:CLEAR_INDEX'> =>
+      invokeContract('LLM:CLEAR_INDEX'),
 
-    listModels: () => invokeContract('LLM:LIST_MODELS'),
+    listModels: (): ContractResult<'LLM:LIST_MODELS'> =>
+      invokeContract('LLM:LIST_MODELS'),
 
     setModelConfig: (config: {
       model?: string;
@@ -306,7 +331,8 @@ const electronAPI = {
       maxTokens?: number;
       embeddingModel?: string;
       rerankerModel?: string;
-    }) => invokeContract('LLM:SET_MODEL_CONFIG', config),
+    }): ContractResult<'LLM:SET_MODEL_CONFIG'> =>
+      invokeContract('LLM:SET_MODEL_CONFIG', config),
   },
 
   /**
@@ -332,16 +358,16 @@ const electronAPI = {
    * File Watcher Operations
    */
   fileWatcher: {
-    subscribe: (callback: (event: { type: string; path: string }) => void) => {
-      const handleFileCreated = (_event: IpcRendererEvent, filePath: string) => {
+    subscribe: (callback: (event: { type: string; path: string }) => void): (() => void) => {
+      const handleFileCreated = (_event: IpcRendererEvent, filePath: string): void => {
         callback({ type: 'create', path: filePath });
       };
 
-      const handleFileChanged = (_event: IpcRendererEvent, filePath: string) => {
+      const handleFileChanged = (_event: IpcRendererEvent, filePath: string): void => {
         callback({ type: 'change', path: filePath });
       };
 
-      const handleFileDeleted = (_event: IpcRendererEvent, filePath: string) => {
+      const handleFileDeleted = (_event: IpcRendererEvent, filePath: string): void => {
         callback({ type: 'unlink', path: filePath });
       };
 
@@ -349,7 +375,7 @@ const electronAPI = {
       ipcRenderer.on('FILE_CHANGED', handleFileChanged);
       ipcRenderer.on('FILE_DELETED', handleFileDeleted);
 
-      return () => {
+      return (): void => {
         ipcRenderer.removeListener('FILE_CREATED', handleFileCreated);
         ipcRenderer.removeListener('FILE_CHANGED', handleFileChanged);
         ipcRenderer.removeListener('FILE_DELETED', handleFileDeleted);
@@ -361,24 +387,27 @@ const electronAPI = {
    * Clipboard Operations
    */
   clipboard: {
-    writeText: (text: string) => invokeContract('CLIPBOARD:WRITE_TEXT', { text }),
+    writeText: (text: string): ContractResult<'CLIPBOARD:WRITE_TEXT'> =>
+      invokeContract('CLIPBOARD:WRITE_TEXT', { text }),
   },
 
   /**
    * Shell Operations
    */
   shell: {
-    openPath: (path: string) => invokeContract('SHELL:OPEN_PATH', { path }),
+    openPath: (path: string): ContractResult<'SHELL:OPEN_PATH'> =>
+      invokeContract('SHELL:OPEN_PATH', { path }),
   },
 
   /**
    * Runtime Telemetry & Self-Diagnostics
    */
   diagnostics: {
-    getSnapshot: () => invokeContract('RUNTIME:GET_DIAGNOSTICS'),
+    getSnapshot: (): ContractResult<'RUNTIME:GET_DIAGNOSTICS'> =>
+      invokeContract('RUNTIME:GET_DIAGNOSTICS'),
   },
 
-  ping: () => invokeContract('ping'),
+  ping: (): ContractResult<'ping'> => invokeContract('ping'),
 };
 
 contextBridge.exposeInMainWorld('__electronIPCBridge', electronAPI);

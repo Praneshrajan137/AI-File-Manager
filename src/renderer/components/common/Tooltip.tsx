@@ -16,13 +16,13 @@ export const Tooltip: React.FC<TooltipProps> = ({
   const [isVisible, setIsVisible] = useState(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const showTooltip = () => {
+  const showTooltip = (): void => {
     timeoutRef.current = setTimeout(() => {
       setIsVisible(true);
     }, delay);
   };
 
-  const hideTooltip = () => {
+  const hideTooltip = (): void => {
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
     }

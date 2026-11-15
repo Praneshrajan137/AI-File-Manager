@@ -314,7 +314,7 @@ app.on('window-all-closed', () => {
   const logger = getLogger();
   logger.info('All windows closed');
 
-  void (async () => {
+  void (async (): Promise<void> => {
     const [kernelResult, llmResult] = await Promise.allSettled([
       resetReactiveWorkspaceKernel(),
       import('./handlers/llmHandlers').then(({ cleanupLLMServices }) => cleanupLLMServices()),

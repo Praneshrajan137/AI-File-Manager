@@ -37,6 +37,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useFileWatcher } from './hooks/useFileWatcher';
 import { useLLM } from './hooks/useLLM';
 import { UI_CONSTANTS } from './utils/constants';
+import { getErrorMessage } from './utils/formatters';
 import { sortFileNodes, toggleMultiSelection } from './utils/explorerHelpers';
 import {
   extractBasename,
@@ -54,10 +55,6 @@ import {
   OperationJournalState,
   VaultConfigSnapshot,
 } from '@shared/contracts';
-
-function getErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
-}
 
 // Browser compatibility warning component
 const BrowserWarning: React.FC = () => (
@@ -609,7 +606,7 @@ const FileManagerApp: React.FC = () => {
           await navigateTo(homeDir);
         }
       } catch (err: unknown) {
-        console.error('Failed to load home directory:', err);
+        showToast({ type: 'error', message: getErrorMessage(err, 'Failed to load home directory') });
       }
     })();
   }, []); // Empty deps - run only on mount
@@ -894,7 +891,6 @@ const FileManagerApp: React.FC = () => {
                 showToast({ type: 'info', message: `No results found for "${query}"` });
               }
             } catch (err: unknown) {
-              console.error('Search error:', err);
               showToast({ type: 'error', message: getErrorMessage(err, 'Search failed') });
             }
           }}

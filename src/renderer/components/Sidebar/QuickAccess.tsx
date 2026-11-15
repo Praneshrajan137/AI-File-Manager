@@ -19,7 +19,7 @@ export const QuickAccess: React.FC<QuickAccessProps> = ({ onNavigate }) => {
     // Fetch system paths from main process via IPC
     window.electronAPI.fs.getSystemPaths()
       .then(setPaths)
-      .catch(err => console.error('Failed to get system paths:', err));
+      .catch(() => setPaths(null));
   }, []);
 
   if (!paths) {

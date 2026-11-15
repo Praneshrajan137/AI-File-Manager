@@ -76,7 +76,6 @@ export class ErrorHandler {
    */
   static initialize(options?: ErrorHandlerOptions): void {
     if (ErrorHandler.instance) {
-      console.warn('ErrorHandler already initialized');
       return;
     }
 
@@ -240,7 +239,8 @@ export class ErrorHandler {
    * @param context - Additional context
    */
   private defaultLogger(message: string, context?: Record<string, unknown>): void {
-    console.error(`[ErrorHandler] ${message}`, context || '');
+    const suffix = context ? ` ${JSON.stringify(context)}` : '';
+    process.stderr.write(`[ErrorHandler] ${message}${suffix}\n`);
   }
 
   /**

@@ -36,14 +36,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [isResizing, setIsResizing] = useState(false);
 
-  const handleMouseDown = () => {
+  const handleMouseDown = (): void => {
     setIsResizing(true);
   };
 
   useEffect(() => {
     if (!isResizing) return;
 
-    const handleMouseMove = (e: MouseEvent) => {
+    const handleMouseMove = (e: MouseEvent): void => {
       const newWidth = Math.max(
         UI_CONSTANTS.SIDEBAR_MIN_WIDTH,
         Math.min(UI_CONSTANTS.SIDEBAR_MAX_WIDTH, e.clientX)
@@ -51,7 +51,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       onResize(newWidth);
     };
 
-    const handleMouseUp = () => {
+    const handleMouseUp = (): void => {
       setIsResizing(false);
     };
 

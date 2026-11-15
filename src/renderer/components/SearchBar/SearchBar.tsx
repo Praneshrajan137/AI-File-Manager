@@ -32,16 +32,15 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSearch, onSelect }) => {
       }
       setSuggestions(results);
       setShowSuggestions(results.length > 0);
-    } catch (error) {
+    } catch {
       if (seq === requestSeqRef.current) {
-        console.error('Search error:', error);
         setSuggestions([]);
         setShowSuggestions(false);
       }
     }
   }, 300);
 
-  const handleInputChange = (value: string) => {
+  const handleInputChange = (value: string): void => {
     suppressSuggestionsRef.current = false;
     setQuery(value);
     if (value.trim().length < 2) {
@@ -52,7 +51,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSearch, onSelect }) => {
     debouncedSearch(value);
   };
 
-  const handleSelect = (path: string) => {
+  const handleSelect = (path: string): void => {
     suppressSuggestionsRef.current = true;
     requestSeqRef.current += 1;
     setShowSuggestions(false);
@@ -61,7 +60,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSearch, onSelect }) => {
     onSelect(path);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent): void => {
     if (e.key === 'Enter') {
       // User pressed Enter - execute search (or reload current dir when empty)
       e.preventDefault();

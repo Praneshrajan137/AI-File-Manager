@@ -28,8 +28,8 @@ export const DirectoryTreeNode: React.FC<DirectoryTreeNodeProps> = ({
       const dirs = subDirs.filter((f) => f.isDirectory && f.isHidden !== true);
       setChildren(dirs);
       setLoaded(true);
-    } catch (error) {
-      console.error('Failed to load children:', error);
+    } catch {
+      setChildren([]);
     } finally {
       setLoading(false);
     }

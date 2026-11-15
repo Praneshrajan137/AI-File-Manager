@@ -36,7 +36,7 @@ export const RenameDialog: React.FC<RenameDialogProps> = ({
     }, [isOpen, currentName]);
 
     // Handle keyboard events
-    const handleKeyDown = (e: React.KeyboardEvent) => {
+    const handleKeyDown = (e: React.KeyboardEvent): void => {
         if (e.key === 'Enter' && newName.trim()) {
             onConfirm(newName.trim());
         } else if (e.key === 'Escape') {

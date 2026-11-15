@@ -1,5 +1,6 @@
 import { FileNode, FileSystemError } from '@shared/contracts';
 import { ConfigManager, DEFAULT_EXCLUDED_DIRS } from '@shared/config';
+import { FileSystemLogger } from '@shared/logging';
 import { FileSystemService } from './FileSystemService';
 
 /**
@@ -247,7 +248,7 @@ export class DirectoryScanner {
                                 : error && typeof error === 'object' && 'message' in error
                                   ? String((error as { message: unknown }).message)
                                   : String(error);
-                        console.warn(`Skipping directory ${entry.path}:`, msg);
+                        FileSystemLogger.warn(`Skipping directory ${entry.path}`, { reason: msg });
                     }
                 }
             }
@@ -262,7 +263,7 @@ export class DirectoryScanner {
                     : error && typeof error === 'object' && 'message' in error
                       ? String((error as { message: unknown }).message)
                       : String(error);
-            console.warn(`Error reading ${dirPath}:`, msg);
+            FileSystemLogger.warn(`Error reading ${dirPath}`, { reason: msg });
         }
     }
 

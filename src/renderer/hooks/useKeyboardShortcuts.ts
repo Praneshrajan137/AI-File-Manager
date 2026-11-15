@@ -31,7 +31,7 @@ function isEditableElement(target: EventTarget | null): boolean {
 
 export function useKeyboardShortcuts(shortcuts: ShortcutMap): void {
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleKeyDown = (e: KeyboardEvent): void => {
       if (isEditableElement(e.target)) {
         return;
       }

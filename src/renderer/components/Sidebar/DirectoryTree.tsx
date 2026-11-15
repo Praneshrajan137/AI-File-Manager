@@ -21,7 +21,7 @@ export const DirectoryTree: React.FC<DirectoryTreeProps> = ({
     if (!rootPath) {
       window.electronAPI.fs.getSystemPaths()
         .then((paths) => setEffectiveRootPath(paths.home))
-        .catch((err) => console.error('Failed to get system paths:', err));
+        .catch(() => setEffectiveRootPath(null));
     } else {
       setEffectiveRootPath(rootPath);
     }
@@ -43,8 +43,8 @@ export const DirectoryTree: React.FC<DirectoryTreeProps> = ({
           extension: '',
           mimeType: '',
         });
-      } catch (error) {
-        console.error('Failed to load root:', error);
+      } catch {
+        setRoot(null);
       }
     };
 

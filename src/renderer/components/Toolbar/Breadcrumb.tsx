@@ -35,12 +35,12 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
   const { root, separator, segments } = parseBreadcrumbPath(path);
 
   // Handle home button click - navigate to user's home directory
-  const handleHomeClick = async () => {
+  const handleHomeClick = async (): Promise<void> => {
     try {
       const systemPaths = await window.electronAPI.fs.getSystemPaths();
       onNavigate(systemPaths.home);
-    } catch (error) {
-      console.error('Failed to navigate to home:', error);
+    } catch {
+      // Ignore unavailable system paths
     }
   };
 

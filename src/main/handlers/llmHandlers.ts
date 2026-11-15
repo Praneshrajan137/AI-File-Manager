@@ -22,7 +22,15 @@ import {
   configureKernelHooks,
   getReactiveWorkspaceKernel,
 } from '@main/services/ReactiveWorkspaceKernel';
-import { ConfigManager } from '@shared/config';
+import { AppConfig, ConfigManager } from '@shared/config';
+
+function readLlmConfig(): AppConfig['llm'] | undefined {
+  try {
+    return ConfigManager.getInstance().get('llm');
+  } catch {
+    return undefined;
+  }
+}
 import {
   AgentTraceStep,
   ContentSearchMatch,
@@ -222,13 +230,7 @@ async function ensureServicesInitialized(): Promise<void> {
     let localEmbeddingModel: EmbeddingWorkerPool | null = null;
 
     try {
-      const llmConfig = (() => {
-        try {
-          return ConfigManager.getInstance().get('llm');
-        } catch {
-          return undefined;
-        }
-      })();
+      const llmConfig = readLlmConfig();
       const configuredEmbeddingModel = llmConfig?.embeddingModel?.trim() || undefined;
       localVectorStore = new VectorStore({
         modelId: configuredEmbeddingModel,
@@ -320,13 +322,7 @@ async function handleQuery(
   }
 
   try {
-    const llmConfig = (() => {
-      try {
-        return ConfigManager.getInstance().get('llm');
-      } catch {
-        return undefined;
-      }
-    })();
+    const llmConfig = readLlmConfig();
 
     if (mode === 'agent') {
       const ollamaUrl = resolveOllamaUrl() || 'http://localhost:11434';
@@ -833,13 +829,7 @@ async function handleCheckOllama(
 }
 
 async function buildModelsSnapshot(): Promise<LLMModelsSnapshot> {
-  const llmCfg = (() => {
-    try {
-      return ConfigManager.getInstance().get('llm');
-    } catch {
-      return undefined;
-    }
-  })();
+  const llmCfg = readLlmConfig();
 
   let available = false;
   let models: string[] = [];
@@ -958,13 +948,7 @@ function createOrganizerService(): AIOrganizerService {
   const kernel = getReactiveWorkspaceKernel();
   const fsService = kernel.getFileSystemService();
   const validator = new PathValidator(fsService.getAllowedRoots());
-  const llmCfg = (() => {
-    try {
-      return ConfigManager.getInstance().get('llm');
-    } catch {
-      return undefined;
-    }
-  })();
+  const llmCfg = readLlmConfig();
 
   return new AIOrganizerService({
     validator,

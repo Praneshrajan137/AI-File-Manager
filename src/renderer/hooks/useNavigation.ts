@@ -16,13 +16,13 @@ export function useNavigation(): UseNavigationReturn {
   const [currentPath, setCurrentPath] = useState<string>('');
 
   // Update navigation state
-  const updateNavigationState = useCallback(async () => {
+  const updateNavigationState = useCallback(async (): Promise<void> => {
     try {
       const state = await window.electronAPI.navigation.getState();
       setCanGoBack(state.canGoBack);
       setCanGoForward(state.canGoForward);
-    } catch (error) {
-      console.error('Failed to get navigation state:', error);
+    } catch {
+      // Safe no-op if navigation bridge is unavailable
     }
   }, []);
 
@@ -35,8 +35,7 @@ export function useNavigation(): UseNavigationReturn {
         return result;
       }
       return null;
-    } catch (error) {
-      console.error('Failed to go back:', error);
+    } catch {
       return null;
     }
   }, [updateNavigationState]);
@@ -50,21 +49,15 @@ export function useNavigation(): UseNavigationReturn {
         return result;
       }
       return null;
-    } catch (error) {
-      console.error('Failed to go forward:', error);
+    } catch {
       return null;
     }
   }, [updateNavigationState]);
 
   const navigateTo = useCallback(async (path: string): Promise<void> => {
-    try {
-      await window.electronAPI.navigation.push(path);
-      setCurrentPath(path);
-      await updateNavigationState();
-    } catch (error) {
-      console.error('Failed to navigate:', error);
-      throw error;
-    }
+    await window.electronAPI.navigation.push(path);
+    setCurrentPath(path);
+    await updateNavigationState();
   }, [updateNavigationState]);
 
   // Initialize navigation state on mount

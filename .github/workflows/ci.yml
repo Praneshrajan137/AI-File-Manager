@@ -40,6 +40,9 @@ jobs:
       - name: Run Jest test suite
         run: npx jest --runInBand
 
+      - name: Report Jest coverage telemetry (unrelaxed local threshold reality check)
+        run: npx jest --coverage --coverageThreshold='{}' --coverageReporters=text-summary --runInBand
+
   build-and-e2e:
     name: Build & Electron E2E (${{ matrix.os }})
     needs: quality-and-unit
@@ -88,6 +91,14 @@ jobs:
           CI: 'true'
           ELECTRON_DISABLE_SECURITY_WARNINGS: 'true'
         run: npx playwright test --reporter=list
+
+      - name: Package unpacked Electron build (ASAR & unpacked native modules)
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --dir --publish never
+
+      - name: Verify unpacked Electron bundle contents
+        run: node scripts/verify-unpacked-build.mjs
 
       - name: Upload Playwright report & failure screenshots
         if: failure()

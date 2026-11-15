@@ -2,6 +2,8 @@
   "name": "project-2-file-manager",
   "version": "0.1.0",
   "description": "Industrial-grade OS File Manager with Custom LLM",
+  "author": "Praneshrajan",
+  "license": "CC-BY-NC-4.0",
   "main": "dist/main/main.js",
   "scripts": {
     "dev": "concurrently \"npm run dev:main\" \"npm run dev:renderer\"",
@@ -18,7 +20,7 @@
     "test:e2e:headed": "playwright test --headed",
     "test:e2e:debug": "playwright test --debug",
     "test:all": "npm run test && npm run build && npm run test:e2e",
-    "lint": "eslint src --ext .ts,.tsx",
+    "lint": "eslint src --ext .ts,.tsx --max-warnings=0",
     "type-check": "tsc --noEmit",
     "package": "electron-builder"
   },

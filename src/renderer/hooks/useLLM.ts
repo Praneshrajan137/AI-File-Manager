@@ -174,9 +174,7 @@ export function useLLM(): UseLLMReturn {
 
       loadingRef.current = false;
       setLoading(false);
-    } catch (error) {
-      console.error('LLM query error:', error);
-
+    } catch {
       setMessages((prev) => [
         ...prev,
         {
@@ -193,40 +191,25 @@ export function useLLM(): UseLLMReturn {
   }, []);
 
   const startIndexing = useCallback(async (path: string) => {
-    try {
-      const response = await window.electronAPI.llm.startIndexing(path);
-      if (!response?.success) {
-        throw new Error(response?.error || response?.message || 'Failed to start indexing');
-      }
-      setIndexingStatus((prev) => ({
-        ...prev,
-        total: response.total ?? prev.total,
-        inProgress: true,
-      }));
-    } catch (error) {
-      console.error('Failed to start indexing:', error);
-      throw error;
+    const response = await window.electronAPI.llm.startIndexing(path);
+    if (!response?.success) {
+      throw new Error(response?.error || response?.message || 'Failed to start indexing');
     }
+    setIndexingStatus((prev) => ({
+      ...prev,
+      total: response.total ?? prev.total,
+      inProgress: true,
+    }));
   }, []);
 
   const stopIndexing = useCallback(async () => {
-    try {
-      await window.electronAPI.llm.stopIndexing();
-      setIndexingStatus((prev) => ({ ...prev, inProgress: false }));
-    } catch (error) {
-      console.error('Failed to stop indexing:', error);
-      throw error;
-    }
+    await window.electronAPI.llm.stopIndexing();
+    setIndexingStatus((prev) => ({ ...prev, inProgress: false }));
   }, []);
 
   const clearIndex = useCallback(async () => {
-    try {
-      await window.electronAPI.llm.clearIndex();
-      setIndexingStatus({ indexed: 0, total: 0, inProgress: false });
-    } catch (error) {
-      console.error('Failed to clear index:', error);
-      throw error;
-    }
+    await window.electronAPI.llm.clearIndex();
+    setIndexingStatus({ indexed: 0, total: 0, inProgress: false });
   }, []);
 
   useEffect(() => {
@@ -244,14 +227,14 @@ export function useLLM(): UseLLMReturn {
     let cancelled = false;
     let intervalId: NodeJS.Timeout | undefined;
 
-    const pollIndexingStatus = async () => {
+    const pollIndexingStatus = async (): Promise<void> => {
       try {
         const status = await window.electronAPI.llm.getIndexingStatus();
         if (!cancelled) {
           setIndexingStatus(status);
         }
-      } catch (error) {
-        console.error('Failed to get indexing status:', error);
+      } catch {
+        // Ignore transient indexing status polling failures
       }
     };
 

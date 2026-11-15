@@ -3,7 +3,8 @@ node_modules/
 
 # Build outputs
 dist/
-build/
+dist-packages/
+build/*
 !build/icon.*
 
 # Logs

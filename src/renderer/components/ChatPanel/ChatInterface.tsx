@@ -38,7 +38,7 @@ const ChatInterfaceBody: React.FC<{
   const [useSelection, setUseSelection] = useState<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = (): void => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
@@ -46,7 +46,7 @@ const ChatInterfaceBody: React.FC<{
     scrollToBottom();
   }, [messages]);
 
-  const handleSend = async () => {
+  const handleSend = async (): Promise<void> => {
     const trimmed = input.trim();
     if (!trimmed || loading) return;
 
