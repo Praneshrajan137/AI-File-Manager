@@ -562,6 +562,9 @@ test.describe('Frontier Workflows E2E', () => {
       await page.locator('[data-testid="toolbar-organize-button"]').click();
       await expect(page.locator('[data-testid="dry-run-plan-modal"]')).toBeVisible({ timeout: 10000 });
       await page.locator('[data-testid="plan-strategy-select"]').selectOption('deduplicate');
+      await expect(page.locator('[data-testid="plan-summary"]')).toContainText('Duplicates Archive', {
+        timeout: 10000,
+      });
       const repairCheckbox = page.locator('[data-testid="plan-repair-links-checkbox"]');
       if (!(await repairCheckbox.isChecked())) {
         await repairCheckbox.check();

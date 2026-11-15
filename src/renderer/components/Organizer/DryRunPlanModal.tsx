@@ -45,6 +45,7 @@ export const DryRunPlanModal: React.FC<DryRunPlanModalProps> = ({
   const [applying, setApplying] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const consumedInitialPlanRef = useRef<string | null>(null);
+  const planSeqRef = useRef<number>(0);
 
   const loadPlan = useCallback(
     async (
@@ -53,8 +54,11 @@ export const DryRunPlanModal: React.FC<DryRunPlanModalProps> = ({
       nextRecursive: boolean
     ): Promise<void> => {
       if (!targetDir || !window.electronAPI?.ai?.planOrganize) return;
+      const seq = ++planSeqRef.current;
       setLoadingPlan(true);
       setErrorMessage(null);
+      setPlan(null);
+      setCheckedIds(new Set());
       try {
         const result = await window.electronAPI.ai.planOrganize(
           targetDir,
@@ -62,13 +66,17 @@ export const DryRunPlanModal: React.FC<DryRunPlanModalProps> = ({
           nextUseLLM,
           nextRecursive
         );
+        if (seq !== planSeqRef.current) return;
         setPlan(result);
         setCheckedIds(new Set(result.operations.map((op) => op.id)));
       } catch (err: unknown) {
+        if (seq !== planSeqRef.current) return;
         setPlan(null);
         setErrorMessage(getErrorMessage(err, 'Failed to compute organization dry-run plan'));
       } finally {
-        setLoadingPlan(false);
+        if (seq === planSeqRef.current) {
+          setLoadingPlan(false);
+        }
       }
     },
     [targetDir]
@@ -77,20 +85,28 @@ export const DryRunPlanModal: React.FC<DryRunPlanModalProps> = ({
   useEffect(() => {
     if (!isOpen) {
       consumedInitialPlanRef.current = null;
+      ++planSeqRef.current;
       return;
     }
-    setStrategy(initialStrategy);
     if (initialPlan && consumedInitialPlanRef.current !== initialPlan.planId) {
       consumedInitialPlanRef.current = initialPlan.planId;
+      ++planSeqRef.current;
       setStrategy(initialPlan.strategy);
+      setUseLLM(initialPlan.usedLLM);
       setPlan(initialPlan);
       setCheckedIds(new Set(initialPlan.operations.map((op) => op.id)));
       setLoadingPlan(false);
       return;
     }
-    if (!targetDir) return;
-    void loadPlan(strategy, useLLM, recursive);
-  }, [isOpen, targetDir, strategy, useLLM, recursive, initialStrategy, initialPlan, loadPlan]);
+    if (!targetDir || (initialPlan && consumedInitialPlanRef.current === initialPlan.planId)) {
+      return;
+    }
+    const nextUseLLM = initialStrategy === 'ai_suggested';
+    setStrategy(initialStrategy);
+    setUseLLM(nextUseLLM);
+    setRecursive(false);
+    void loadPlan(initialStrategy, nextUseLLM, false);
+  }, [isOpen, targetDir, initialStrategy, initialPlan, loadPlan]);
 
   const selectedOperations = useMemo<OrganizePlanOperation[]>(() => {
     if (!plan) return [];
@@ -173,10 +189,12 @@ export const DryRunPlanModal: React.FC<DryRunPlanModalProps> = ({
                 value={strategy}
                 onChange={(e): void => {
                   const next = e.target.value as OrganizeStrategy;
+                  const nextUseLLM = next === 'ai_suggested' ? true : useLLM;
                   setStrategy(next);
                   if (next === 'ai_suggested') {
                     setUseLLM(true);
                   }
+                  void loadPlan(next, nextUseLLM, recursive);
                 }}
                 disabled={loadingPlan || applying}
                 data-testid="plan-strategy-select"
@@ -194,7 +212,11 @@ export const DryRunPlanModal: React.FC<DryRunPlanModalProps> = ({
               <input
                 type="checkbox"
                 checked={useLLM}
-                onChange={(e): void => setUseLLM(e.target.checked)}
+                onChange={(e): void => {
+                  const nextUseLLM = e.target.checked;
+                  setUseLLM(nextUseLLM);
+                  void loadPlan(strategy, nextUseLLM, recursive);
+                }}
                 disabled={loadingPlan || applying}
                 data-testid="plan-use-llm-checkbox"
                 className="rounded border-primary-300 dark:border-slate-600"
@@ -206,7 +228,11 @@ export const DryRunPlanModal: React.FC<DryRunPlanModalProps> = ({
               <input
                 type="checkbox"
                 checked={recursive}
-                onChange={(e): void => setRecursive(e.target.checked)}
+                onChange={(e): void => {
+                  const nextRecursive = e.target.checked;
+                  setRecursive(nextRecursive);
+                  void loadPlan(strategy, useLLM, nextRecursive);
+                }}
                 disabled={loadingPlan || applying}
                 data-testid="plan-recursive-checkbox"
                 className="rounded border-primary-300 dark:border-slate-600"

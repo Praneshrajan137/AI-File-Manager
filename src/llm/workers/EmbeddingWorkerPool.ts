@@ -716,11 +716,28 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
      * Call this on app shutdown to clean up resources.
      */
     async terminate(): Promise<void> {
+        this.cancelLowPriority('Worker terminating');
+        while (this.highQueue.length > 0) {
+            const task = this.highQueue.shift()!;
+            this.pendingRequests.delete(task.id);
+            task.reject(new Error('Worker terminating'));
+        }
+        if (this.activeTask) {
+            const active = this.activeTask;
+            this.activeTask = null;
+            this.pendingRequests.delete(active.id);
+            active.reject(new Error('Worker terminating'));
+        }
+
         if (this.worker) {
             // Send terminate message
-            this.worker.postMessage({ type: 'terminate' } as WorkerRequest);
+            try {
+                this.worker.postMessage({ type: 'terminate' } as WorkerRequest);
+            } catch {
+                // Worker channel may already be closed during teardown
+            }
 
-            // Wait for worker to exit
+            // Wait briefly for graceful worker exit before forcing termination
             await new Promise<void>((resolve) => {
                 if (!this.worker) {
                     resolve();
@@ -731,10 +748,10 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                     if (done) return;
                     done = true;
                     if (this.worker) {
-                        await this.worker.terminate();
+                        await this.worker.terminate().catch(() => undefined);
                     }
                     resolve();
-                }, 5000);
+                }, 1500);
                 if (typeof forceTimer.unref === 'function') {
                     forceTimer.unref();
                 }

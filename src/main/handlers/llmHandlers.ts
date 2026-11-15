@@ -1283,6 +1283,26 @@ export function registerLLMHandlers(): IPCChannel[] {
  * Cleanup LLM services on app shutdown.
  * Call this before app.quit() to properly terminate worker threads.
  */
+async function awaitBounded(promise: Promise<unknown> | null, timeoutMs: number): Promise<void> {
+  if (!promise) {
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, timeoutMs);
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+  });
+  try {
+    await Promise.race([promise.catch(() => undefined), timeoutPromise]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export async function cleanupLLMServices(): Promise<void> {
   LLMLogger.info('Cleaning up LLM services...');
   configureKernelHooks({ indexMutationHook: null });
@@ -1292,12 +1312,8 @@ export async function cleanupLLMServices(): Promise<void> {
   }
   activeQueryAbortControllers.clear();
 
-  if (initPromise) {
-    await initPromise.catch(() => undefined);
-  }
-  if (activeIndexingPromise) {
-    await activeIndexingPromise.catch(() => undefined);
-  }
+  await awaitBounded(initPromise, 1000);
+  await awaitBounded(activeIndexingPromise, 1000);
 
   // Terminate embedding worker if active
   if (embeddingModel) {

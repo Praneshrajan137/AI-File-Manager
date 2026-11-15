@@ -4,8 +4,12 @@ import {
   FileLineRangeResult,
   FileNode,
   FilePreviewResult,
+  RING_BUFFER_CAPACITY,
 } from '@shared/contracts';
 import { extractBasename, normalizeComparablePath } from '@renderer/utils/pathHelpers';
+
+/** Maximum lines requested per FS:PREVIEW_FILE IPC call (matches IPC schema maxLines <= 100). */
+export const PREVIEW_LINE_LIMIT = RING_BUFFER_CAPACITY;
 
 export interface UsePreviewDrawerReturn {
   previewFileNode: FileNode | null;
@@ -81,7 +85,7 @@ export function usePreviewDrawer(): UsePreviewDrawerReturn {
       void fetchConnections(file.path, seq);
 
       try {
-        const result = await window.electronAPI.fs.previewFile(file.path, 500);
+        const result = await window.electronAPI.fs.previewFile(file.path, PREVIEW_LINE_LIMIT);
         if (seq !== previewSeqRef.current) {
           return;
         }
