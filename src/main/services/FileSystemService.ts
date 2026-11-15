@@ -431,6 +431,55 @@ export class FileSystemService implements IFileSystemService {
         }
     }
 
+    async copy(
+        source: string,
+        destination: string
+    ): Promise<{ success: boolean; copiedPath: string }> {
+        await this.validateLinkAwarePathOrThrow(source);
+        await this.validateCanonicalPathOrThrow(destination);
+
+        const normSource = this.normalizeCacheKey(source);
+        const normDest = this.normalizeCacheKey(destination);
+        const srcPrefix = normSource.endsWith(path.sep) ? normSource : `${normSource}${path.sep}`;
+        if (normDest === normSource || normDest.startsWith(srcPrefix)) {
+            throw new FileSystemError('INVALID_PATH', 'Cannot copy a directory into itself', {
+                path: destination,
+                operation: 'copy',
+            });
+        }
+
+        try {
+            const existsDest = await fs.lstat(destination).then(() => true).catch(() => false);
+            if (existsDest) {
+                throw new FileSystemError('UNKNOWN', `Destination already exists: ${path.basename(destination)}`, {
+                    path: destination,
+                    operation: 'copy',
+                });
+            }
+
+            await fs.mkdir(path.dirname(destination), { recursive: true });
+            const sourceStats = await fs.lstat(source);
+            if (sourceStats.isDirectory() && !sourceStats.isSymbolicLink()) {
+                await fs.cp(source, destination, {
+                    recursive: true,
+                    preserveTimestamps: true,
+                    verbatimSymlinks: true,
+                    errorOnExist: true,
+                    force: false,
+                });
+            } else if (sourceStats.isSymbolicLink()) {
+                const target = await fs.readlink(source);
+                await fs.symlink(target, destination);
+            } else {
+                await fs.copyFile(source, destination);
+            }
+            this.invalidatePath(destination);
+            return { success: true, copiedPath: destination };
+        } catch (error: unknown) {
+            throw this.wrapError(error, source);
+        }
+    }
+
     async getStats(filePath: string): Promise<FileStats> {
         // SECURITY: Validate canonical path first
         await this.validateCanonicalPathOrThrow(filePath);

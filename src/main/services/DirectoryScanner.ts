@@ -1,6 +1,7 @@
 import { FileNode, FileSystemError } from '@shared/contracts';
 import { ConfigManager, DEFAULT_EXCLUDED_DIRS } from '@shared/config';
 import { FileSystemLogger } from '@shared/logging';
+import { isSensitiveSecretFile } from '@shared/security/SecretGuard';
 import { FileSystemService } from './FileSystemService';
 
 /**
@@ -36,6 +37,9 @@ export interface ScanOptions {
 
     /** Follow symlinked entries (default: false for loop/escape safety) */
     followSymlinks?: boolean;
+
+    /** Skip sensitive secret/credential files (.env*, *.pem, *.key, etc.) when collecting files for AI/indexing */
+    skipSensitiveFiles?: boolean;
 }
 
 /**
@@ -100,6 +104,7 @@ export class DirectoryScanner {
             signal,
             excludedDirs,
             followSymlinks = false,
+            skipSensitiveFiles = false,
         } = options;
 
         const results: FileNode[] = [];
@@ -118,6 +123,7 @@ export class DirectoryScanner {
                 signal,
                 excludedDirs,
                 followSymlinks,
+                skipSensitiveFiles,
             },
             0 // current depth
         );
@@ -298,6 +304,11 @@ export class DirectoryScanner {
 
         // Skip symlinks unless caller explicitly enables followSymlinks
         if (!options.followSymlinks && (file as FileNode & { isSymbolicLink?: boolean }).isSymbolicLink) {
+            return false;
+        }
+
+        // Skip sensitive credential artifacts during AI/index scans
+        if (options.skipSensitiveFiles && !file.isDirectory && isSensitiveSecretFile(file.path).blocked) {
             return false;
         }
 

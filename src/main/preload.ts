@@ -29,6 +29,7 @@ import type {
   OrganizePlanResult,
   OrganizeStrategy,
   RetrievalSource,
+  UIPreferencesSnapshot,
 } from '@shared/contracts';
 import type { IPCChannel, IPCResponse } from '@shared/ipc/contracts';
 
@@ -99,8 +100,15 @@ const electronAPI = {
     delete: (path: string, recursive?: boolean, mode?: FileDeleteMode): ContractResult<'FS:DELETE'> =>
       invokeContract('FS:DELETE', { path, recursive, mode }),
 
-    move: (source: string, destination: string): ContractResult<'FS:MOVE'> =>
-      invokeContract('FS:MOVE', { source, destination }),
+    move: (
+      source: string,
+      destination: string,
+      repairMarkdownLinks?: boolean
+    ): ContractResult<'FS:MOVE'> =>
+      invokeContract('FS:MOVE', { source, destination, repairMarkdownLinks }),
+
+    copy: (source: string, destination: string): ContractResult<'FS:COPY'> =>
+      invokeContract('FS:COPY', { source, destination }),
 
     getStats: (path: string): ContractResult<'FS:GET_STATS'> =>
       invokeContract('FS:GET_STATS', { path }),
@@ -139,6 +147,9 @@ const electronAPI = {
 
     toggleFavorite: (path: string): ContractResult<'VAULT:TOGGLE_FAVORITE'> =>
       invokeContract('VAULT:TOGGLE_FAVORITE', { path }),
+
+    setUiPrefs: (prefs: Partial<UIPreferencesSnapshot>): ContractResult<'VAULT:SET_UI_PREFS'> =>
+      invokeContract('VAULT:SET_UI_PREFS', prefs),
   },
 
   /**
@@ -177,6 +188,9 @@ const electronAPI = {
       backlinkTarget?: string;
     }): ContractResult<'GRAPH:QUERY_INSIGHTS'> =>
       invokeContract('GRAPH:QUERY_INSIGHTS', options),
+
+    checkImpact: (paths: string[]): ContractResult<'GRAPH:IMPACT_CHECK'> =>
+      invokeContract('GRAPH:IMPACT_CHECK', { paths }),
   },
 
   /**

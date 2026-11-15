@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { DatabaseSync as NodeSqliteDatabase } from 'node:sqlite';
 import { suppressSqliteExperimentalWarning } from '../../shared/utils/processWarnings';
+import { GraphImpactReference } from '../../shared/contracts';
 import { ExtractedLink, ExtractedSymbol, StructuralChunk } from '../../llm/services/StructuralChunker';
 
 export interface KnowledgeGraphChunkRecord {
@@ -175,6 +176,7 @@ export class WorkspaceKnowledgeGraph {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         source_path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
         target_ref TEXT NOT NULL,
+        target_path TEXT,
         kind TEXT NOT NULL,
         line_number INTEGER NOT NULL
       );
@@ -183,7 +185,71 @@ export class WorkspaceKnowledgeGraph {
       CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_path);
     `);
 
+    // Idempotent schema migration for pre-existing databases adding canonical target_path
+    const linkColumns = db.prepare('PRAGMA table_info(links)').all() as Array<{ name: string }>;
+    if (!linkColumns.some((c) => c.name === 'target_path')) {
+      db.exec('ALTER TABLE links ADD COLUMN target_path TEXT;');
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_links_target_path ON links(target_path);');
+
     this.db = db;
+  }
+
+  private normalizeLookupPath(targetPath: string): string {
+    const resolved = path.resolve(targetPath);
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  }
+
+  private resolveLinkTargetPath(
+    db: NodeSqliteDatabase,
+    sourcePath: string,
+    targetRef: string,
+    kind: string
+  ): string | null {
+    const trimmed = targetRef.split('|')[0].split('#')[0].split('?')[0].trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    if (trimmed.startsWith('./') || trimmed.startsWith('../')) {
+      const sourceDir = path.dirname(sourcePath);
+      const baseCandidate = path.resolve(sourceDir, trimmed);
+      const candidateExts = ['', '.md', '.markdown', '.ts', '.tsx', '.js', '.jsx', '.py', '.json'];
+      for (const ext of candidateExts) {
+        const candidate = ext ? `${baseCandidate}${ext}` : baseCandidate;
+        const row = db.prepare('SELECT path FROM files WHERE LOWER(path) = LOWER(?) LIMIT 1').get(candidate) as
+          | { path: string }
+          | undefined;
+        if (row) {
+          return row.path;
+        }
+      }
+      // Also check index file inside directory import (`./utils` -> `./utils/index.ts`)
+      for (const indexFile of ['index.ts', 'index.tsx', 'index.js', 'index.md']) {
+        const candidate = path.join(baseCandidate, indexFile);
+        const row = db.prepare('SELECT path FROM files WHERE LOWER(path) = LOWER(?) LIMIT 1').get(candidate) as
+          | { path: string }
+          | undefined;
+        if (row) {
+          return row.path;
+        }
+      }
+      return baseCandidate;
+    }
+
+    if (kind === 'wikilink') {
+      const cleanedName = path.basename(trimmed).toLowerCase();
+      const allFiles = db.prepare('SELECT path FROM files').all() as Array<{ path: string }>;
+      for (const f of allFiles) {
+        const fileBase = path.basename(f.path).toLowerCase();
+        const fileStem = path.basename(f.path, path.extname(f.path)).toLowerCase();
+        if (fileBase === cleanedName || fileStem === cleanedName) {
+          return f.path;
+        }
+      }
+    }
+
+    return null;
   }
 
   private getDb(): NodeSqliteDatabase {
@@ -299,10 +365,11 @@ export class WorkspaceKnowledgeGraph {
 
       if (input.links && input.links.length > 0) {
         const insertLink = db.prepare(
-          'INSERT INTO links (source_path, target_ref, kind, line_number) VALUES (?, ?, ?, ?)'
+          'INSERT INTO links (source_path, target_ref, target_path, kind, line_number) VALUES (?, ?, ?, ?, ?)'
         );
         for (const link of input.links) {
-          insertLink.run(input.filePath, link.targetRef, link.kind, link.lineNumber);
+          const targetPath = this.resolveLinkTargetPath(db, input.filePath, link.targetRef, link.kind);
+          insertLink.run(input.filePath, link.targetRef, targetPath, link.kind, link.lineNumber);
         }
       }
     });
@@ -482,17 +549,58 @@ export class WorkspaceKnowledgeGraph {
     }));
   }
 
-  findBacklinks(targetRef: string, limit: number = 50): Array<{ sourcePath: string; targetRef: string; kind: string; lineNumber: number }> {
+  findBacklinks(
+    targetRef: string,
+    limit: number = 50
+  ): Array<{ sourcePath: string; targetRef: string; kind: string; lineNumber: number; targetPath?: string }> {
     const db = this.getDb();
-    const baseName = path.basename(targetRef, path.extname(targetRef));
+    const cleaned = targetRef.trim();
+    if (!cleaned) {
+      return [];
+    }
+
+    const baseWithExt = path.basename(cleaned).toLowerCase();
+    const stemNoExt = path.basename(cleaned, path.extname(cleaned)).toLowerCase();
+    const resolvedTarget = path.isAbsolute(cleaned) ? path.resolve(cleaned) : cleaned;
+
     const rows = db.prepare(`
-      SELECT source_path, target_ref, kind, line_number
+      SELECT source_path, target_ref, target_path, kind, line_number
       FROM links
-      WHERE LOWER(target_ref) LIKE LOWER(?) OR LOWER(target_ref) LIKE LOWER(?)
+      WHERE (target_path IS NOT NULL AND LOWER(target_path) = LOWER(?))
+         OR LOWER(target_ref) = LOWER(?)
+         OR (
+           kind = 'wikilink'
+           AND (
+             LOWER(TRIM(target_ref)) = ?
+             OR LOWER(TRIM(target_ref)) = ?
+             OR LOWER(TRIM(target_ref)) LIKE ?
+             OR LOWER(TRIM(target_ref)) LIKE ?
+           )
+         )
+         OR (
+           kind IN ('import', 'markdown_link')
+           AND (
+             LOWER(target_ref) = ?
+             OR LOWER(target_ref) LIKE ?
+             OR LOWER(target_ref) LIKE ?
+           )
+         )
       LIMIT ?
-    `).all(`%${targetRef}%`, `%${baseName}%`, limit) as Array<{
+    `).all(
+      resolvedTarget,
+      cleaned,
+      baseWithExt,
+      stemNoExt,
+      `${stemNoExt}#%`,
+      `${stemNoExt}|%`,
+      baseWithExt,
+      `%/${baseWithExt}`,
+      `%/${stemNoExt}`,
+      limit
+    ) as Array<{
       source_path: string;
       target_ref: string;
+      target_path: string | null;
       kind: string;
       line_number: number;
     }>;
@@ -500,9 +608,62 @@ export class WorkspaceKnowledgeGraph {
     return rows.map((r) => ({
       sourcePath: r.source_path,
       targetRef: r.target_ref,
+      targetPath: r.target_path ?? undefined,
       kind: r.kind,
       lineNumber: r.line_number,
     }));
+  }
+
+  /**
+   * Compute inbound link impact across files or folders prior to Delete / Move / Rename.
+   */
+  findImpactForPaths(targetPaths: string[], limitPerTarget: number = 50): GraphImpactReference[] {
+    if (!Array.isArray(targetPaths) || targetPaths.length === 0) {
+      return [];
+    }
+
+    const db = this.getDb();
+    const indexedFiles = db.prepare('SELECT path FROM files').all() as Array<{ path: string }>;
+    const expandedTargets = new Set<string>();
+
+    for (const rawTarget of targetPaths) {
+      if (!rawTarget) continue;
+      const normTarget = this.normalizeLookupPath(rawTarget);
+      const prefix = normTarget.endsWith(path.sep) ? normTarget : `${normTarget}${path.sep}`;
+      expandedTargets.add(path.resolve(rawTarget));
+
+      for (const f of indexedFiles) {
+        const normFile = this.normalizeLookupPath(f.path);
+        if (normFile === normTarget || normFile.startsWith(prefix)) {
+          expandedTargets.add(f.path);
+        }
+      }
+    }
+
+    const refs: GraphImpactReference[] = [];
+    const seen = new Set<string>();
+    for (const target of expandedTargets) {
+      const targetNorm = this.normalizeLookupPath(target);
+      const backlinks = this.findBacklinks(target, limitPerTarget);
+      for (const link of backlinks) {
+        if (this.normalizeLookupPath(link.sourcePath) === targetNorm) {
+          continue;
+        }
+        const dedupKey = `${link.sourcePath}:${link.lineNumber}:${link.targetRef}:${target}`;
+        if (seen.has(dedupKey)) continue;
+        seen.add(dedupKey);
+        refs.push({
+          targetPath: target,
+          sourcePath: link.sourcePath,
+          targetRef: link.targetRef,
+          kind: link.kind,
+          lineNumber: link.lineNumber,
+          isMarkdownLink: link.kind === 'wikilink' || link.kind === 'markdown_link',
+        });
+      }
+    }
+
+    return refs;
   }
 
   getInsights(): KnowledgeGraphInsights {

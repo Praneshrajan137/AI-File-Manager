@@ -146,6 +146,30 @@ export interface GraphInsightRecentFile {
   indexedAt: number;
 }
 
+export type ExplorerLens = 'files' | 'graph' | 'collections' | 'duplicates';
+
+export interface UIPreferencesSnapshot {
+  theme: 'light' | 'dark';
+  explorerLens: ExplorerLens;
+  viewMode: 'grid' | 'list';
+  splitPaneOpen: boolean;
+}
+
+export interface GraphImpactReference {
+  targetPath: string;
+  sourcePath: string;
+  targetRef: string;
+  kind: string;
+  lineNumber: number;
+  isMarkdownLink: boolean;
+}
+
+export interface GraphImpactCheckResult {
+  totalAffectedFiles: number;
+  markdownRepairableCount: number;
+  references: GraphImpactReference[];
+}
+
 export interface GraphInsightsResponse {
   stats: {
     totalFiles: number;
@@ -168,6 +192,7 @@ export interface GraphInsightsResponse {
     targetRef: string;
     kind: string;
     lineNumber: number;
+    targetPath?: string;
   }>;
 }
 
@@ -179,6 +204,11 @@ export interface LLMModelsSnapshot {
   rerankerModel: string;
   temperature: number;
   maxTokens: number;
+  provider?: 'ollama' | 'openai-compatible';
+  openAiBaseUrl?: string;
+  embeddingDevice?: 'auto' | 'cpu' | 'dml' | 'webgpu';
+  activeExecutionProvider?: string;
+  enableVisionCaptioning?: boolean;
 }
 
 export interface SystemPaths {
@@ -192,12 +222,22 @@ export type FileDeleteMode = 'vault' | 'trash' | 'permanent';
 
 export interface OperationRecord {
   id: string;
-  type: 'delete' | 'move' | 'rename' | 'create_file' | 'create_dir' | 'batch';
+  type:
+    | 'delete'
+    | 'move'
+    | 'rename'
+    | 'create_file'
+    | 'create_dir'
+    | 'copy'
+    | 'edit_links'
+    | 'batch';
   timestamp: number;
   sourcePath: string;
   destinationPath?: string;
   vaultPayloadPath?: string;
   symlinkTarget?: string;
+  previousContent?: string;
+  nextContent?: string;
   children?: OperationRecord[];
   isDirectory: boolean;
   isSymlink?: boolean;
@@ -231,6 +271,7 @@ export interface VaultConfigSnapshot {
   excludedDirs: string[];
   favorites: string[];
   defaultDeleteMode: 'vault' | 'trash';
+  ui?: UIPreferencesSnapshot;
 }
 
 /**

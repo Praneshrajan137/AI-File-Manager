@@ -24,6 +24,7 @@ import { FileContentExtractor } from './FileContentExtractor';
 import { extractSymbolsAndLinks, StructuralChunker } from './StructuralChunker';
 import { computeBufferSha256 } from '../../main/services/WorkspaceKnowledgeGraph';
 import { LLMMetrics, MetricOperation } from './LLMMetrics';
+import { isSensitiveSecretFile } from '../../shared/security/SecretGuard';
 
 export interface IndexFileOptions {
     forceReindex?: boolean;
@@ -83,6 +84,20 @@ export class IndexingService implements IIndexingService {
                     indexedAt: Date.now(),
                     success: false,
                     error: 'Indexing cancelled',
+                };
+            }
+
+            const secretCheck = isSensitiveSecretFile(filePath);
+            if (secretCheck.blocked) {
+                // Purge any legacy chunks if an older index ingested this secret path
+                await this.vectorStore.deleteFile(filePath).catch(() => 0);
+                return {
+                    filePath,
+                    chunksCreated: 0,
+                    totalTokens: 0,
+                    indexedAt: Date.now(),
+                    success: false,
+                    error: secretCheck.reason ?? 'Blocked by SecretGuard',
                 };
             }
 

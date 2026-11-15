@@ -68,15 +68,31 @@ export const appConfigSchema = z.object({
   }),
 
   llm: z.object({
+    provider: z.enum(['ollama', 'openai-compatible']).default('ollama'),
     ollamaUrl: z.string().url().default('http://localhost:11434'),
+    openAiBaseUrl: z.string().url().default('http://localhost:1234'),
     model: z.string().default('llama3.2'),
     maxTokens: z.number().int().positive().default(2048),
     temperature: z.number().min(0).max(1).default(0.7),
     embeddingDimensions: z.number().int().positive().default(384),
     embeddingModel: z.string().default('Xenova/bge-small-en-v1.5'),
     embeddingDtype: z.enum(['q8', 'fp32']).default('q8'),
+    embeddingDevice: z.enum(['auto', 'cpu', 'dml', 'webgpu']).default('auto'),
     rerankerModel: z.string().default('Xenova/ms-marco-MiniLM-L-6-v2'),
     enableWebGPU: z.boolean().default(false),
+    enableVisionCaptioning: z.boolean().default(false),
+  }),
+
+  ui: z.object({
+    theme: z.enum(['light', 'dark']).default('dark'),
+    explorerLens: z.enum(['files', 'graph', 'collections', 'duplicates']).default('files'),
+    viewMode: z.enum(['grid', 'list']).default('list'),
+    splitPaneOpen: z.boolean().default(false),
+  }).default({
+    theme: 'dark',
+    explorerLens: 'files',
+    viewMode: 'list',
+    splitPaneOpen: false,
   }),
 
   logging: z.object({

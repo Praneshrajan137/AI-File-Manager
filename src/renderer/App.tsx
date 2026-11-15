@@ -115,13 +115,8 @@ const FileManagerApp: React.FC = () => {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [omnibarOpen, setOmnibarOpen] = useState(false);
   const [organizeTargetDir, setOrganizeTargetDir] = useState<string | null>(null);
-  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
-    try {
-      return window.localStorage.getItem('fm_theme') === 'dark';
-    } catch {
-      return false;
-    }
-  });
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(true);
+  const uiPrefsHydratedRef = useRef(false);
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const selectionAnchorRef = useRef<string | null>(null);
   const [splitPaneOpen, setSplitPaneOpen] = useState(false);
@@ -155,11 +150,10 @@ const FileManagerApp: React.FC = () => {
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDarkMode);
-    try {
-      window.localStorage.setItem('fm_theme', isDarkMode ? 'dark' : 'light');
-    } catch {
-      // Ignore storage failures in restricted contexts
+    if (!uiPrefsHydratedRef.current) {
+      return;
     }
+    void window.electronAPI.vault?.setUiPrefs?.({ theme: isDarkMode ? 'dark' : 'light' }).catch(() => undefined);
   }, [isDarkMode]);
 
   useEffect(() => {
@@ -222,6 +216,14 @@ const FileManagerApp: React.FC = () => {
       ]);
       if (vaultRes.status === 'fulfilled' && vaultRes.value) {
         setVaultConfig(vaultRes.value);
+        if (vaultRes.value.ui && !uiPrefsHydratedRef.current) {
+          uiPrefsHydratedRef.current = true;
+          setIsDarkMode(vaultRes.value.ui.theme === 'dark');
+          setViewMode(vaultRes.value.ui.viewMode);
+          setSplitPaneOpen(vaultRes.value.ui.splitPaneOpen);
+        } else {
+          uiPrefsHydratedRef.current = true;
+        }
       }
       if (journalRes.status === 'fulfilled' && journalRes.value) {
         setJournalState(journalRes.value);

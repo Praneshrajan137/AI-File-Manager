@@ -36,6 +36,7 @@ import {
   ContentSearchMatch,
   CopilotContextScope,
   CopilotQueryMode,
+  GraphImpactCheckResult,
   GraphInsightsResponse,
   IndexingStatus,
   LLMModelsSnapshot,
@@ -48,6 +49,7 @@ import {
 } from '../../shared/contracts';
 import { IPCChannel } from '@shared/ipc/contracts';
 import { IPCLogger, LLMLogger } from '../../shared/logging';
+import { isSensitiveSecretFile } from '../../shared/security/SecretGuard';
 import { VectorStore } from '../../llm/services/VectorStore';
 import { WorkspaceKnowledgeGraph } from '../services/WorkspaceKnowledgeGraph';
 import { EmbeddingWorkerPool } from '../../llm/workers/EmbeddingWorkerPool';
@@ -208,6 +210,19 @@ export function queryWorkspaceGraphInsights(input: {
       stats,
       symbolMatches,
       backlinks,
+    };
+  });
+}
+
+export function checkWorkspaceGraphImpact(targetPaths: string[]): GraphImpactCheckResult {
+  return withKnowledgeGraph((kg) => {
+    const references = kg.findImpactForPaths(targetPaths);
+    const uniqueSourceFiles = new Set(references.map((r) => r.sourcePath));
+    const markdownRepairableCount = references.filter((r) => r.isMarkdownLink).length;
+    return {
+      totalAffectedFiles: uniqueSourceFiles.size,
+      markdownRepairableCount,
+      references,
     };
   });
 }
@@ -569,6 +584,7 @@ async function handleStartIndexing(
     const files = await scanner.scan(canonicalDir, {
       recursive: true,
       skipErrors: true,
+      skipSensitiveFiles: true,
       extensions: [
         'txt', 'md', 'markdown', 'mdx', 'rst',
         'js', 'ts', 'jsx', 'tsx', 'py', 'java', 'cpp', 'c', 'h', 'hpp',
@@ -647,13 +663,16 @@ async function indexFilesBackground(
     try {
       currentFile = filePath;
 
-      // Adaptive yield based on file type and progress
-      const yieldDuration = calculateAdaptiveYield(filePath, indexedCount);
-      await new Promise(resolve => setTimeout(resolve, yieldDuration));
-
       const canonicalPath = await validateCanonicalPathOrThrow(filePath);
-      await indexingService!.indexFile(canonicalPath, false, { skipMetadataStubs: true });
-      indexedCount++;
+      if (isSensitiveSecretFile(canonicalPath).blocked) {
+        continue;
+      }
+
+      const indexResult = await indexingService!.indexFile(canonicalPath, false, { skipMetadataStubs: true });
+      const didEmbedWork = indexResult.success && indexResult.chunksCreated > 0;
+      if (didEmbedWork) {
+        indexedCount++;
+      }
 
       if (!event.sender.isDestroyed()) {
         event.sender.send('LLM:INDEXING_PROGRESS', {
@@ -663,10 +682,17 @@ async function indexFilesBackground(
         });
       }
 
-      // Batch pause every N files with adaptive duration
-      if (indexedCount % BATCH_SIZE === 0) {
-        const batchYield = Math.min(300 + indexedCount * 2, 600);
-        await new Promise(resolve => setTimeout(resolve, batchYield));
+      // Only yield / sleep after real embedding work; unchanged skipped files fly past without idle sleep
+      if (didEmbedWork) {
+        const yieldDuration = calculateAdaptiveYield(filePath, indexedCount);
+        await new Promise(resolve => setTimeout(resolve, yieldDuration));
+
+        if (indexedCount % BATCH_SIZE === 0) {
+          const batchYield = Math.min(300 + indexedCount * 2, 600);
+          await new Promise(resolve => setTimeout(resolve, batchYield));
+        }
+      } else {
+        await new Promise(resolve => setImmediate(resolve));
       }
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -727,6 +753,10 @@ async function handleIndexFile(
   try {
     await ensureServicesInitialized();
     const canonicalPath = await validateCanonicalPathOrThrow(input.filePath);
+    const secretCheck = isSensitiveSecretFile(canonicalPath);
+    if (secretCheck.blocked) {
+      return { success: false, chunksCreated: 0, error: secretCheck.reason };
+    }
     const result = await indexingService!.indexFile(canonicalPath, true);
 
     return {
@@ -757,6 +787,10 @@ async function handleKernelIndexMutation(
     }
 
     const canonicalPath = await validateCanonicalPathOrThrow(filePath);
+    if (isSensitiveSecretFile(canonicalPath).blocked) {
+      await indexingService.removeFile(canonicalPath).catch(() => undefined);
+      return;
+    }
 
     // Enforce opt-in Vault boundary for background incremental indexing
     try {

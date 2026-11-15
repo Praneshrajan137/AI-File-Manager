@@ -19,6 +19,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { isSensitiveSecretFile, redactSensitiveText } from '../../shared/security/SecretGuard';
 
 /**
  * Result of content extraction
@@ -44,6 +45,8 @@ export interface ExtractionResult {
         pageCount?: number;
         wordCount?: number;
         charCount?: number;
+        securityBlocked?: boolean;
+        redactionsCount?: number;
     };
 }
 
@@ -70,12 +73,13 @@ const TEXT_EXTENSIONS = new Set([
     'cs', 'go', 'rs', 'rb', 'php', 'swift', 'kt', 'scala', 'r',
     // Config/Data
     'json', 'yaml', 'yml', 'toml', 'xml', 'ini', 'cfg', 'conf',
+    'example', 'sample', 'template',
     // Web
     'html', 'htm', 'css', 'scss', 'sass', 'less', 'svg',
     // Scripts
     'sh', 'bash', 'zsh', 'ps1', 'bat', 'cmd',
-    // Other
-    'sql', 'graphql', 'proto', 'env', 'gitignore', 'dockerfile',
+    // Other (never include .env credential files)
+    'sql', 'graphql', 'proto', 'gitignore', 'dockerfile',
     'log', 'csv', 'tsv',
 ]);
 
@@ -94,7 +98,7 @@ const DEFAULT_CONFIG: Required<ExtractionConfig> = {
 };
 
 type PdfParseV2Instance = {
-    getText: (params?: { first?: number }) => Promise<{
+    getText: (params?: { first?: number; partial?: number[] }) => Promise<{
         text: string;
         total: number;
         pages?: Array<{ num: number; text: string }>;
@@ -122,6 +126,9 @@ export class FileContentExtractor {
      * @returns True if content can be extracted
      */
     isSupported(filePath: string): boolean {
+        if (isSensitiveSecretFile(filePath).blocked) {
+            return false;
+        }
         const ext = this.getExtension(filePath);
         return TEXT_EXTENSIONS.has(ext) || DOCUMENT_EXTENSIONS.has(ext);
     }
@@ -133,6 +140,9 @@ export class FileContentExtractor {
      * @returns 'full' | 'metadata' | 'none'
      */
     getCapability(filePath: string): 'full' | 'metadata' | 'none' {
+        if (isSensitiveSecretFile(filePath).blocked) {
+            return 'none';
+        }
         const ext = this.getExtension(filePath);
 
         if (TEXT_EXTENSIONS.has(ext)) return 'full';
@@ -154,6 +164,20 @@ export class FileContentExtractor {
     async extract(filePath: string): Promise<ExtractionResult> {
         const ext = this.getExtension(filePath);
 
+        const secretCheck = isSensitiveSecretFile(filePath);
+        if (secretCheck.blocked) {
+            return {
+                success: false,
+                content: null,
+                contentType: 'metadata',
+                fileType: ext,
+                error: secretCheck.reason ?? 'Sensitive file blocked by SecretGuard',
+                metadata: {
+                    securityBlocked: true,
+                },
+            };
+        }
+
         try {
             // Check file size first
             const stats = await fs.stat(filePath);
@@ -165,24 +189,37 @@ export class FileContentExtractor {
             const buffer = await fs.readFile(filePath);
 
             // Route to appropriate extractor
+            let result: ExtractionResult;
             if (TEXT_EXTENSIONS.has(ext)) {
-                return await this.extractText(filePath, buffer);
+                result = await this.extractText(filePath, buffer);
+            } else if (ext === 'pdf') {
+                result = await this.extractPDF(filePath, buffer);
+            } else if (ext === 'docx') {
+                result = await this.extractDOCX(filePath, buffer);
+            } else if (ext === 'ipynb') {
+                result = await this.extractNotebook(filePath, buffer);
+            } else {
+                // Unsupported: return metadata only
+                return this.createMetadataResult(filePath, 'Unsupported file type');
             }
 
-            if (ext === 'pdf') {
-                return await this.extractPDF(filePath, buffer);
+            if (result.success && result.contentType === 'full' && result.content) {
+                const { sanitizedText, redactionsCount } = redactSensitiveText(result.content);
+                if (redactionsCount > 0) {
+                    result = {
+                        ...result,
+                        content: sanitizedText,
+                        metadata: {
+                            ...result.metadata,
+                            charCount: sanitizedText.length,
+                            wordCount: this.countWords(sanitizedText),
+                            redactionsCount,
+                        },
+                    };
+                }
             }
 
-            if (ext === 'docx') {
-                return await this.extractDOCX(filePath, buffer);
-            }
-
-            if (ext === 'ipynb') {
-                return await this.extractNotebook(filePath, buffer);
-            }
-
-            // Unsupported: return metadata only
-            return this.createMetadataResult(filePath, 'Unsupported file type');
+            return result;
 
         } catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
@@ -289,22 +326,44 @@ export class FileContentExtractor {
                     pageCount = typeof data.total === 'number'
                         ? data.total
                         : (Array.isArray(data.pages) ? data.pages.length : 0);
+                    const sections: string[] = [];
                     if (Array.isArray(data.pages) && data.pages.length > 0) {
-                        content = data.pages
-                            .filter((p) => p && typeof p.text === 'string' && p.text.trim().length > 0)
-                            .map((p) => `[Page ${p.num}]\n${p.text.trim()}`)
-                            .join('\n\n');
-                    } else {
-                        content = data.text || '';
+                        for (const p of data.pages) {
+                            if (p && typeof p.text === 'string' && p.text.trim().length > 0) {
+                                sections.push(`[Page ${p.num}]\n${p.text.trim()}`);
+                            }
+                        }
+                    } else if (data.text) {
+                        sections.push(data.text);
+                    }
+                    content = sections.join('\n\n');
+
+                    // Continue streaming beyond page 100 up to maxCharacters budget
+                    let nextPage = 101;
+                    while (nextPage <= pageCount && content.length < this.config.maxCharacters) {
+                        const batchEnd = Math.min(pageCount, nextPage + 49);
+                        const batchNums: number[] = [];
+                        for (let pn = nextPage; pn <= batchEnd; pn++) {
+                            batchNums.push(pn);
+                        }
+                        const batchData = await parser.getText({ partial: batchNums });
+                        if (Array.isArray(batchData.pages) && batchData.pages.length > 0) {
+                            for (const p of batchData.pages) {
+                                if (p && typeof p.text === 'string' && p.text.trim().length > 0) {
+                                    sections.push(`[Page ${p.num}]\n${p.text.trim()}`);
+                                }
+                            }
+                        } else if (batchData.text) {
+                            sections.push(batchData.text);
+                        }
+                        content = sections.join('\n\n');
+                        nextPage = batchEnd + 1;
                     }
                 } finally {
                     await parser.destroy().catch(() => undefined);
                 }
             } else if (this.legacyPdfParser) {
-                const data = await this.legacyPdfParser(buffer, {
-                    // Limit pages for performance
-                    max: 100,
-                });
+                const data = await this.legacyPdfParser(buffer, {});
                 content = data.text || '';
                 pageCount = data.numpages || 0;
             }

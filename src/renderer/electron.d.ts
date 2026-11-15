@@ -12,6 +12,7 @@ import type {
   FileNode,
   FilePreviewResult,
   FileStats,
+  GraphImpactCheckResult,
   GraphInsightsResponse,
   IndexingStatus,
   LLMModelsSnapshot,
@@ -22,6 +23,7 @@ import type {
   OrganizeStrategy,
   RetrievalSource,
   SystemPaths,
+  UIPreferencesSnapshot,
   UndoRedoResult,
   VaultConfigSnapshot,
 } from '../shared/contracts';
@@ -49,7 +51,12 @@ interface ElectronAPI {
       name: string
     ) => Promise<{ success: boolean; path: string }>;
     delete: (path: string, recursive?: boolean, mode?: FileDeleteMode) => Promise<{ success: boolean }>;
-    move: (source: string, destination: string) => Promise<{ success: boolean; newPath: string }>;
+    move: (
+      source: string,
+      destination: string,
+      repairMarkdownLinks?: boolean
+    ) => Promise<{ success: boolean; newPath: string; repairedLinksCount?: number }>;
+    copy: (source: string, destination: string) => Promise<{ success: boolean; copiedPath: string }>;
     getStats: (path: string) => Promise<FileStats>;
     getSystemPaths: () => Promise<SystemPaths>;
     rename: (oldPath: string, newName: string) => Promise<{ success: boolean; newPath: string }>;
@@ -68,6 +75,7 @@ interface ElectronAPI {
     removeRoot: (path: string) => Promise<VaultConfigSnapshot>;
     setIndexed: (path: string, enabled: boolean) => Promise<VaultConfigSnapshot>;
     toggleFavorite: (path: string) => Promise<VaultConfigSnapshot>;
+    setUiPrefs?: (prefs: Partial<UIPreferencesSnapshot>) => Promise<UIPreferencesSnapshot>;
   };
 
   navigation: {
@@ -88,6 +96,7 @@ interface ElectronAPI {
       symbolQuery?: string;
       backlinkTarget?: string;
     }) => Promise<GraphInsightsResponse>;
+    checkImpact?: (paths: string[]) => Promise<GraphImpactCheckResult>;
   };
 
   llm: {

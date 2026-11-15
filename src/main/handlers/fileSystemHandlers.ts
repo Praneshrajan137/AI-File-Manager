@@ -17,7 +17,9 @@ import {
   getReactiveWorkspaceKernel,
   resetReactiveWorkspaceKernelSync,
 } from '../services/ReactiveWorkspaceKernel';
-import { getOperationJournal, resetOperationJournal } from '../services/OperationJournal';
+import { getOperationJournal, resetOperationJournal, type BatchOperationStep } from '../services/OperationJournal';
+import { buildMarkdownLinkRepairSteps } from '../services/MarkdownLinkRepair';
+import { checkWorkspaceGraphImpact } from './llmHandlers';
 import {
   FileDeleteMode,
   FileLineRangeResult,
@@ -160,15 +162,51 @@ async function handleDelete(
 
 async function handleMove(
   _event: IpcMainInvokeEvent,
-  input: { source: string; destination: string }
-): Promise<{ success: boolean; newPath: string }> {
+  input: { source: string; destination: string; repairMarkdownLinks?: boolean }
+): Promise<{ success: boolean; newPath: string; repairedLinksCount?: number }> {
   FileSystemLogger.info('Moving file/directory', {
     source: input.source,
     destination: input.destination,
+    repairMarkdownLinks: Boolean(input.repairMarkdownLinks),
   });
 
   const kernel = getReactiveWorkspaceKernel();
   const journal = getOperationJournal();
+
+  if (input.repairMarkdownLinks) {
+    try {
+      const impact = checkWorkspaceGraphImpact([input.source]);
+      const mdSources = impact.references
+        .filter((r) => r.isMarkdownLink)
+        .map((r) => r.sourcePath);
+      const linkSteps = await buildMarkdownLinkRepairSteps(mdSources, input.source, input.destination);
+      if (linkSteps.length > 0) {
+        const steps: BatchOperationStep[] = [
+          { type: 'move', source: input.source, destination: input.destination },
+          ...linkSteps,
+        ];
+        await journal.executeBatch(
+          `Move ${path.basename(input.source)} + repair ${linkSteps.length} link(s)`,
+          steps
+        );
+        kernel.notifyMutation('unlink', input.source);
+        kernel.notifyMutation('create', input.destination);
+        for (const edit of linkSteps) {
+          kernel.notifyMutation('change', edit.filePath);
+        }
+        return {
+          success: true,
+          newPath: input.destination,
+          repairedLinksCount: linkSteps.length,
+        };
+      }
+    } catch (repairErr: unknown) {
+      FileSystemLogger.warn('Markdown link repair skipped; proceeding with standard move', {
+        error: repairErr instanceof Error ? repairErr.message : String(repairErr),
+      });
+    }
+  }
+
   const result = await journal.move(input.source, input.destination, 'move');
   kernel.notifyMutation('unlink', input.source);
   kernel.notifyMutation('create', result.newPath);
@@ -179,6 +217,28 @@ async function handleMove(
   });
 
   return { success: result.success, newPath: result.newPath };
+}
+
+async function handleCopy(
+  _event: IpcMainInvokeEvent,
+  input: { source: string; destination: string }
+): Promise<{ success: boolean; copiedPath: string }> {
+  FileSystemLogger.info('Copying file/directory', {
+    source: input.source,
+    destination: input.destination,
+  });
+
+  const kernel = getReactiveWorkspaceKernel();
+  const journal = getOperationJournal();
+  const result = await journal.copy(input.source, input.destination);
+  kernel.notifyMutation('create', result.copiedPath);
+
+  FileSystemLogger.info('Copy successful', {
+    source: input.source,
+    destination: result.copiedPath,
+  });
+
+  return { success: result.success, copiedPath: result.copiedPath };
 }
 
 async function handleCreateFile(
@@ -292,6 +352,12 @@ function notifyRecordMutations(
       kernel.notifyMutation('unlink', record.sourcePath);
       if (record.destinationPath) kernel.notifyMutation('create', record.destinationPath);
     }
+  } else if (record.type === 'copy') {
+    if (record.destinationPath) {
+      kernel.notifyMutation(direction === 'undo' ? 'unlink' : 'create', record.destinationPath);
+    }
+  } else if (record.type === 'edit_links') {
+    kernel.notifyMutation('change', record.sourcePath);
   } else if (record.type === 'create_file' || record.type === 'create_dir') {
     kernel.notifyMutation(direction === 'undo' ? 'unlink' : 'create', record.sourcePath);
   }
@@ -329,6 +395,7 @@ const FILE_SYSTEM_CHANNELS: IPCChannel[] = [
   'FS:WRITE_FILE',
   'FS:DELETE',
   'FS:MOVE',
+  'FS:COPY',
   'FS:CREATE_FILE',
   'FS:CREATE_DIR',
   'FS:GET_STATS',
@@ -353,6 +420,7 @@ export function registerFileSystemHandlers(): IPCChannel[] {
   ipcMain.handle('FS:WRITE_FILE', withContract('FS:WRITE_FILE', handleWriteFile));
   ipcMain.handle('FS:DELETE', withContract('FS:DELETE', handleDelete));
   ipcMain.handle('FS:MOVE', withContract('FS:MOVE', handleMove));
+  ipcMain.handle('FS:COPY', withContract('FS:COPY', handleCopy));
   ipcMain.handle('FS:CREATE_FILE', withContract('FS:CREATE_FILE', handleCreateFile));
   ipcMain.handle('FS:CREATE_DIR', withContract('FS:CREATE_DIR', handleCreateDirectory));
   ipcMain.handle('FS:GET_STATS', withContract('FS:GET_STATS', handleGetStats));

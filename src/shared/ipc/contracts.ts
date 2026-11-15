@@ -14,6 +14,7 @@ import type {
   FileNode,
   FilePreviewResult,
   FileStats,
+  GraphImpactCheckResult,
   GraphInsightsResponse,
   IndexingStatus,
   LLMModelsSnapshot,
@@ -22,6 +23,7 @@ import type {
   OrganizePlanResult,
   RetrievalSource,
   SystemPaths,
+  UIPreferencesSnapshot,
   UndoRedoResult,
   VaultConfigSnapshot,
 } from '../contracts';
@@ -116,7 +118,12 @@ export const IPC_SCHEMAS = {
     recursive: z.boolean().optional(),
     mode: z.enum(['vault', 'trash', 'permanent']).optional(),
   }),
-  'FS:MOVE': z.object({ source: z.string().min(1), destination: z.string().min(1) }),
+  'FS:MOVE': z.object({
+    source: z.string().min(1),
+    destination: z.string().min(1),
+    repairMarkdownLinks: z.boolean().optional(),
+  }),
+  'FS:COPY': z.object({ source: z.string().min(1), destination: z.string().min(1) }),
   'FS:CREATE_FILE': z.object({
     path: z.string().min(1),
     name: safeEntryNameSchema,
@@ -144,6 +151,12 @@ export const IPC_SCHEMAS = {
   'VAULT:REMOVE_ROOT': z.object({ path: z.string().min(1) }),
   'VAULT:SET_INDEXED': z.object({ path: z.string().min(1), enabled: z.boolean() }),
   'VAULT:TOGGLE_FAVORITE': z.object({ path: z.string().min(1) }),
+  'VAULT:SET_UI_PREFS': z.object({
+    theme: z.enum(['light', 'dark']).optional(),
+    explorerLens: z.enum(['files', 'graph', 'collections', 'duplicates']).optional(),
+    viewMode: z.enum(['grid', 'list']).optional(),
+    splitPaneOpen: z.boolean().optional(),
+  }),
   'NAV:BACK': optionalEmptyObjectSchema,
   'NAV:FORWARD': optionalEmptyObjectSchema,
   'NAV:PUSH': z.union([
@@ -174,6 +187,9 @@ export const IPC_SCHEMAS = {
       }),
     ])
     .transform((v) => v ?? {}),
+  'GRAPH:IMPACT_CHECK': z.object({
+    paths: z.array(z.string().min(1)).min(1).max(250),
+  }),
   'LLM:QUERY': z.object({
     query: z.string().min(1).max(8000),
     channel: z
@@ -254,7 +270,8 @@ export interface IPCResponseMap {
   'FS:READ_FILE_RANGE': FileLineRangeResult;
   'FS:WRITE_FILE': { success: boolean };
   'FS:DELETE': { success: boolean };
-  'FS:MOVE': { success: boolean; newPath: string };
+  'FS:MOVE': { success: boolean; newPath: string; repairedLinksCount?: number };
+  'FS:COPY': { success: boolean; copiedPath: string };
   'FS:CREATE_FILE': { success: boolean; path: string };
   'FS:CREATE_DIR': { success: boolean; path: string };
   'FS:GET_STATS': FileStats;
@@ -269,6 +286,7 @@ export interface IPCResponseMap {
   'VAULT:REMOVE_ROOT': VaultConfigSnapshot;
   'VAULT:SET_INDEXED': VaultConfigSnapshot;
   'VAULT:TOGGLE_FAVORITE': VaultConfigSnapshot;
+  'VAULT:SET_UI_PREFS': UIPreferencesSnapshot;
   'NAV:BACK': string | null;
   'NAV:FORWARD': string | null;
   'NAV:PUSH': { success: boolean };
@@ -277,6 +295,7 @@ export interface IPCResponseMap {
   'SEARCH:QUERY': FileNode[];
   'SEARCH:CONTENT': ContentSearchMatch[];
   'GRAPH:QUERY_INSIGHTS': GraphInsightsResponse;
+  'GRAPH:IMPACT_CHECK': GraphImpactCheckResult;
   'LLM:QUERY': {
     success: boolean;
     error?: string;
@@ -359,6 +378,14 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     channel: 'FS:MOVE',
     group: 'fileSystem',
     schema: IPC_SCHEMAS['FS:MOVE'],
+    pathFields: ['destination'],
+    linkSafePathFields: ['source'],
+    rateLimit: WRITE_RATE_LIMIT,
+  },
+  'FS:COPY': {
+    channel: 'FS:COPY',
+    group: 'fileSystem',
+    schema: IPC_SCHEMAS['FS:COPY'],
     pathFields: ['destination'],
     linkSafePathFields: ['source'],
     rateLimit: WRITE_RATE_LIMIT,
@@ -460,6 +487,13 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     pathFields: ['path'],
     rateLimit: WRITE_RATE_LIMIT,
   },
+  'VAULT:SET_UI_PREFS': {
+    channel: 'VAULT:SET_UI_PREFS',
+    group: 'vault',
+    schema: IPC_SCHEMAS['VAULT:SET_UI_PREFS'],
+    pathFields: [],
+    rateLimit: WRITE_RATE_LIMIT,
+  },
   'NAV:BACK': {
     channel: 'NAV:BACK',
     group: 'navigation',
@@ -513,6 +547,13 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     channel: 'GRAPH:QUERY_INSIGHTS',
     group: 'graph',
     schema: IPC_SCHEMAS['GRAPH:QUERY_INSIGHTS'],
+    pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
+  },
+  'GRAPH:IMPACT_CHECK': {
+    channel: 'GRAPH:IMPACT_CHECK',
+    group: 'graph',
+    schema: IPC_SCHEMAS['GRAPH:IMPACT_CHECK'],
     pathFields: [],
     rateLimit: READ_RATE_LIMIT,
   },

@@ -56,6 +56,8 @@ export interface VectorStoreDiagnostics {
   modelId?: string;
   needsReindex?: boolean;
   migrationReason?: string;
+  activeExecutionProvider?: string;
+  supportedDevices?: string[];
 }
 
 export interface LlmPipelineDiagnostics {

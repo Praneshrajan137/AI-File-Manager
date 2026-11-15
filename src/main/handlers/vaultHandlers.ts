@@ -2,7 +2,7 @@ import { ipcMain, dialog, BrowserWindow, IpcMainInvokeEvent } from 'electron';
 import fsSync from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
-import { VaultConfigSnapshot } from '@shared/contracts';
+import { UIPreferencesSnapshot, VaultConfigSnapshot } from '@shared/contracts';
 import { IPCChannel } from '@shared/ipc/contracts';
 import { ConfigManager, DEFAULT_EXCLUDED_DIRS } from '@shared/config';
 import { IPCLogger } from '@shared/logging';
@@ -82,6 +82,12 @@ export function buildVaultSnapshot(): VaultConfigSnapshot {
     excludedDirs,
     favorites,
     defaultDeleteMode: fsConfig.defaultDeleteMode === 'trash' ? 'trash' : 'vault',
+    ui: config.ui ?? {
+      theme: 'dark',
+      explorerLens: 'files',
+      viewMode: 'list',
+      splitPaneOpen: false,
+    },
   };
 }
 
@@ -241,12 +247,34 @@ async function handleToggleFavorite(
   return buildVaultSnapshot();
 }
 
+async function handleSetUiPrefs(
+  _event: IpcMainInvokeEvent,
+  input: Partial<UIPreferencesSnapshot>
+): Promise<UIPreferencesSnapshot> {
+  const cm = ConfigManager.getInstance();
+  const currentUi = cm.getAll().ui ?? {
+    theme: 'dark',
+    explorerLens: 'files',
+    viewMode: 'list',
+    splitPaneOpen: false,
+  };
+  const nextUi: UIPreferencesSnapshot = {
+    theme: input.theme ?? currentUi.theme,
+    explorerLens: input.explorerLens ?? currentUi.explorerLens,
+    viewMode: input.viewMode ?? currentUi.viewMode,
+    splitPaneOpen: input.splitPaneOpen ?? currentUi.splitPaneOpen,
+  };
+  cm.set('ui', nextUi, true);
+  return nextUi;
+}
+
 const VAULT_CHANNELS: IPCChannel[] = [
   'VAULT:GET_CONFIG',
   'VAULT:ADD_ROOT',
   'VAULT:REMOVE_ROOT',
   'VAULT:SET_INDEXED',
   'VAULT:TOGGLE_FAVORITE',
+  'VAULT:SET_UI_PREFS',
 ];
 
 export function registerVaultHandlers(): IPCChannel[] {
@@ -256,5 +284,6 @@ export function registerVaultHandlers(): IPCChannel[] {
   ipcMain.handle('VAULT:REMOVE_ROOT', withContract('VAULT:REMOVE_ROOT', handleRemoveVaultRoot));
   ipcMain.handle('VAULT:SET_INDEXED', withContract('VAULT:SET_INDEXED', handleSetVaultIndexed));
   ipcMain.handle('VAULT:TOGGLE_FAVORITE', withContract('VAULT:TOGGLE_FAVORITE', handleToggleFavorite));
+  ipcMain.handle('VAULT:SET_UI_PREFS', withContract('VAULT:SET_UI_PREFS', handleSetUiPrefs));
   return [...VAULT_CHANNELS];
 }
