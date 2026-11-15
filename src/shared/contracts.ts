@@ -1165,4 +1165,72 @@ export interface OrganizeApplyResult {
   journalState: OperationJournalState;
 }
 
+// ============================================================================
+// STAGE 2-4: SCOPED HYBRID GRAPH-RAG & SPATIAL WORKSPACE CONTRACTS
+// ============================================================================
+
+export interface SearchScopeFilter {
+  /** Restrict retrieval strictly to files under this directory subtree */
+  folderPath?: string;
+  /** Restrict retrieval strictly to an explicit set of files */
+  filePaths?: string[];
+  /** Restrict retrieval to specific lowercase extensions (without leading dot) */
+  fileExtensions?: string[];
+}
+
+export interface AssociativeBoostResult {
+  filePath: string;
+  score: number;
+  hopDistance: 1 | 2;
+  viaPath?: string;
+}
+
+export interface WorkspaceGraphNode {
+  path: string;
+  name: string;
+  fileType: string;
+  chunkCount: number;
+  inDegree: number;
+  outDegree: number;
+  topSymbols: string[];
+  folder: string;
+}
+
+export interface WorkspaceGraphEdge {
+  source: string;
+  target: string;
+  targetRef: string;
+  kind: string;
+  lineNumber: number;
+}
+
+export interface WorkspaceGraphMap {
+  rootPrefix: string | null;
+  nodes: WorkspaceGraphNode[];
+  edges: WorkspaceGraphEdge[];
+  totalFilesIndexed: number;
+}
+
+export interface WorkspaceCollectionGroup {
+  id: string;
+  label: string;
+  reason: string;
+  files: Array<{
+    path: string;
+    name: string;
+    fileType: string;
+    chunkCount: number;
+    topSymbol?: string;
+  }>;
+  dominantSymbols: string[];
+}
+
+export interface FileConnectionsSummary {
+  filePath: string;
+  symbols: Array<{ name: string; kind: string; lineNumber: number }>;
+  outgoingLinks: Array<{ targetRef: string; targetPath?: string; kind: string; lineNumber: number }>;
+  backlinks: Array<{ sourcePath: string; targetRef: string; kind: string; lineNumber: number }>;
+  associativeNeighbors: AssociativeBoostResult[];
+}
+
 

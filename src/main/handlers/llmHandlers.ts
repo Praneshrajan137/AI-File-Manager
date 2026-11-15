@@ -265,6 +265,29 @@ async function ensureServicesInitialized(): Promise<void> {
       const kernel = getReactiveWorkspaceKernel();
       fileSystemService = kernel.getFileSystemService();
 
+      // Reconcile offline-deleted or newly SecretGuard-blocked index records
+      const storeRef = localVectorStore;
+      const indexedPaths = storeRef.getKnowledgeGraph()?.getIndexedFiles() ?? [];
+      if (indexedPaths.length > 0) {
+        const purged = await kernel.reconcileIndexedFiles(indexedPaths, async (stalePath) => {
+          await storeRef.deleteFile(stalePath);
+        });
+        if (purged > 0) {
+          LLMLogger.info('Purged stale or SecretGuard-blocked index entries', { purged });
+        }
+      }
+
+      if (!process.env.JEST_WORKER_ID) {
+        try {
+          const roots = ConfigManager.getInstance().getAll()?.fileSystem?.indexedRoots ?? [];
+          for (const root of roots.slice(0, 4)) {
+            void kernel.watchIndexedRoot(root).catch(() => undefined);
+          }
+        } catch {
+          // Non-fatal in minimal environments
+        }
+      }
+
       const localLlm = new LLMInterface(resolveOllamaUrl(), {
         model: llmConfig?.model,
       });
@@ -608,6 +631,7 @@ async function handleStartIndexing(
       if (!alreadyCovered) {
         cm.set('fileSystem.indexedRoots', [...existing, canonicalDir], true);
       }
+      void getReactiveWorkspaceKernel().watchIndexedRoot(canonicalDir).catch(() => undefined);
     } catch {
       // Non-fatal in minimal test environments
     }

@@ -18,6 +18,7 @@ import {
     VectorRecord,
     Embedding,
     IndexStats,
+    SearchScopeFilter,
 } from '../../shared/contracts';
 import { LexicalSearchMatch } from './HybridLexicalIndex';
 import {
@@ -443,14 +444,30 @@ export class VectorStore implements IVectorStore {
         const recordsToAdd = [...this.pendingRecords];
 
         try {
-            // Delete existing LanceDB chunks for re-indexed files first
-            for (const filePath of filesToDelete) {
-                try {
-                    await this.table!.delete(`file_path = '${this.escapeSql(filePath)}'`);
-                } catch (deleteError: unknown) {
-                    const msg = deleteError instanceof Error ? deleteError.message : String(deleteError);
-                    if (!msg.includes('not found') && !msg.includes('empty')) {
-                        throw deleteError;
+            // Delete existing LanceDB chunks for re-indexed files in batched SQL slices
+            if (filesToDelete.length > 0) {
+                const BATCH_DELETE_SIZE = 100;
+                for (let idx = 0; idx < filesToDelete.length; idx += BATCH_DELETE_SIZE) {
+                    const batch = filesToDelete.slice(idx, idx + BATCH_DELETE_SIZE);
+                    const inList = batch.map((p) => `'${this.escapeSql(p)}'`).join(', ');
+                    try {
+                        await this.table!.delete(`file_path IN (${inList})`);
+                    } catch (batchErr: unknown) {
+                        const batchMsg = batchErr instanceof Error ? batchErr.message : String(batchErr);
+                        if (batchMsg.includes('not found') || batchMsg.includes('empty')) {
+                            continue;
+                        }
+                        // Fallback for minimal mock tables that only match `file_path = '...'`
+                        for (const filePath of batch) {
+                            try {
+                                await this.table!.delete(`file_path = '${this.escapeSql(filePath)}'`);
+                            } catch (deleteError: unknown) {
+                                const msg = deleteError instanceof Error ? deleteError.message : String(deleteError);
+                                if (!msg.includes('not found') && !msg.includes('empty')) {
+                                    throw deleteError;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -479,9 +496,65 @@ export class VectorStore implements IVectorStore {
         }
     }
 
+    private buildScopedPathFilter(scopeFilter?: SearchScopeFilter): {
+        emptyScope: boolean;
+        sqlPredicate: string | null;
+        allowedCanonicalSet: Set<string> | null;
+    } {
+        if (!scopeFilter) {
+            return { emptyScope: false, sqlPredicate: null, allowedCanonicalSet: null };
+        }
+
+        const hasScopeCriteria = Boolean(
+            (scopeFilter.folderPath && scopeFilter.folderPath.trim().length > 0) ||
+            (Array.isArray(scopeFilter.filePaths) && scopeFilter.filePaths.length > 0) ||
+            (Array.isArray(scopeFilter.fileExtensions) && scopeFilter.fileExtensions.length > 0)
+        );
+        if (!hasScopeCriteria) {
+            return { emptyScope: false, sqlPredicate: null, allowedCanonicalSet: null };
+        }
+
+        const canonicalKey = (p: string): string =>
+            process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
+
+        if (this.knowledgeGraph) {
+            const scopedFiles = this.knowledgeGraph.getFilesInScope(scopeFilter, 10000);
+            if (scopedFiles.length === 0) {
+                return { emptyScope: true, sqlPredicate: null, allowedCanonicalSet: new Set() };
+            }
+            const allowedCanonicalSet = new Set(scopedFiles.map(canonicalKey));
+            if (scopedFiles.length <= 250) {
+                const inList = scopedFiles.map((p) => `'${this.escapeSql(p)}'`).join(', ');
+                return {
+                    emptyScope: false,
+                    sqlPredicate: `file_path IN (${inList})`,
+                    allowedCanonicalSet,
+                };
+            }
+            // Large subtrees (>250 files): enforce SQLite-verified canonical membership after widened pre-fetch
+            return {
+                emptyScope: false,
+                sqlPredicate: null,
+                allowedCanonicalSet,
+            };
+        }
+
+        if (Array.isArray(scopeFilter.filePaths) && scopeFilter.filePaths.length > 0 && scopeFilter.filePaths.length <= 250) {
+            const inList = scopeFilter.filePaths.map((p) => `'${this.escapeSql(p)}'`).join(', ');
+            return {
+                emptyScope: false,
+                sqlPredicate: `file_path IN (${inList})`,
+                allowedCanonicalSet: new Set(scopeFilter.filePaths.map(canonicalKey)),
+            };
+        }
+
+        return { emptyScope: false, sqlPredicate: null, allowedCanonicalSet: null };
+    }
+
     async search(
         queryEmbedding: Embedding,
-        topK: number = 10
+        topK: number = 10,
+        scopeFilter?: SearchScopeFilter
     ): Promise<VectorRecord[]> {
         return this.withLock(async () => {
             this.ensureInitialized();
@@ -496,10 +569,37 @@ export class VectorStore implements IVectorStore {
                     return [];
                 }
 
-                // LanceDB v0.4.20: Use vectorSearch() method
-                const results = await this.table!.vectorSearch(queryEmbedding).limit(topK).toArray() as LanceRecord[];
+                const scope = this.buildScopedPathFilter(scopeFilter);
+                if (scope.emptyScope) {
+                    return [];
+                }
 
-                return results.map((row) => {
+                let queryBuilder = this.table!.vectorSearch(queryEmbedding) as unknown as {
+                    distanceType?: (metric: 'l2' | 'cosine' | 'dot') => unknown;
+                    where?: (predicate: string) => unknown;
+                    limit: (k: number) => { toArray: () => Promise<LanceRecord[]> };
+                };
+
+                if (typeof queryBuilder.distanceType === 'function') {
+                    queryBuilder = queryBuilder.distanceType('cosine') as typeof queryBuilder;
+                }
+
+                let usedSqlPredicate = false;
+                if (scope.sqlPredicate && typeof queryBuilder.where === 'function') {
+                    queryBuilder = queryBuilder.where(scope.sqlPredicate) as typeof queryBuilder;
+                    usedSqlPredicate = true;
+                }
+
+                const fetchLimit = scope.allowedCanonicalSet && !usedSqlPredicate ? Math.max(topK * 8, 80) : topK;
+                const rawResults = (await queryBuilder.limit(fetchLimit).toArray()) as LanceRecord[];
+
+                const canonicalKey = (p: string): string =>
+                    process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
+                const filtered = scope.allowedCanonicalSet
+                    ? rawResults.filter((row) => scope.allowedCanonicalSet!.has(canonicalKey(row.file_path))).slice(0, topK)
+                    : rawResults.slice(0, topK);
+
+                return filtered.map((row) => {
                     const loc = this.knowledgeGraph?.getChunkLocation(row.id);
                     return {
                         id: row.id,
@@ -552,11 +652,11 @@ export class VectorStore implements IVectorStore {
         return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
     }
 
-    searchLexical(query: string, topK: number = 10): LexicalSearchMatch[] {
+    searchLexical(query: string, topK: number = 10, scopeFilter?: SearchScopeFilter): LexicalSearchMatch[] {
         if (!this.knowledgeGraph) {
             return [];
         }
-        const rows: KnowledgeGraphChunkRecord[] = this.knowledgeGraph.searchLexical(query, topK);
+        const rows: KnowledgeGraphChunkRecord[] = this.knowledgeGraph.searchLexical(query, topK, scopeFilter);
         return rows.map((row) => ({
             record: {
                 id: row.id,
@@ -570,6 +670,23 @@ export class VectorStore implements IVectorStore {
                 heading: row.heading,
             },
             bm25Score: row.bm25Score,
+        }));
+    }
+
+    getChunksForFile(filePath: string, limit: number = 8): VectorRecord[] {
+        if (!this.knowledgeGraph) {
+            return [];
+        }
+        return this.knowledgeGraph.getChunksForFile(filePath, limit).map((row) => ({
+            id: row.id,
+            chunk_text: row.chunkText,
+            embedding: [],
+            file_path: row.filePath,
+            chunk_index: row.chunkIndex,
+            indexed_at: row.indexedAt,
+            start_line: row.startLine,
+            end_line: row.endLine,
+            heading: row.heading,
         }));
     }
 

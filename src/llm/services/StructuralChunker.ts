@@ -17,6 +17,7 @@ export interface StructuralChunk extends TextChunk {
   startLine: number;
   endLine: number;
   heading: string;
+  contextHeader?: string;
 }
 
 export interface ChunkingOptions {
@@ -160,10 +161,27 @@ export class StructuralChunker {
     const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const lines = normalized.split('\n');
     const fileName = path.basename(filePath) || filePath;
+    const parentDir = path.basename(path.dirname(filePath));
+    const displayFile =
+      parentDir && parentDir !== '.' && parentDir !== '/' && !parentDir.endsWith(':')
+        ? `${parentDir}/${fileName}`
+        : fileName;
     const ext = path.extname(filePath).toLowerCase().replace(/^\./, '');
     const isCode = CODE_EXTENSIONS.has(ext);
+    const isPython = ext === 'py';
     const isCsv = ext === 'csv' || ext === 'tsv';
     const csvHeader = isCsv && lines.length > 1 ? lines[0].trim() : '';
+
+    const extractedMeta = extractSymbolsAndLinks(normalized, filePath);
+    const topRefs = Array.from(
+      new Set(
+        extractedMeta.links
+          .slice(0, 4)
+          .map((l) => path.basename(l.targetRef.split('#')[0].split('|')[0].trim()))
+          .filter(Boolean)
+      )
+    ).slice(0, 2);
+    const refsSuffix = topRefs.length > 0 ? ` | Refs: ${topRefs.join(', ')}` : '';
 
     // Precompute start char offsets per line for accurate startChar/endChar
     const lineOffsets: number[] = new Array(lines.length);
@@ -173,11 +191,14 @@ export class StructuralChunker {
       offset += lines[i].length + 1;
     }
 
-    const maxBodyChars = Math.max(240, (this.maxTokens - 28) * this.charsPerToken);
+    const estimatedHeaderOverhead = 36 + (refsSuffix ? 10 : 0);
+    const maxBodyChars = Math.max(240, (this.maxTokens - estimatedHeaderOverhead) * this.charsPerToken);
     const overlapChars = Math.max(0, this.overlapTokens * this.charsPerToken);
 
     const chunks: StructuralChunk[] = [];
     const headingStack: Array<{ level: number; title: string }> = [];
+    const codeScopeStack: Array<{ name: string; depth: number; indent: number }> = [];
+    let braceDepth = 0;
     let currentLabel = csvHeader ? `Columns: ${csvHeader.slice(0, 120)}` : 'Document Root';
     let inCodeFence = false;
 
@@ -188,7 +209,31 @@ export class StructuralChunker {
       if (headingStack.length > 0) {
         return headingStack.map((h) => h.title).join(' > ');
       }
+      if (codeScopeStack.length > 0) {
+        return codeScopeStack.map((s) => s.name).join('.');
+      }
       return currentLabel;
+    };
+
+    const countBraceDelta = (line: string): number => {
+      let delta = 0;
+      let quote: string | null = null;
+      for (let idx = 0; idx < line.length; idx++) {
+        const ch = line[idx];
+        const prev = idx > 0 ? line[idx - 1] : '';
+        if (quote) {
+          if (ch === quote && prev !== '\\') quote = null;
+          continue;
+        }
+        if (ch === '/' && line[idx + 1] === '/') break;
+        if (ch === "'" || ch === '"' || ch === '`') {
+          quote = ch;
+          continue;
+        }
+        if (ch === '{') delta += 1;
+        else if (ch === '}') delta -= 1;
+      }
+      return delta;
     };
 
     const flushSegment = (endIdxInclusive: number): void => {
@@ -207,15 +252,19 @@ export class StructuralChunker {
 
       const flushPiece = (pieceBody: string, pStartLine: number, pEndLine: number, sChar: number, eChar: number): void => {
         const prefix = this.prependContextHeader
-          ? `[File: ${fileName} | ${heading} | L${pStartLine}-L${pEndLine}]\n`
+          ? `[File: ${fileName} | ${heading} | Dir: ${displayFile} | L${pStartLine}-L${pEndLine}${refsSuffix}]\n`
           : '';
+        const maxAllowedTotalChars = this.maxTokens * this.charsPerToken + 80;
+        const maxPieceChars = Math.max(80, maxAllowedTotalChars - prefix.length);
+        const boundedBody = pieceBody.length > maxPieceChars ? pieceBody.slice(0, maxPieceChars).trimEnd() : pieceBody;
         chunks.push({
-          text: `${prefix}${pieceBody}`,
+          text: `${prefix}${boundedBody}`,
           startChar: sChar,
           endChar: eChar,
           startLine: pStartLine,
           endLine: pEndLine,
           heading,
+          contextHeader: prefix ? prefix.trimEnd() : undefined,
           chunkIndex: chunks.length,
         });
       };
@@ -269,11 +318,28 @@ export class StructuralChunker {
         inCodeFence = !inCodeFence;
       }
 
-      // Detect structural split markers (Markdown headings, PDF [Page N], [Cell N], Code symbols)
+      // Detect structural split markers (Markdown headings, PDF [Page N], [Cell N], Code symbols & methods)
       const mdHeading = !isCode && !inCodeFence ? line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*$/) : null;
       const pageMarker = !inCodeFence ? line.match(/^\[Page\s+(\d+)\]/i) : null;
       const cellMarker = !inCodeFence ? line.match(/^\[Cell\s+(\d+\s*\([^)]+\))\]/i) : null;
-      const codeBoundary = isCode && !inCodeFence ? STRUCTURAL_CODE_BOUNDARY_RE.test(line) : false;
+      const topCodeBoundary = isCode && !inCodeFence ? STRUCTURAL_CODE_BOUNDARY_RE.test(line) : false;
+      const methodBoundary =
+        isCode && !inCodeFence && codeScopeStack.length > 0 && !topCodeBoundary
+          ? line.match(/^\s{2,}(?:public\s+|private\s+|protected\s+|static\s+|async\s+)*([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)\s*(?::[^{=]+)?\s*\{/)
+          : null;
+      const validMethodName =
+        methodBoundary?.[1] &&
+        !new Set(['if', 'for', 'while', 'switch', 'catch', 'constructor']).has(methodBoundary[1])
+          ? methodBoundary[1]
+          : null;
+      const codeBoundary = topCodeBoundary || Boolean(validMethodName);
+
+      if (isPython && line.trim().length > 0 && !line.trim().startsWith('#')) {
+        const lineIndent = line.search(/\S|$/);
+        while (codeScopeStack.length > 0 && codeScopeStack[codeScopeStack.length - 1].indent >= lineIndent) {
+          codeScopeStack.pop();
+        }
+      }
 
       const isStructuralStart = Boolean(mdHeading || pageMarker || cellMarker || (codeBoundary && bufChars > maxBodyChars * 0.35));
 
@@ -291,15 +357,39 @@ export class StructuralChunker {
         headingStack.push({ level, title });
       } else if (pageMarker) {
         headingStack.length = 0;
+        codeScopeStack.length = 0;
         currentLabel = `Page ${pageMarker[1]}`;
       } else if (cellMarker) {
         headingStack.length = 0;
+        codeScopeStack.length = 0;
         currentLabel = `Cell ${cellMarker[1]}`;
       } else if (codeBoundary) {
-        const symMatch = line.match(/(?:function|class|interface|type|enum|def|const|fn|struct)\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
-        if (symMatch?.[1]) {
+        const symMatch = line.match(/(?:function|class|interface|type|enum|def|const|fn|struct|impl)\s+([A-Za-z_$][A-Za-z0-9_$]*)/);
+        const symName = symMatch?.[1] ?? validMethodName;
+        if (symName) {
           headingStack.length = 0;
-          currentLabel = `Symbol: ${symMatch[1]}`;
+          const lineIndent = Math.max(0, line.search(/\S|$/));
+          if (topCodeBoundary && codeScopeStack.length === 0) {
+            codeScopeStack.push({ name: symName, depth: braceDepth, indent: lineIndent });
+          } else if (validMethodName) {
+            if (codeScopeStack.length > 1) {
+              codeScopeStack.pop();
+            }
+            codeScopeStack.push({ name: symName, depth: braceDepth, indent: lineIndent });
+          } else if (isPython) {
+            codeScopeStack.push({ name: symName, depth: braceDepth, indent: lineIndent });
+          } else {
+            codeScopeStack.length = 0;
+            codeScopeStack.push({ name: symName, depth: braceDepth, indent: lineIndent });
+          }
+          currentLabel = `Symbol: ${codeScopeStack.map((s) => s.name).join('.')}`;
+        }
+      }
+
+      if (isCode && !isPython && !inCodeFence) {
+        braceDepth = Math.max(0, braceDepth + countBraceDelta(line));
+        while (codeScopeStack.length > 0 && braceDepth <= codeScopeStack[codeScopeStack.length - 1].depth && !codeBoundary) {
+          codeScopeStack.pop();
         }
       }
 
@@ -330,3 +420,5 @@ export class StructuralChunker {
     return chunks;
   }
 }
+
+export const ContextualChunker = StructuralChunker;

@@ -3,7 +3,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { DatabaseSync as NodeSqliteDatabase } from 'node:sqlite';
 import { suppressSqliteExperimentalWarning } from '../../shared/utils/processWarnings';
-import { GraphImpactReference } from '../../shared/contracts';
+import {
+  AssociativeBoostResult,
+  FileConnectionsSummary,
+  GraphImpactReference,
+  SearchScopeFilter,
+  WorkspaceCollectionGroup,
+  WorkspaceGraphEdge,
+  WorkspaceGraphMap,
+  WorkspaceGraphNode,
+} from '../../shared/contracts';
 import { ExtractedLink, ExtractedSymbol, StructuralChunk } from '../../llm/services/StructuralChunker';
 
 export interface KnowledgeGraphChunkRecord {
@@ -395,12 +404,127 @@ export class WorkspaceKnowledgeGraph {
     });
   }
 
-  searchLexical(query: string, topK: number = 10): KnowledgeGraphChunkRecord[] {
+  private buildScopeWhere(
+    pathExpr: string,
+    fileTypeExpr: string | null,
+    scopeFilter?: SearchScopeFilter
+  ): { clause: string; params: Array<string | number> } {
+    if (!scopeFilter) {
+      return { clause: '', params: [] };
+    }
+
+    const conditions: string[] = [];
+    const params: Array<string | number> = [];
+
+    if (scopeFilter.folderPath && scopeFilter.folderPath.trim().length > 0) {
+      const resolvedFolder = path.resolve(scopeFilter.folderPath).replace(/[\\/]+$/, '');
+      const folderLower = resolvedFolder.toLowerCase();
+      const prefixWithSlash = `${folderLower}/`;
+      const prefixWithBackslash = `${folderLower}\\`;
+      conditions.push(
+        `(LOWER(${pathExpr}) = ? OR INSTR(LOWER(${pathExpr}), ?) = 1 OR INSTR(LOWER(${pathExpr}), ?) = 1)`
+      );
+      params.push(folderLower, prefixWithSlash, prefixWithBackslash);
+    }
+
+    if (Array.isArray(scopeFilter.filePaths) && scopeFilter.filePaths.length > 0) {
+      const cleanedPaths = scopeFilter.filePaths
+        .map((p) => path.resolve(p).toLowerCase())
+        .filter(Boolean);
+      if (cleanedPaths.length === 0) {
+        return { clause: ' AND 1 = 0', params: [] };
+      }
+      const placeholders = cleanedPaths.map(() => '?').join(', ');
+      conditions.push(`LOWER(${pathExpr}) IN (${placeholders})`);
+      params.push(...cleanedPaths);
+    }
+
+    if (Array.isArray(scopeFilter.fileExtensions) && scopeFilter.fileExtensions.length > 0 && fileTypeExpr) {
+      const cleanedExts = scopeFilter.fileExtensions
+        .map((e) => e.trim().toLowerCase().replace(/^\./, ''))
+        .filter(Boolean);
+      if (cleanedExts.length === 0) {
+        return { clause: ' AND 1 = 0', params: [] };
+      }
+      const placeholders = cleanedExts.map(() => '?').join(', ');
+      conditions.push(`LOWER(${fileTypeExpr}) IN (${placeholders})`);
+      params.push(...cleanedExts);
+    }
+
+    if (conditions.length === 0) {
+      return { clause: '', params: [] };
+    }
+
+    return {
+      clause: ` AND ${conditions.join(' AND ')}`,
+      params,
+    };
+  }
+
+  getFilesInScope(scopeFilter?: SearchScopeFilter, limit: number = 10000): string[] {
+    const db = this.getDb();
+    const scope = this.buildScopeWhere('path', 'file_type', scopeFilter);
+    const rows = db
+      .prepare(`SELECT path FROM files WHERE 1 = 1${scope.clause} ORDER BY path ASC LIMIT ?`)
+      .all(...scope.params, limit) as Array<{ path: string }>;
+    return rows.map((r) => r.path);
+  }
+
+  getChunksForFile(filePath: string, limit: number = 8): KnowledgeGraphChunkRecord[] {
+    const db = this.getDb();
+    const resolved = path.resolve(filePath);
+    const rows = db.prepare(`
+      SELECT
+        id,
+        file_path,
+        chunk_index,
+        start_char,
+        end_char,
+        start_line,
+        end_line,
+        heading,
+        chunk_text,
+        indexed_at
+      FROM chunks
+      WHERE LOWER(file_path) = LOWER(?) OR file_path = ?
+      ORDER BY chunk_index ASC
+      LIMIT ?
+    `).all(resolved, filePath, limit) as Array<{
+      id: string;
+      file_path: string;
+      chunk_index: number;
+      start_char: number;
+      end_char: number;
+      start_line: number;
+      end_line: number;
+      heading: string;
+      chunk_text: string;
+      indexed_at: number;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      filePath: row.file_path,
+      chunkIndex: row.chunk_index,
+      startChar: row.start_char,
+      endChar: row.end_char,
+      startLine: row.start_line,
+      endLine: row.end_line,
+      heading: row.heading,
+      chunkText: row.chunk_text,
+      indexedAt: row.indexed_at,
+      bm25Score: 0,
+    }));
+  }
+
+  searchLexical(query: string, topK: number = 10, scopeFilter?: SearchScopeFilter): KnowledgeGraphChunkRecord[] {
     if (topK <= 0) return [];
     const safeMatch = buildSafeFtsQuery(query);
     if (!safeMatch) return [];
 
     const db = this.getDb();
+    const needsFilesJoin = Boolean(scopeFilter?.fileExtensions && scopeFilter.fileExtensions.length > 0);
+    const scope = this.buildScopeWhere('c.file_path', needsFilesJoin ? 'f.file_type' : null, scopeFilter);
     try {
       const rows = db.prepare(`
         SELECT
@@ -417,10 +541,11 @@ export class WorkspaceKnowledgeGraph {
           bm25(chunks_fts, 0.0, 1.5, 1.2, 1.0) AS raw_bm25
         FROM chunks_fts
         JOIN chunks c ON c.id = chunks_fts.chunk_id
-        WHERE chunks_fts MATCH ?
+        ${needsFilesJoin ? 'LEFT JOIN files f ON f.path = c.file_path' : ''}
+        WHERE chunks_fts MATCH ?${scope.clause}
         ORDER BY raw_bm25 ASC
         LIMIT ?
-      `).all(safeMatch, topK) as Array<{
+      `).all(safeMatch, ...scope.params, topK) as Array<{
         id: string;
         file_path: string;
         chunk_index: number;
@@ -578,7 +703,7 @@ export class WorkspaceKnowledgeGraph {
            )
          )
          OR (
-           kind IN ('import', 'markdown_link')
+           kind IN ('import', 'mdlink', 'markdown_link')
            AND (
              LOWER(target_ref) = ?
              OR LOWER(target_ref) LIKE ?
@@ -658,7 +783,7 @@ export class WorkspaceKnowledgeGraph {
           targetRef: link.targetRef,
           kind: link.kind,
           lineNumber: link.lineNumber,
-          isMarkdownLink: link.kind === 'wikilink' || link.kind === 'markdown_link',
+          isMarkdownLink: link.kind === 'wikilink' || link.kind === 'mdlink' || link.kind === 'markdown_link',
         });
       }
     }
@@ -701,6 +826,427 @@ export class WorkspaceKnowledgeGraph {
         chunkCount: Number(r.chunk_count),
         indexedAt: Number(r.indexed_at),
       })),
+    };
+  }
+
+  private buildCanonicalEdgeAdjacency(db: NodeSqliteDatabase): {
+    allFiles: Array<{ path: string; fileType: string; chunkCount: number }>;
+    byKey: Map<string, string>;
+    edges: WorkspaceGraphEdge[];
+    adj: Map<string, Set<string>>;
+  } {
+    const fileRows = db
+      .prepare('SELECT path, file_type, chunk_count FROM files ORDER BY path ASC')
+      .all() as Array<{ path: string; file_type: string; chunk_count: number }>;
+
+    const byKey = new Map<string, string>();
+    const byBasename = new Map<string, string[]>();
+    const byStem = new Map<string, string[]>();
+
+    for (const row of fileRows) {
+      const key = this.normalizeLookupPath(row.path);
+      byKey.set(key, row.path);
+
+      const base = path.basename(row.path).toLowerCase();
+      const baseList = byBasename.get(base) ?? [];
+      baseList.push(row.path);
+      byBasename.set(base, baseList);
+
+      const stem = path.basename(row.path, path.extname(row.path)).toLowerCase();
+      if (stem) {
+        const stemList = byStem.get(stem) ?? [];
+        stemList.push(row.path);
+        byStem.set(stem, stemList);
+      }
+    }
+
+    const resolveEdgeTarget = (sourcePath: string, targetRef: string, targetPath: string | null, kind: string): string | null => {
+      if (targetPath) {
+        const hit = byKey.get(this.normalizeLookupPath(targetPath));
+        if (hit) return hit;
+        for (const ext of ['.md', '.markdown', '.ts', '.tsx', '.js', '.jsx', '.py', '.json']) {
+          const extHit = byKey.get(this.normalizeLookupPath(`${targetPath}${ext}`));
+          if (extHit) return extHit;
+        }
+      }
+
+      const trimmed = targetRef.split('|')[0].split('#')[0].split('?')[0].trim();
+      if (!trimmed) return null;
+
+      if (trimmed.startsWith('./') || trimmed.startsWith('../')) {
+        const baseCand = path.resolve(path.dirname(sourcePath), trimmed);
+        for (const ext of ['', '.md', '.markdown', '.ts', '.tsx', '.js', '.jsx', '.py', '.json']) {
+          const hit = byKey.get(this.normalizeLookupPath(ext ? `${baseCand}${ext}` : baseCand));
+          if (hit) return hit;
+        }
+      }
+
+      const cleanedBase = path.basename(trimmed).toLowerCase();
+      if (cleanedBase) {
+        const exactBaseMatches = byBasename.get(cleanedBase);
+        if (exactBaseMatches && exactBaseMatches.length === 1) {
+          return exactBaseMatches[0];
+        }
+        const cleanedStem = path.basename(trimmed, path.extname(trimmed)).toLowerCase();
+        const stemMatches = byStem.get(cleanedStem);
+        if (kind === 'wikilink' && stemMatches && stemMatches.length > 0) {
+          return stemMatches[0];
+        }
+        if (stemMatches && stemMatches.length === 1) {
+          return stemMatches[0];
+        }
+      }
+
+      return null;
+    };
+
+    const linkRows = db
+      .prepare('SELECT source_path, target_ref, target_path, kind, line_number FROM links')
+      .all() as Array<{
+        source_path: string;
+        target_ref: string;
+        target_path: string | null;
+        kind: string;
+        line_number: number;
+      }>;
+
+    const adj = new Map<string, Set<string>>();
+    const edges: WorkspaceGraphEdge[] = [];
+    const seenEdgeKeys = new Set<string>();
+
+    const addNeighbor = (a: string, b: string): void => {
+      if (a === b) return;
+      let setA = adj.get(a);
+      if (!setA) {
+        setA = new Set<string>();
+        adj.set(a, setA);
+      }
+      setA.add(b);
+    };
+
+    for (const row of linkRows) {
+      const canonicalSource = byKey.get(this.normalizeLookupPath(row.source_path)) ?? row.source_path;
+      const canonicalTarget = resolveEdgeTarget(canonicalSource, row.target_ref, row.target_path, row.kind);
+      if (!canonicalTarget || canonicalTarget === canonicalSource) {
+        continue;
+      }
+
+      addNeighbor(canonicalSource, canonicalTarget);
+      addNeighbor(canonicalTarget, canonicalSource);
+
+      const dedup = `${canonicalSource}->${canonicalTarget}:${row.kind}:${row.line_number}`;
+      if (!seenEdgeKeys.has(dedup)) {
+        seenEdgeKeys.add(dedup);
+        edges.push({
+          source: canonicalSource,
+          target: canonicalTarget,
+          targetRef: row.target_ref,
+          kind: row.kind,
+          lineNumber: Number(row.line_number),
+        });
+      }
+    }
+
+    return {
+      allFiles: fileRows.map((r) => ({
+        path: r.path,
+        fileType: r.file_type,
+        chunkCount: Number(r.chunk_count),
+      })),
+      byKey,
+      edges,
+      adj,
+    };
+  }
+
+  /**
+   * 2-hop hub-damped Personalized PageRank (HippoRAG-lite associative retrieval).
+   * Traverses outgoing links and incoming backlinks up to `maxHops` (default 2) with a
+   * `1 / sqrt(degree)` hub penalty so high-degree index files do not flood specific topics.
+   */
+  computeAssociativeBoosts(
+    seedFilePaths: string[],
+    options: { maxHops?: 1 | 2; damping?: number; maxBoosts?: number; excludeSeeds?: boolean } = {}
+  ): AssociativeBoostResult[] {
+    if (!Array.isArray(seedFilePaths) || seedFilePaths.length === 0) {
+      return [];
+    }
+
+    const maxHops = options.maxHops ?? 2;
+    const damping = Math.max(0.1, Math.min(0.95, options.damping ?? 0.65));
+    const maxBoosts = Math.max(1, options.maxBoosts ?? 16);
+    const excludeSeeds = options.excludeSeeds ?? true;
+
+    const db = this.getDb();
+    const { byKey, adj } = this.buildCanonicalEdgeAdjacency(db);
+
+    const seedMap = new Map<string, number>();
+    const canonicalSeeds: string[] = [];
+    seedFilePaths.forEach((raw, idx) => {
+      if (!raw) return;
+      const canonical = byKey.get(this.normalizeLookupPath(raw)) ?? raw;
+      if (!seedMap.has(canonical)) {
+        // Earlier top-ranked retrieval seeds carry stronger personalization mass
+        seedMap.set(canonical, 1 / Math.sqrt(idx + 1));
+        canonicalSeeds.push(canonical);
+      }
+    });
+
+    const totalSeedWeight = Array.from(seedMap.values()).reduce((s, w) => s + w, 0) || 1;
+    const hop1Mass = new Map<string, number>();
+    const viaMap = new Map<string, { viaPath: string; score: number }>();
+
+    // Hop 1 propagation
+    for (const seed of canonicalSeeds) {
+      const seedMass = (seedMap.get(seed) ?? 0) / totalSeedWeight;
+      const neighbors = adj.get(seed);
+      if (!neighbors || neighbors.size === 0) continue;
+      const penalty = Math.sqrt(neighbors.size);
+      for (const nb of neighbors) {
+        const contribution = (seedMass * damping) / penalty;
+        hop1Mass.set(nb, (hop1Mass.get(nb) ?? 0) + contribution);
+        const prev = viaMap.get(nb);
+        if (!prev || contribution > prev.score) {
+          viaMap.set(nb, { viaPath: seed, score: contribution });
+        }
+      }
+    }
+
+    const totalScores = new Map<string, number>();
+    const minHop = new Map<string, 1 | 2>();
+
+    for (const [node, score] of hop1Mass.entries()) {
+      totalScores.set(node, score);
+      minHop.set(node, 1);
+    }
+
+    // Hop 2 propagation
+    if (maxHops >= 2) {
+      for (const [hop1Node, mass] of hop1Mass.entries()) {
+        if (seedMap.has(hop1Node)) continue;
+        const neighbors = adj.get(hop1Node);
+        if (!neighbors || neighbors.size === 0) continue;
+        const penalty = Math.sqrt(neighbors.size);
+        for (const nb of neighbors) {
+          const contribution = (mass * damping) / penalty;
+          totalScores.set(nb, (totalScores.get(nb) ?? 0) + contribution);
+          if (!minHop.has(nb)) {
+            minHop.set(nb, 2);
+            viaMap.set(nb, { viaPath: hop1Node, score: contribution });
+          }
+        }
+      }
+    }
+
+    const results: AssociativeBoostResult[] = [];
+    for (const [filePath, score] of totalScores.entries()) {
+      if (excludeSeeds && seedMap.has(filePath)) {
+        continue;
+      }
+      if (score <= 0) continue;
+      results.push({
+        filePath,
+        score,
+        hopDistance: minHop.get(filePath) ?? 2,
+        viaPath: viaMap.get(filePath)?.viaPath,
+      });
+    }
+
+    return results.sort((a, b) => b.score - a.score).slice(0, maxBoosts);
+  }
+
+  getWorkspaceGraphMap(rootPrefix?: string, maxNodes: number = 120): WorkspaceGraphMap {
+    const db = this.getDb();
+    const { allFiles, edges } = this.buildCanonicalEdgeAdjacency(db);
+
+    const normalizedPrefix = rootPrefix ? this.normalizeLookupPath(rootPrefix).replace(/[\\/]+$/, '') : null;
+    const inRoot = (candidate: string): boolean => {
+      if (!normalizedPrefix) return true;
+      const norm = this.normalizeLookupPath(candidate);
+      return (
+        norm === normalizedPrefix ||
+        norm.startsWith(`${normalizedPrefix}/`) ||
+        norm.startsWith(`${normalizedPrefix}\\`)
+      );
+    };
+
+    const scopedFiles = allFiles.filter((f) => inRoot(f.path));
+    const scopedSet = new Set(scopedFiles.map((f) => f.path));
+
+    const scopedEdges = edges.filter((e) => scopedSet.has(e.source) && scopedSet.has(e.target));
+    const inDeg = new Map<string, number>();
+    const outDeg = new Map<string, number>();
+    for (const edge of scopedEdges) {
+      outDeg.set(edge.source, (outDeg.get(edge.source) ?? 0) + 1);
+      inDeg.set(edge.target, (inDeg.get(edge.target) ?? 0) + 1);
+    }
+
+    const symbolRows = db
+      .prepare('SELECT file_path, symbol_name FROM symbols ORDER BY line_number ASC')
+      .all() as Array<{ file_path: string; symbol_name: string }>;
+    const symbolsByFile = new Map<string, string[]>();
+    for (const row of symbolRows) {
+      const list = symbolsByFile.get(row.file_path) ?? [];
+      if (list.length < 4 && !list.includes(row.symbol_name)) {
+        list.push(row.symbol_name);
+        symbolsByFile.set(row.file_path, list);
+      }
+    }
+
+    const rankedNodes: WorkspaceGraphNode[] = scopedFiles
+      .map((f) => ({
+        path: f.path,
+        name: path.basename(f.path),
+        fileType: f.fileType,
+        chunkCount: f.chunkCount,
+        inDegree: inDeg.get(f.path) ?? 0,
+        outDegree: outDeg.get(f.path) ?? 0,
+        topSymbols: symbolsByFile.get(f.path) ?? [],
+        folder: path.dirname(f.path),
+      }))
+      .sort((a, b) => (b.inDegree + b.outDegree) - (a.inDegree + a.outDegree) || a.name.localeCompare(b.name))
+      .slice(0, maxNodes);
+
+    const visiblePaths = new Set(rankedNodes.map((n) => n.path));
+    return {
+      rootPrefix: rootPrefix ?? null,
+      nodes: rankedNodes,
+      edges: scopedEdges.filter((e) => visiblePaths.has(e.source) && visiblePaths.has(e.target)),
+      totalFilesIndexed: scopedFiles.length,
+    };
+  }
+
+  getSemanticCollections(rootPrefix?: string): WorkspaceCollectionGroup[] {
+    const db = this.getDb();
+    const { allFiles, edges } = this.buildCanonicalEdgeAdjacency(db);
+
+    const normalizedPrefix = rootPrefix ? this.normalizeLookupPath(rootPrefix).replace(/[\\/]+$/, '') : null;
+    const scopedFiles = allFiles.filter((f) => {
+      if (!normalizedPrefix) return true;
+      const norm = this.normalizeLookupPath(f.path);
+      return (
+        norm === normalizedPrefix ||
+        norm.startsWith(`${normalizedPrefix}/`) ||
+        norm.startsWith(`${normalizedPrefix}\\`)
+      );
+    });
+
+    const symbolRows = db
+      .prepare('SELECT file_path, symbol_name FROM symbols ORDER BY line_number ASC')
+      .all() as Array<{ file_path: string; symbol_name: string }>;
+    const fileTopSymbols = new Map<string, string[]>();
+    for (const row of symbolRows) {
+      const arr = fileTopSymbols.get(row.file_path) ?? [];
+      if (arr.length < 3 && !arr.includes(row.symbol_name)) {
+        arr.push(row.symbol_name);
+        fileTopSymbols.set(row.file_path, arr);
+      }
+    }
+
+    const linkScore = new Map<string, number>();
+    for (const e of edges) {
+      linkScore.set(e.source, (linkScore.get(e.source) ?? 0) + 1);
+      linkScore.set(e.target, (linkScore.get(e.target) ?? 0) + 1);
+    }
+
+    const groups = new Map<string, WorkspaceCollectionGroup>();
+    for (const file of scopedFiles) {
+      const rel = normalizedPrefix
+        ? path.relative(path.resolve(rootPrefix!), path.resolve(file.path))
+        : path.basename(path.dirname(file.path));
+      const segments = rel.split(/[\\/]+/).filter(Boolean);
+      const topFolder = segments.length > 1 ? segments[0] : 'Workspace Root';
+      const domainCategory = this.classifyCollectionLabel(topFolder, file.fileType);
+      const groupId = `${domainCategory.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+
+      let group = groups.get(groupId);
+      if (!group) {
+        group = {
+          id: groupId,
+          label: domainCategory,
+          reason: topFolder === 'Workspace Root' ? `Grouped by ${file.fileType || 'document'} domain` : `Clustered under ${topFolder}/ & knowledge links`,
+          files: [],
+          dominantSymbols: [],
+        };
+        groups.set(groupId, group);
+      }
+
+      const syms = fileTopSymbols.get(file.path) ?? [];
+      group.files.push({
+        path: file.path,
+        name: path.basename(file.path),
+        fileType: file.fileType,
+        chunkCount: file.chunkCount,
+        topSymbol: syms[0],
+      });
+      for (const s of syms) {
+        if (group.dominantSymbols.length < 5 && !group.dominantSymbols.includes(s)) {
+          group.dominantSymbols.push(s);
+        }
+      }
+    }
+
+    return Array.from(groups.values())
+      .map((g) => ({
+        ...g,
+        files: g.files.sort((a, b) => (linkScore.get(b.path) ?? 0) - (linkScore.get(a.path) ?? 0) || a.name.localeCompare(b.name)),
+      }))
+      .sort((a, b) => b.files.length - a.files.length || a.label.localeCompare(b.label));
+  }
+
+  private classifyCollectionLabel(folderName: string, fileType: string): string {
+    if (folderName && folderName !== 'Workspace Root' && !folderName.startsWith('.')) {
+      return folderName.charAt(0).toUpperCase() + folderName.slice(1);
+    }
+    const ext = fileType.toLowerCase();
+    if (['ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'cpp', 'c'].includes(ext)) return 'Source Code & Modules';
+    if (['md', 'markdown', 'mdx', 'txt', 'rst'].includes(ext)) return 'Notes & Knowledge Docs';
+    if (['pdf', 'docx'].includes(ext)) return 'Reports & Documents';
+    if (['json', 'yaml', 'yml', 'toml', 'csv', 'tsv', 'sql'].includes(ext)) return 'Structured Data & Config';
+    return 'General Workspace Files';
+  }
+
+  getFileConnections(filePath: string): FileConnectionsSummary {
+    const db = this.getDb();
+    const { byKey } = this.buildCanonicalEdgeAdjacency(db);
+    const canonical = byKey.get(this.normalizeLookupPath(filePath)) ?? path.resolve(filePath);
+
+    const symRows = db
+      .prepare('SELECT symbol_name, kind, line_number FROM symbols WHERE LOWER(file_path) = LOWER(?) ORDER BY line_number ASC LIMIT 60')
+      .all(canonical) as Array<{ symbol_name: string; kind: string; line_number: number }>;
+
+    const outRows = db
+      .prepare('SELECT target_ref, target_path, kind, line_number FROM links WHERE LOWER(source_path) = LOWER(?) ORDER BY line_number ASC LIMIT 60')
+      .all(canonical) as Array<{ target_ref: string; target_path: string | null; kind: string; line_number: number }>;
+
+    const backlinks = this.findBacklinks(canonical, 50).map((b) => ({
+      sourcePath: b.sourcePath,
+      targetRef: b.targetRef,
+      kind: b.kind,
+      lineNumber: b.lineNumber,
+    }));
+
+    const associativeNeighbors = this.computeAssociativeBoosts([canonical], {
+      maxHops: 2,
+      maxBoosts: 12,
+      excludeSeeds: true,
+    });
+
+    return {
+      filePath: canonical,
+      symbols: symRows.map((s) => ({
+        name: s.symbol_name,
+        kind: s.kind,
+        lineNumber: Number(s.line_number),
+      })),
+      outgoingLinks: outRows.map((o) => ({
+        targetRef: o.target_ref,
+        targetPath: o.target_path ?? undefined,
+        kind: o.kind,
+        lineNumber: Number(o.line_number),
+      })),
+      backlinks,
+      associativeNeighbors,
     };
   }
 
