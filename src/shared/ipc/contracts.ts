@@ -8,7 +8,10 @@
 
 import { z } from 'zod';
 import type {
+  AgentTerminationReason,
+  AgentTokenUsage,
   AgentTraceStep,
+  AgentVerificationReport,
   ContentSearchMatch,
   FileConnectionsSummary,
   FileLineRangeResult,
@@ -22,6 +25,7 @@ import type {
   OperationJournalState,
   OrganizeApplyResult,
   OrganizePlanResult,
+  PersistedAgentTraceRecord,
   RetrievalSource,
   SystemPaths,
   UIPreferencesSnapshot,
@@ -279,6 +283,8 @@ export const IPC_SCHEMAS = {
           size: z.number().int().nonnegative(),
           category: z.string().min(1).max(120),
           reason: z.string().min(1).max(300),
+          confidence: z.number().min(0).max(1).optional(),
+          classificationSource: z.enum(['llm', 'semantic', 'deterministic', 'deduplicate']).optional(),
         })
       )
       .min(1)
@@ -294,6 +300,12 @@ export const IPC_SCHEMAS = {
   ]),
   'LLM:CHECK_OLLAMA': optionalEmptyObjectSchema,
   'LLM:CLEAR_INDEX': optionalEmptyObjectSchema,
+  'LLM:GET_TRACES': z
+    .object({
+      limit: z.number().int().min(1).max(100).optional(),
+    })
+    .optional(),
+  'LLM:CLEAR_TRACES': optionalEmptyObjectSchema,
   'LLM:LIST_MODELS': optionalEmptyObjectSchema,
   'LLM:SET_MODEL_CONFIG': z.object({
     provider: z.enum(['ollama', 'openai_compatible']).optional(),
@@ -364,6 +376,12 @@ export interface IPCResponseMap {
     agentSteps?: AgentTraceStep[];
     offlineSynthesis?: boolean;
     proposedPlan?: OrganizePlanResult;
+    traceId?: string;
+    terminationReason?: AgentTerminationReason;
+    verification?: AgentVerificationReport;
+    usage?: AgentTokenUsage;
+    retrievalMs?: number;
+    generationMs?: number;
   };
   'LLM:ABORT_QUERY': { aborted: boolean };
   'AI:ORGANIZE_PLAN': OrganizePlanResult;
@@ -374,6 +392,8 @@ export interface IPCResponseMap {
   'LLM:INDEX_FILE': { success: boolean; chunksCreated?: number; error?: string };
   'LLM:CHECK_OLLAMA': { available: boolean; models: string[] };
   'LLM:CLEAR_INDEX': { success: boolean; error?: string };
+  'LLM:GET_TRACES': { traces: PersistedAgentTraceRecord[] };
+  'LLM:CLEAR_TRACES': { cleared: number };
   'LLM:LIST_MODELS': LLMModelsSnapshot;
   'LLM:SET_MODEL_CONFIG': { success: boolean; config: LLMModelsSnapshot };
   'CLIPBOARD:WRITE_TEXT': { success: boolean };
@@ -695,6 +715,20 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     schema: IPC_SCHEMAS['LLM:CLEAR_INDEX'],
     pathFields: [],
     rateLimit: LLM_INDEX_RATE_LIMIT,
+  },
+  'LLM:GET_TRACES': {
+    channel: 'LLM:GET_TRACES',
+    group: 'llm',
+    schema: IPC_SCHEMAS['LLM:GET_TRACES'],
+    pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
+  },
+  'LLM:CLEAR_TRACES': {
+    channel: 'LLM:CLEAR_TRACES',
+    group: 'llm',
+    schema: IPC_SCHEMAS['LLM:CLEAR_TRACES'],
+    pathFields: [],
+    rateLimit: LLM_RATE_LIMIT,
   },
   'LLM:LIST_MODELS': {
     channel: 'LLM:LIST_MODELS',

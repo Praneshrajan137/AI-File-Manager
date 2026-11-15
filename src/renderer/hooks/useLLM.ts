@@ -1,6 +1,9 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type {
+  AgentTerminationReason,
+  AgentTokenUsage,
   AgentTraceStep,
+  AgentVerificationReport,
   CopilotContextScope,
   CopilotQueryMode,
   LLMModelsSnapshot,
@@ -19,6 +22,12 @@ export interface Message {
   agentSteps?: AgentTraceStep[];
   offlineSynthesis?: boolean;
   proposedPlan?: OrganizePlanResult;
+  traceId?: string;
+  terminationReason?: AgentTerminationReason;
+  verification?: AgentVerificationReport;
+  usage?: AgentTokenUsage;
+  retrievalMs?: number;
+  generationMs?: number;
   timestamp: number;
 }
 
@@ -179,7 +188,13 @@ export function useLLM(): UseLLMReturn {
         (result?.sources && result.sources.length > 0) ||
         (result?.agentSteps && result.agentSteps.length > 0) ||
         result?.offlineSynthesis !== undefined ||
-        result?.proposedPlan
+        result?.proposedPlan ||
+        result?.verification ||
+        result?.traceId ||
+        result?.terminationReason ||
+        result?.usage ||
+        result?.retrievalMs !== undefined ||
+        result?.generationMs !== undefined
       ) {
         const structuredSources = result.sources ?? [];
         const uniquePaths = Array.from(new Set(structuredSources.map((s) => s.filePath)));
@@ -190,6 +205,12 @@ export function useLLM(): UseLLMReturn {
           agentSteps: result.agentSteps ?? existing?.agentSteps,
           offlineSynthesis: result.offlineSynthesis ?? existing?.offlineSynthesis,
           proposedPlan: result.proposedPlan ?? existing?.proposedPlan,
+          traceId: result.traceId ?? existing?.traceId,
+          terminationReason: result.terminationReason ?? existing?.terminationReason,
+          verification: result.verification ?? existing?.verification,
+          usage: result.usage ?? existing?.usage,
+          retrievalMs: result.retrievalMs ?? existing?.retrievalMs,
+          generationMs: result.generationMs ?? existing?.generationMs,
         }));
       }
 

@@ -87,6 +87,11 @@ export class RuntimeDiagnostics {
     avgRetrievalMs: 0,
     avgGenerationMs: 0,
     lastError: null,
+    agentRuns: 0,
+    parallelToolBatches: 0,
+    cyclesPrevented: 0,
+    ungroundedCitationsBlocked: 0,
+    totalTokensConsumed: 0,
   };
 
   private resilience: ResilienceDiagnostics = {
@@ -181,6 +186,32 @@ export class RuntimeDiagnostics {
     this.totalGenerationMs += params.generationMs;
     this.llm.avgRetrievalMs = Math.round(this.totalRetrievalMs / this.llm.queriesExecuted);
     this.llm.avgGenerationMs = Math.round(this.totalGenerationMs / this.llm.queriesExecuted);
+  }
+
+  recordOrchestratorOutcome(params: {
+    isAgentMode?: boolean;
+    parallelBatches?: number;
+    cyclesPrevented?: number;
+    ungroundedBlocked?: number;
+    tokensConsumed?: number;
+  }): void {
+    if (params.isAgentMode) {
+      this.llm.agentRuns = (this.llm.agentRuns ?? 0) + 1;
+    }
+    if (params.parallelBatches && params.parallelBatches > 0) {
+      this.llm.parallelToolBatches = (this.llm.parallelToolBatches ?? 0) + params.parallelBatches;
+    }
+    if (params.cyclesPrevented && params.cyclesPrevented > 0) {
+      this.llm.cyclesPrevented = (this.llm.cyclesPrevented ?? 0) + params.cyclesPrevented;
+    }
+    if (params.ungroundedBlocked && params.ungroundedBlocked > 0) {
+      this.llm.ungroundedCitationsBlocked =
+        (this.llm.ungroundedCitationsBlocked ?? 0) + params.ungroundedBlocked;
+    }
+    if (params.tokensConsumed && params.tokensConsumed > 0) {
+      this.llm.totalTokensConsumed =
+        (this.llm.totalTokensConsumed ?? 0) + params.tokensConsumed;
+    }
   }
 
   recordWalRecovery(): void {

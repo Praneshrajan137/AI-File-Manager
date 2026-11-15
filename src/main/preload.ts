@@ -19,7 +19,10 @@ import {
   wrapIPCSuccess,
 } from '@shared/ipc/envelope';
 import type {
+  AgentTerminationReason,
+  AgentTokenUsage,
   AgentTraceStep,
+  AgentVerificationReport,
   CopilotContextScope,
   CopilotQueryMode,
   FileDeleteMode,
@@ -231,6 +234,12 @@ const electronAPI = {
       let streamedAgentSteps: AgentTraceStep[] | undefined;
       let streamedOfflineSynthesis: boolean | undefined;
       let streamedProposedPlan: OrganizePlanResult | undefined;
+      let streamedTraceId: string | undefined;
+      let streamedTerminationReason: AgentTerminationReason | undefined;
+      let streamedVerification: AgentVerificationReport | undefined;
+      let streamedUsage: AgentTokenUsage | undefined;
+      let streamedRetrievalMs: number | undefined;
+      let streamedGenerationMs: number | undefined;
       let safetyTimer: ReturnType<typeof setTimeout> | null = null;
       let resolveEnd: (() => void) | null = null;
       const endPromise = new Promise<void>((resolve) => {
@@ -257,6 +266,12 @@ const electronAPI = {
           agentSteps?: AgentTraceStep[];
           offlineSynthesis?: boolean;
           proposedPlan?: OrganizePlanResult;
+          traceId?: string;
+          terminationReason?: AgentTerminationReason;
+          verification?: AgentVerificationReport;
+          usage?: AgentTokenUsage;
+          retrievalMs?: number;
+          generationMs?: number;
         }
       ): void => {
         if (Array.isArray(payload?.sources)) {
@@ -270,6 +285,24 @@ const electronAPI = {
         }
         if (payload?.proposedPlan) {
           streamedProposedPlan = payload.proposedPlan;
+        }
+        if (typeof payload?.traceId === 'string') {
+          streamedTraceId = payload.traceId;
+        }
+        if (payload?.terminationReason) {
+          streamedTerminationReason = payload.terminationReason;
+        }
+        if (payload?.verification) {
+          streamedVerification = payload.verification;
+        }
+        if (payload?.usage) {
+          streamedUsage = payload.usage;
+        }
+        if (typeof payload?.retrievalMs === 'number') {
+          streamedRetrievalMs = payload.retrievalMs;
+        }
+        if (typeof payload?.generationMs === 'number') {
+          streamedGenerationMs = payload.generationMs;
         }
         streamEnded = true;
         if (safetyTimer) {
@@ -307,7 +340,13 @@ const electronAPI = {
           ((streamedSources && !result.data.sources) ||
             (streamedAgentSteps && !result.data.agentSteps) ||
             (streamedOfflineSynthesis !== undefined && result.data.offlineSynthesis === undefined) ||
-            (streamedProposedPlan && !result.data.proposedPlan))
+            (streamedProposedPlan && !result.data.proposedPlan) ||
+            (streamedTraceId && !result.data.traceId) ||
+            (streamedTerminationReason && !result.data.terminationReason) ||
+            (streamedVerification && !result.data.verification) ||
+            (streamedUsage && !result.data.usage) ||
+            (streamedRetrievalMs !== undefined && result.data.retrievalMs === undefined) ||
+            (streamedGenerationMs !== undefined && result.data.generationMs === undefined))
         ) {
           return wrapIPCSuccess({
             ...result.data,
@@ -315,6 +354,12 @@ const electronAPI = {
             agentSteps: result.data.agentSteps ?? streamedAgentSteps,
             offlineSynthesis: result.data.offlineSynthesis ?? streamedOfflineSynthesis,
             proposedPlan: result.data.proposedPlan ?? streamedProposedPlan,
+            traceId: result.data.traceId ?? streamedTraceId,
+            terminationReason: result.data.terminationReason ?? streamedTerminationReason,
+            verification: result.data.verification ?? streamedVerification,
+            usage: result.data.usage ?? streamedUsage,
+            retrievalMs: result.data.retrievalMs ?? streamedRetrievalMs,
+            generationMs: result.data.generationMs ?? streamedGenerationMs,
           });
         }
         return result;
@@ -383,6 +428,12 @@ const electronAPI = {
 
     clearIndex: (): ContractResult<'LLM:CLEAR_INDEX'> =>
       invokeContract('LLM:CLEAR_INDEX'),
+
+    getTraces: (limit?: number): ContractResult<'LLM:GET_TRACES'> =>
+      invokeContract('LLM:GET_TRACES', limit !== undefined ? { limit } : undefined),
+
+    clearTraces: (): ContractResult<'LLM:CLEAR_TRACES'> =>
+      invokeContract('LLM:CLEAR_TRACES'),
 
     listModels: (): ContractResult<'LLM:LIST_MODELS'> =>
       invokeContract('LLM:LIST_MODELS'),

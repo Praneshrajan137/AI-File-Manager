@@ -69,6 +69,11 @@ export interface LlmPipelineDiagnostics {
   lastError: string | null;
   activeProvider?: string;
   activeModel?: string;
+  agentRuns?: number;
+  parallelToolBatches?: number;
+  cyclesPrevented?: number;
+  ungroundedCitationsBlocked?: number;
+  totalTokensConsumed?: number;
 }
 
 export interface IpcChannelMetric {

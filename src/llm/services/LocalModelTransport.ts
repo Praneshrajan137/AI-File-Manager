@@ -11,6 +11,12 @@
 
 export type LocalLLMProvider = 'ollama' | 'openai_compatible';
 
+export interface ChatTokenUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
 export interface LocalChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
@@ -24,6 +30,7 @@ export interface LocalChatMessage {
     };
   }>;
   tool_call_id?: string;
+  usage?: ChatTokenUsage;
 }
 
 export interface LocalModelTransportOptions {
@@ -346,12 +353,31 @@ export class LocalModelTransport {
             tool_calls?: LocalChatMessage['tool_calls'];
           };
         }>;
+        usage?: {
+          prompt_tokens?: number;
+          completion_tokens?: number;
+          total_tokens?: number;
+        };
       };
       const msg = data.choices?.[0]?.message;
+      const usage: ChatTokenUsage | undefined =
+        data.usage &&
+        (typeof data.usage.prompt_tokens === 'number' ||
+          typeof data.usage.completion_tokens === 'number' ||
+          typeof data.usage.total_tokens === 'number')
+          ? {
+              promptTokens: data.usage.prompt_tokens,
+              completionTokens: data.usage.completion_tokens,
+              totalTokens:
+                data.usage.total_tokens ??
+                (data.usage.prompt_tokens ?? 0) + (data.usage.completion_tokens ?? 0),
+            }
+          : undefined;
       return {
         role: 'assistant',
         content: msg?.content ?? '',
         tool_calls: msg?.tool_calls,
+        ...(usage ? { usage } : {}),
       };
     }
 
@@ -378,17 +404,29 @@ export class LocalModelTransport {
     const data = (await res.json()) as {
       message?: LocalChatMessage;
       response?: string;
+      prompt_eval_count?: number;
+      eval_count?: number;
     };
+    const ollamaUsage: ChatTokenUsage | undefined =
+      typeof data.prompt_eval_count === 'number' || typeof data.eval_count === 'number'
+        ? {
+            promptTokens: data.prompt_eval_count,
+            completionTokens: data.eval_count,
+            totalTokens: (data.prompt_eval_count ?? 0) + (data.eval_count ?? 0),
+          }
+        : undefined;
     if (data.message) {
       return {
         role: 'assistant',
         content: data.message.content ?? '',
         tool_calls: data.message.tool_calls,
+        ...(ollamaUsage ? { usage: ollamaUsage } : {}),
       };
     }
     return {
       role: 'assistant',
       content: data.response ?? '',
+      ...(ollamaUsage ? { usage: ollamaUsage } : {}),
     };
   }
 

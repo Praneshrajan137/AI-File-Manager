@@ -1090,6 +1090,49 @@ export type AgentToolName =
   | 'graph_lookup'
   | 'propose_organize_plan';
 
+export type AgentStatePhase =
+  | 'init'
+  | 'route'
+  | 'act'
+  | 'observe'
+  | 'verify'
+  | 'synthesize'
+  | 'completed'
+  | 'aborted'
+  | 'fallback';
+
+export type AgentTerminationReason =
+  | 'answered'
+  | 'step_limit'
+  | 'wall_clock_budget'
+  | 'cycle_broken'
+  | 'aborted'
+  | 'offline_fallback'
+  | 'model_error';
+
+export interface AgentCitationAudit {
+  citedText: string;
+  resolvedPath?: string;
+  verified: boolean;
+  reason: string;
+}
+
+export interface AgentVerificationReport {
+  grounded: boolean;
+  totalCitations: number;
+  verifiedCitations: number;
+  ungroundedCitations: string[];
+  redactionsApplied: number;
+  audits: AgentCitationAudit[];
+  checkedAt: number;
+}
+
+export interface AgentTokenUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
 export interface AgentTraceStep {
   step: number;
   thought?: string;
@@ -1098,6 +1141,10 @@ export interface AgentTraceStep {
   allowed: boolean;
   observationSummary: string;
   durationMs: number;
+  phase?: AgentStatePhase;
+  callId?: string;
+  duplicatePrevented?: boolean;
+  parallelGroupSize?: number;
 }
 
 export interface AgentRunResult {
@@ -1107,6 +1154,37 @@ export interface AgentRunResult {
   stepLimitReached: boolean;
   aborted: boolean;
   proposedPlan?: OrganizePlanResult;
+  traceId?: string;
+  terminationReason?: AgentTerminationReason;
+  verification?: AgentVerificationReport;
+  durationMs?: number;
+  usage?: AgentTokenUsage;
+  duplicateCallsPrevented?: number;
+  promptVersion?: string;
+}
+
+export interface PersistedAgentTraceRecord {
+  traceId: string;
+  createdAt: number;
+  mode: CopilotQueryMode;
+  model: string;
+  provider: string;
+  promptVersion: string;
+  queryPreview: string;
+  status: AgentTerminationReason;
+  durationMs: number;
+  stepCount: number;
+  duplicateCallsPrevented: number;
+  verifiedCitations: number;
+  ungroundedCitationsCount: number;
+  redactionsApplied: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  errorSummary?: string;
+  steps: AgentTraceStep[];
+  sources: RetrievalSource[];
+  verification?: AgentVerificationReport;
 }
 
 export type OrganizeStrategy =
@@ -1127,6 +1205,8 @@ export interface OrganizePlanOperation {
   size: number;
   category: string;
   reason: string;
+  confidence?: number;
+  classificationSource?: 'llm' | 'semantic' | 'deterministic' | 'deduplicate';
 }
 
 export interface OrganizePlanResult {
@@ -1140,6 +1220,8 @@ export interface OrganizePlanResult {
   summary: string;
   linkImpact?: GraphImpactCheckResult;
   repairedLinksCount?: number;
+  batchCount?: number;
+  degradedReason?: string;
 }
 
 export interface OrganizeApplyResult {

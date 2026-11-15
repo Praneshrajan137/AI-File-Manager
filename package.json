@@ -23,6 +23,7 @@
     "lint": "eslint src --ext .ts,.tsx --max-warnings=0",
     "type-check": "tsc --noEmit",
     "eval:rag": "node scripts/eval-real-rag.mjs",
+    "eval:agent": "node scripts/eval-agent.mjs",
     "package": "electron-builder"
   },
   "dependencies": {

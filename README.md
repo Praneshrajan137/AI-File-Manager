@@ -201,10 +201,11 @@ npm run eval:rag
 | **Runtime** | Electron 45 |
 | **Language** | TypeScript 5.3 (strict) |
 | **Frontend** | React 18 + Tailwind CSS (`react-window` virtualization) |
-| **Knowledge & Vector DB** | SQLite WAL + FTS5 (`better-sqlite3`) + LanceDB (embedded) |
+| **Knowledge & Vector DB** | SQLite WAL + FTS5 (Node built-in `node:sqlite`) + LanceDB (embedded) |
 | **LLM Runtimes** | Ollama + OpenAI-Compatible Local (`LM Studio` / `llama.cpp`) + Offline Synthesis |
+| **Agent Orchestration** | State-Machine ReAct (`WorkspaceReActAgent`), Parallel Read Batching, `GroundingVerifier` & `TraceLedger` |
 | **Embeddings & Rerank** | `@huggingface/transformers` v4 (`bge-small-en-v1.5`, Cross-Encoder, ONNX Runtime EP) |
-| **Agent Interop** | Standalone JSON-RPC 2.0 MCP Server (`dist/main/mcpServer.js`) |
+| **Agent Interop** | Standalone JSON-RPC 2.0 MCP `2025-06-18` Server (`dist/main/mcpServer.js`) |
 | **Testing** | Jest + Playwright Electron E2E |
 | **Build** | Webpack 5 + Electron Builder |
 

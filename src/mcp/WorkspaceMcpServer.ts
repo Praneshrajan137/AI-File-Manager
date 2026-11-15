@@ -23,10 +23,15 @@ import { OrganizeStrategy } from '../shared/contracts';
 import { ConfigManager } from '../shared/config';
 import { Logger } from '../shared/logging';
 
-export const MCP_PROTOCOL_VERSION = '2024-11-05';
+export const MCP_PROTOCOL_VERSION = '2025-06-18';
+export const SUPPORTED_MCP_PROTOCOL_VERSIONS = [
+  '2025-06-18',
+  '2025-03-26',
+  '2024-11-05',
+] as const;
 export const MCP_SERVER_INFO = {
   name: 'privatevault-workspace-mcp',
-  version: '0.1.0',
+  version: '0.2.0',
 } as const;
 
 const SKIPPED_WALK_DIRS = new Set([
@@ -56,10 +61,24 @@ export interface JsonRpcResponse {
   };
 }
 
+export interface McpToolAnnotations {
+  title?: string;
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
 export interface McpToolDefinition {
   name: string;
   description: string;
+  annotations?: McpToolAnnotations;
   inputSchema: {
+    type: 'object';
+    properties: Record<string, unknown>;
+    required?: string[];
+  };
+  outputSchema?: {
     type: 'object';
     properties: Record<string, unknown>;
     required?: string[];
@@ -83,11 +102,19 @@ const VALID_ORGANIZE_STRATEGIES = new Set<OrganizeStrategy>([
   'semantic_cluster',
 ]);
 
+const READ_ONLY_TOOL_ANNOTATIONS: McpToolAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
 export const MCP_TOOLS: readonly McpToolDefinition[] = [
   {
     name: 'list_directory',
     description:
       'List files and subdirectories inside an allowed workspace folder (sensitive secret files redacted/omitted).',
+    annotations: { ...READ_ONLY_TOOL_ANNOTATIONS, title: 'List Workspace Directory' },
     inputSchema: {
       type: 'object',
       properties: {
@@ -95,11 +122,21 @@ export const MCP_TOOLS: readonly McpToolDefinition[] = [
       },
       required: ['path'],
     },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string' },
+        count: { type: 'integer' },
+        entries: { type: 'array' },
+      },
+      required: ['directory', 'count', 'entries'],
+    },
   },
   {
     name: 'search_files',
     description:
       'Find matching filenames/paths across allowed workspace roots (respects PathValidator and SecretGuard).',
+    annotations: { ...READ_ONLY_TOOL_ANNOTATIONS, title: 'Search Workspace Filenames' },
     inputSchema: {
       type: 'object',
       properties: {
@@ -109,11 +146,21 @@ export const MCP_TOOLS: readonly McpToolDefinition[] = [
       },
       required: ['query'],
     },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        count: { type: 'integer' },
+        matches: { type: 'array' },
+      },
+      required: ['query', 'count', 'matches'],
+    },
   },
   {
     name: 'search_content',
     description:
       'Search indexed code & document chunks via SQLite FTS5 BM25 with SecretGuard inline redaction.',
+    annotations: { ...READ_ONLY_TOOL_ANNOTATIONS, title: 'Search Workspace Content (FTS5)' },
     inputSchema: {
       type: 'object',
       properties: {
@@ -123,11 +170,21 @@ export const MCP_TOOLS: readonly McpToolDefinition[] = [
       },
       required: ['query'],
     },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        indexed: { type: 'boolean' },
+        matches: { type: 'array' },
+      },
+      required: ['query', 'indexed', 'matches'],
+    },
   },
   {
     name: 'read_file_range',
     description:
       'Read 1-based line range from an allowed file with PathValidator containment and SecretGuard credential redaction.',
+    annotations: { ...READ_ONLY_TOOL_ANNOTATIONS, title: 'Read Redacted File Line Range' },
     inputSchema: {
       type: 'object',
       properties: {
@@ -137,11 +194,23 @@ export const MCP_TOOLS: readonly McpToolDefinition[] = [
       },
       required: ['filePath'],
     },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        startLine: { type: 'integer' },
+        endLine: { type: 'integer' },
+        lines: { type: 'array' },
+        redactionsApplied: { type: 'integer' },
+      },
+      required: ['path', 'startLine', 'endLine', 'lines'],
+    },
   },
   {
     name: 'graph_lookup',
     description:
       'Query WorkspaceKnowledgeGraph stats, code/markdown symbol definitions, backlinks, topic collections, or node/edge topology.',
+    annotations: { ...READ_ONLY_TOOL_ANNOTATIONS, title: 'Query Knowledge Graph' },
     inputSchema: {
       type: 'object',
       properties: {
@@ -155,11 +224,18 @@ export const MCP_TOOLS: readonly McpToolDefinition[] = [
       },
       required: ['kind'],
     },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        indexed: { type: 'boolean' },
+      },
+    },
   },
   {
     name: 'organize_dry_run',
     description:
       'Preview a read-only file organization, semantic clustering, or SHA-256 deduplication plan without mutating disk.',
+    annotations: { ...READ_ONLY_TOOL_ANNOTATIONS, title: 'Preview Dry-Run Organization Plan' },
     inputSchema: {
       type: 'object',
       properties: {
@@ -172,6 +248,17 @@ export const MCP_TOOLS: readonly McpToolDefinition[] = [
         recursive: { type: 'boolean', description: 'Include subdirectories (default false)' },
       },
       required: ['targetDir'],
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        planId: { type: 'string' },
+        targetDir: { type: 'string' },
+        strategy: { type: 'string' },
+        operations: { type: 'array' },
+        summary: { type: 'string' },
+      },
+      required: ['planId', 'targetDir', 'strategy', 'operations', 'summary'],
     },
   },
 ];
@@ -287,16 +374,24 @@ export class WorkspaceMcpServer {
 
     try {
       switch (req.method) {
-        case 'initialize':
+        case 'initialize': {
+          const reqParams = req.params ?? {};
+          const requestedProtocol = asOptionalString(reqParams.protocolVersion);
+          const protocolVersion =
+            requestedProtocol &&
+            (SUPPORTED_MCP_PROTOCOL_VERSIONS as readonly string[]).includes(requestedProtocol)
+              ? requestedProtocol
+              : MCP_PROTOCOL_VERSION;
           return {
             jsonrpc: '2.0',
             id,
             result: {
-              protocolVersion: MCP_PROTOCOL_VERSION,
+              protocolVersion,
               capabilities: { tools: {} },
               serverInfo: MCP_SERVER_INFO,
             },
           };
+        }
 
         case 'ping':
           return { jsonrpc: '2.0', id, result: {} };
@@ -344,7 +439,11 @@ export class WorkspaceMcpServer {
   private async executeTool(
     toolName: string,
     args: Record<string, unknown>
-  ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  ): Promise<{
+    content: Array<{ type: 'text'; text: string }>;
+    structuredContent?: Record<string, unknown>;
+    isError?: boolean;
+  }> {
     try {
       let data: unknown;
       switch (toolName) {
@@ -373,8 +472,14 @@ export class WorkspaceMcpServer {
           };
       }
 
+      const structured =
+        data && typeof data === 'object' && !Array.isArray(data)
+          ? (data as Record<string, unknown>)
+          : undefined;
+
       return {
         content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+        ...(structured ? { structuredContent: structured } : {}),
       };
     } catch (err: unknown) {
       return {
@@ -453,6 +558,36 @@ export class WorkspaceMcpServer {
     const scanRoots = rootArg ? [await this.assertValidatedPath(rootArg)] : this.allowedRoots;
 
     const matches: Array<{ path: string; name: string; isDirectory: boolean }> = [];
+    const seenPaths = new Set<string>();
+    const normalizeSeenKey = (p: string): string =>
+      process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
+
+    if (this.graph) {
+      for (const root of scanRoots) {
+        if (matches.length >= limit) break;
+        const indexedCandidates = this.graph.listIndexedFilePaths(query, root, limit * 2);
+        for (const candidate of indexedCandidates) {
+          if (matches.length >= limit) break;
+          if (isSensitiveSecretFile(candidate).blocked) continue;
+          const validCheck = await this.validator.validateCanonical(candidate);
+          if (!validCheck.valid || !validCheck.canonicalPath) continue;
+          const key = normalizeSeenKey(validCheck.canonicalPath);
+          if (seenPaths.has(key)) continue;
+          try {
+            const stat = await fs.stat(validCheck.canonicalPath);
+            seenPaths.add(key);
+            matches.push({
+              path: validCheck.canonicalPath,
+              name: path.basename(validCheck.canonicalPath),
+              isDirectory: stat.isDirectory(),
+            });
+          } catch {
+            // Skip stale DB paths removed from disk
+          }
+        }
+      }
+    }
+
     const walk = async (dir: string, depth: number): Promise<void> => {
       if (depth > 6 || matches.length >= limit) {
         return;
@@ -472,7 +607,11 @@ export class WorkspaceMcpServer {
         if (!(await this.validator.validateCanonical(fullPath)).valid) continue;
 
         if (entry.name.toLowerCase().includes(query) || fullPath.toLowerCase().includes(query)) {
-          matches.push({ path: fullPath, name: entry.name, isDirectory: entry.isDirectory() });
+          const key = normalizeSeenKey(fullPath);
+          if (!seenPaths.has(key)) {
+            seenPaths.add(key);
+            matches.push({ path: fullPath, name: entry.name, isDirectory: entry.isDirectory() });
+          }
         }
         if (entry.isDirectory() && depth < 6) {
           await walk(fullPath, depth + 1);
@@ -481,8 +620,8 @@ export class WorkspaceMcpServer {
     };
 
     for (const root of scanRoots) {
-      await walk(root, 0);
       if (matches.length >= limit) break;
+      await walk(root, 0);
     }
 
     return { query, count: matches.length, matches };

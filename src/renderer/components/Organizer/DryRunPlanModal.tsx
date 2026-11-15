@@ -281,6 +281,16 @@ export const DryRunPlanModal: React.FC<DryRunPlanModalProps> = ({
           </div>
         )}
 
+        {plan?.degradedReason && (
+          <div
+            data-testid="plan-degraded-banner"
+            className="mx-5 mt-3 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300 flex items-center gap-2"
+          >
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>{plan.degradedReason}</span>
+          </div>
+        )}
+
         {/* Summary & Error Banner */}
         {errorMessage && (
           <div
@@ -339,6 +349,17 @@ export const DryRunPlanModal: React.FC<DryRunPlanModalProps> = ({
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-200">
                           {op.category}
                         </span>
+                        {op.classificationSource && (
+                          <span
+                            data-testid="plan-op-source-badge"
+                            className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300"
+                          >
+                            {op.classificationSource}
+                            {op.confidence !== undefined
+                              ? ` · ${Math.round(op.confidence * 100)}%`
+                              : ''}
+                          </span>
+                        )}
                         <span className="text-[11px] font-mono text-primary-500 dark:text-slate-400">
                           sha256:{op.sourceSha256.slice(0, 8)}
                         </span>

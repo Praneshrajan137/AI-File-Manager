@@ -3,7 +3,10 @@
  */
 
 import type {
+  AgentTerminationReason,
+  AgentTokenUsage,
   AgentTraceStep,
+  AgentVerificationReport,
   ContentSearchMatch,
   CopilotContextScope,
   CopilotQueryMode,
@@ -22,6 +25,7 @@ import type {
   OrganizePlanOperation,
   OrganizePlanResult,
   OrganizeStrategy,
+  PersistedAgentTraceRecord,
   RetrievalSource,
   SystemPaths,
   UIPreferencesSnapshot,
@@ -127,8 +131,16 @@ interface ElectronAPI {
       agentSteps?: AgentTraceStep[];
       offlineSynthesis?: boolean;
       proposedPlan?: OrganizePlanResult;
+      traceId?: string;
+      terminationReason?: AgentTerminationReason;
+      verification?: AgentVerificationReport;
+      usage?: AgentTokenUsage;
+      retrievalMs?: number;
+      generationMs?: number;
     }>;
     abortQuery?: (channel: string) => Promise<{ aborted: boolean }>;
+    getTraces?: (limit?: number) => Promise<{ traces: PersistedAgentTraceRecord[] }>;
+    clearTraces?: () => Promise<{ cleared: number }>;
     getIndexingStatus: () => Promise<IndexingStatus>;
     onIndexingProgress: (callback: (status: IndexingStatus) => void) => () => void;
     startIndexing: (

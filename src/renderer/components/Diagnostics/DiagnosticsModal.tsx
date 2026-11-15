@@ -12,6 +12,7 @@ import {
   Copy,
   Check,
 } from 'lucide-react';
+import type { PersistedAgentTraceRecord } from '@shared/contracts';
 import type { RuntimeDiagnosticsSnapshot } from '@shared/diagnostics';
 
 interface DiagnosticsModalProps {
@@ -44,7 +45,9 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
   const [snapshot, setSnapshot] = useState<RuntimeDiagnosticsSnapshot | null>(
     initialSnapshot ?? null
   );
+  const [traces, setTraces] = useState<PersistedAgentTraceRecord[]>([]);
   const [loading, setLoading] = useState(false);
+  const [clearingTraces, setClearingTraces] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedMcp, setCopiedMcp] = useState(false);
   const isOpenRef = useRef(isOpen);
@@ -56,11 +59,17 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const next = await window.electronAPI.diagnostics.getSnapshot();
+      const [next, tracePayload] = await Promise.all([
+        window.electronAPI.diagnostics.getSnapshot(),
+        typeof window.electronAPI?.llm?.getTraces === 'function'
+          ? window.electronAPI.llm.getTraces(12).catch(() => ({ traces: [] as PersistedAgentTraceRecord[] }))
+          : Promise.resolve({ traces: [] as PersistedAgentTraceRecord[] }),
+      ]);
       if (!isOpenRef.current || seq !== requestSeqRef.current) {
         return;
       }
       setSnapshot(next);
+      setTraces(Array.isArray(tracePayload?.traces) ? tracePayload.traces : []);
     } catch (err: unknown) {
       if (!isOpenRef.current || seq !== requestSeqRef.current) {
         return;
@@ -70,6 +79,19 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
       if (isOpenRef.current && seq === requestSeqRef.current) {
         setLoading(false);
       }
+    }
+  }, []);
+
+  const handleClearTraces = useCallback(async (): Promise<void> => {
+    if (typeof window.electronAPI?.llm?.clearTraces !== 'function') return;
+    setClearingTraces(true);
+    try {
+      await window.electronAPI.llm.clearTraces();
+      setTraces([]);
+    } catch {
+      // Non-fatal trace clear error
+    } finally {
+      setClearingTraces(false);
     }
   }, []);
 
@@ -293,6 +315,18 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
                         {snapshot.llm.successfulQueries}/{snapshot.llm.failedQueries} ({snapshot.llm.avgRetrievalMs}ms ret)
                       </dd>
                     </div>
+                    {(snapshot.llm.agentRuns ||
+                      snapshot.llm.parallelToolBatches ||
+                      snapshot.llm.cyclesPrevented ||
+                      snapshot.llm.ungroundedCitationsBlocked) ? (
+                      <div className="flex justify-between">
+                        <dt>Orchestrator (runs/par/cyc/blk):</dt>
+                        <dd className="font-mono text-gray-900" data-testid="diagnostics-orchestrator-counts">
+                          {snapshot.llm.agentRuns ?? 0} / {snapshot.llm.parallelToolBatches ?? 0} /{' '}
+                          {snapshot.llm.cyclesPrevented ?? 0} / {snapshot.llm.ungroundedCitationsBlocked ?? 0}
+                        </dd>
+                      </div>
+                    ) : null}
                   </dl>
                 </div>
               </div>
@@ -376,6 +410,71 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
                       )}
                     </tbody>
                   </table>
+                </div>
+              </div>
+              {/* Agent Trace Ledger */}
+              <div
+                data-testid="diagnostics-traces-section"
+                className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden"
+              >
+                <div className="px-4 py-2.5 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-600 flex items-center gap-1.5">
+                    <Cpu className="w-3.5 h-3.5 text-purple-600" />
+                    Agent Orchestration Trace Ledger ({traces.length} recent)
+                  </span>
+                  {traces.length > 0 &&
+                    typeof window !== 'undefined' &&
+                    typeof window.electronAPI?.llm?.clearTraces === 'function' && (
+                    <button
+                      type="button"
+                      data-testid="diagnostics-clear-traces-button"
+                      disabled={clearingTraces}
+                      onClick={(): void => {
+                        void handleClearTraces();
+                      }}
+                      className="px-2 py-0.5 rounded border border-gray-200 bg-white text-[11px] font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-50"
+                    >
+                      {clearingTraces ? 'Clearing...' : 'Clear Ledger'}
+                    </button>
+                  )}
+                </div>
+                <div className="max-h-48 overflow-y-auto divide-y divide-gray-100">
+                  {traces.length === 0 ? (
+                    <div className="px-4 py-3 text-xs text-center text-gray-400">
+                      No persisted agent or RAG traces yet.
+                    </div>
+                  ) : (
+                    traces.map((tr) => (
+                      <div
+                        key={tr.traceId}
+                        data-testid="diagnostics-trace-row"
+                        className="px-4 py-2 text-xs flex items-center justify-between gap-3 hover:bg-gray-50"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-medium text-gray-800 truncate">{tr.queryPreview}</div>
+                          <div className="text-[11px] font-mono text-gray-500">
+                            {tr.mode} · {tr.model} · {tr.stepCount} step(s) · {tr.verifiedCitations} verified
+                            {tr.ungroundedCitationsCount > 0
+                              ? ` · ${tr.ungroundedCitationsCount} blocked`
+                              : ''}
+                            {tr.redactionsApplied > 0 ? ` · ${tr.redactionsApplied} redacted` : ''}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0 font-mono text-[11px]">
+                          <span
+                            className={`px-1.5 py-0.5 rounded ${
+                              tr.status === 'answered'
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : 'bg-amber-50 text-amber-800'
+                            }`}
+                          >
+                            {tr.status}
+                          </span>
+                          <span className="text-gray-500">{tr.durationMs}ms</span>
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             </>
