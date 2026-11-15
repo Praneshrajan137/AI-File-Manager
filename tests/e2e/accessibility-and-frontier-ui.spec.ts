@@ -2,8 +2,13 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { closeElectronApp, getFirstWindow, launchElectronApp } from './electron-launcher';
+
+async function analyzeElectronA11y(page: Page, tags: string[]) {
+  // Electron CDP does not support Target.createTarget used by axe.runPartial/finishRun.
+  return new AxeBuilder({ page }).setLegacyMode(true).withTags(tags).analyze();
+}
 
 test.describe('Frontier Frontend E2E: WCAG 2.2 AA Contrast, 800x600 Reflow, Keyboard & Overlay Stack', () => {
   test('passes Light & Dark axe-core AA contrast, 800x600 zero horizontal overflow, keyboard nav, and LIFO Escape', async () => {
@@ -44,9 +49,7 @@ test.describe('Frontier Frontend E2E: WCAG 2.2 AA Contrast, 800x600 Reflow, Keyb
       await expect(firstItem).toBeVisible({ timeout: 15000 });
 
       // 1. Light Mode WCAG AA audit on main explorer view
-      const lightAudit = await new AxeBuilder({ page })
-        .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
-        .analyze();
+      const lightAudit = await analyzeElectronA11y(page, ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']);
       expect(lightAudit.violations).toEqual([]);
 
       // 2. Dark Mode toggle + full Dark Mode WCAG AA audit across drawers & spatial lenses
@@ -58,16 +61,12 @@ test.describe('Frontier Frontend E2E: WCAG 2.2 AA Contrast, 800x600 Reflow, Keyb
       await page.locator('[data-testid="chat-toggle-button"]').click();
       await expect(page.locator('[data-testid="chat-panel-container"]')).toBeVisible({ timeout: 5000 });
 
-      const darkAudit = await new AxeBuilder({ page })
-        .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
-        .analyze();
+      const darkAudit = await analyzeElectronA11y(page, ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']);
       expect(darkAudit.violations).toEqual([]);
 
       await page.locator('[data-testid="lens-tab-duplicates"]').click();
       await expect(page.locator('[data-testid="duplicate-reclaim-lens"]')).toBeVisible({ timeout: 5000 });
-      const duplicatesAudit = await new AxeBuilder({ page })
-        .withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'])
-        .analyze();
+      const duplicatesAudit = await analyzeElectronA11y(page, ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']);
       expect(duplicatesAudit.violations).toEqual([]);
 
       await page.locator('[data-testid="lens-tab-files"]').click();
@@ -76,9 +75,7 @@ test.describe('Frontier Frontend E2E: WCAG 2.2 AA Contrast, 800x600 Reflow, Keyb
       // 3. Open lazy-loaded DiagnosticsModal & inspect AA compliance
       await page.locator('[data-testid="diagnostics-button"]').click();
       await expect(page.locator('[data-testid="diagnostics-modal"]')).toBeVisible({ timeout: 10000 });
-      const modalAudit = await new AxeBuilder({ page })
-        .withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'])
-        .analyze();
+      const modalAudit = await analyzeElectronA11y(page, ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']);
       expect(modalAudit.violations).toEqual([]);
       await page.keyboard.press('Escape');
       await expect(page.locator('[data-testid="diagnostics-modal"]')).toBeHidden();

@@ -49,6 +49,7 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
 
   return (
     <nav
+      role="navigation"
       className="flex items-center gap-1 text-sm overflow-x-auto flex-1 min-w-[140px]"
       aria-label="Breadcrumb"
       data-testid="breadcrumb"

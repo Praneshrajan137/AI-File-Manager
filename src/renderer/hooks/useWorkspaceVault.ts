@@ -60,6 +60,8 @@ export function useWorkspaceVault(options: UseWorkspaceVaultOptions): UseWorkspa
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
   const uiHydratedRef = useRef<boolean>(false);
+  const isDarkModeRef = useRef<boolean>(isDarkMode);
+  isDarkModeRef.current = isDarkMode;
   const dirtyUiKeysRef = useRef<{
     theme?: boolean;
     explorerLens?: boolean;
@@ -122,11 +124,13 @@ export function useWorkspaceVault(options: UseWorkspaceVaultOptions): UseWorkspa
 
   const toggleDarkMode = useCallback((): void => {
     dirtyUiKeysRef.current.theme = true;
-    setIsDarkMode((prev) => {
-      const next = !prev;
-      persistUiPrefs({ theme: next ? 'dark' : 'light' });
-      return next;
-    });
+    const next = !isDarkModeRef.current;
+    isDarkModeRef.current = next;
+    if (typeof document !== 'undefined') {
+      document.documentElement.classList.toggle('dark', next);
+    }
+    setIsDarkMode(next);
+    persistUiPrefs({ theme: next ? 'dark' : 'light' });
   }, [persistUiPrefs]);
 
   const setExplorerLens = useCallback(
