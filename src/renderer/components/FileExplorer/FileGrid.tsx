@@ -110,6 +110,14 @@ const GridCell: React.FC<GridChildComponentProps<SharedVirtualItemData>> = React
             data.onDropMove(dragged, file.path);
           }
         }}
+        onMouseDown={(e): void => {
+          // Select & focus unselected items immediately on primary mouse press so layout reflows
+          // (e.g. closing Quick Preview drawer) between mousedown and mouseup never drop selection.
+          if (e.button === 0 && !selected && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+            data.onFocusPath(file.path);
+            data.onFileClick(file);
+          }
+        }}
         onClick={(e): void => {
           data.onFocusPath(file.path);
           data.onFileClick(file, e);

@@ -109,7 +109,9 @@ test.describe('Frontier Frontend E2E: WCAG 2.2 AA Contrast, 800x600 Reflow, Keyb
       });
 
       // 5. Explorer keyboard navigation + LIFO Escape stack (Delete dialog over Preview Drawer)
+      await page.getByRole('button', { name: 'a11y-vault', exact: true }).click();
       const alphaRow = page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'alpha.md' });
+      await expect(alphaRow).toBeVisible({ timeout: 10000 });
       await alphaRow.click();
       await page.keyboard.press('ArrowDown');
 
