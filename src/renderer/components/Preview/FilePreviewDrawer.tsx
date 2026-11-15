@@ -247,7 +247,12 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
       </div>
 
       {/* Content / Connections Panel */}
-      <div className="flex-1 overflow-auto p-3 bg-slate-950 text-slate-100 font-mono text-xs scrollbar-thin">
+      <div
+        role="region"
+        aria-label="File preview content"
+        tabIndex={0}
+        className="flex-1 overflow-auto p-3 bg-slate-950 text-slate-100 font-mono text-xs scrollbar-thin focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-inset"
+      >
         {activeTab === 'connections' ? (
           <PreviewConnectionsTab
             filePath={file.path}

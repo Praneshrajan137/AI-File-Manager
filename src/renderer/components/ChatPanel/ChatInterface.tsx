@@ -170,8 +170,10 @@ const ChatInterfaceBody: React.FC<{
       <div
         ref={scrollContainerRef}
         onScroll={handleLogScroll}
-        className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin bg-slate-50 dark:bg-slate-950"
+        className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin bg-slate-50 dark:bg-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-inset"
         role="log"
+        aria-label="Chat messages"
+        tabIndex={0}
         aria-live="polite"
         aria-atomic="false"
         data-testid="chat-messages"

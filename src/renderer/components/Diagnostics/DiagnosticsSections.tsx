@@ -214,7 +214,9 @@ export const DiagnosticsSections: React.FC<DiagnosticsBodyProps> = ({
       </div>
       <pre
         data-testid="diagnostics-mcp-snippet"
-        className="text-[11px] font-mono bg-slate-950 text-slate-100 p-2.5 rounded overflow-x-auto leading-relaxed border border-slate-800"
+        tabIndex={0}
+        aria-label="Opt-in local MCP server JSON configuration"
+        className="text-[11px] font-mono bg-slate-950 text-slate-100 p-2.5 rounded overflow-x-auto leading-relaxed border border-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
       >
         {mcpSnippet}
       </pre>
@@ -231,7 +233,12 @@ export const DiagnosticsSections: React.FC<DiagnosticsBodyProps> = ({
           {snapshot.ipc.totalCalls} calls · {snapshot.ipc.totalErrors} errors
         </span>
       </div>
-      <div className="max-h-60 overflow-y-auto scrollbar-thin">
+      <div
+        role="region"
+        aria-label="Contract-Enforced IPC Telemetry Table"
+        tabIndex={0}
+        className="max-h-60 overflow-y-auto scrollbar-thin focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-inset"
+      >
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-300 sticky top-0">
             <tr>
@@ -297,7 +304,12 @@ export const DiagnosticsSections: React.FC<DiagnosticsBodyProps> = ({
             </button>
           )}
       </div>
-      <div className="max-h-48 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800 scrollbar-thin">
+      <div
+        role="region"
+        aria-label="Agent Orchestration Trace Ledger"
+        tabIndex={0}
+        className="max-h-48 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800 scrollbar-thin focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-inset"
+      >
         {traces.length === 0 ? (
           <div className="px-4 py-3 text-xs text-center text-slate-600 dark:text-slate-300">
             No persisted agent or RAG traces yet.

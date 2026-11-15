@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { useOverlayStack } from '@renderer/hooks/useOverlayStack';
 
 type ShortcutHandler = () => void;
@@ -40,6 +40,14 @@ function isInteractiveWidgetElement(target: EventTarget | null): boolean {
  */
 export function useKeyboardShortcuts(shortcuts: ShortcutMap): void {
   const { hasOpenOverlay } = useOverlayStack();
+  const shortcutsRef = useRef<ShortcutMap>(shortcuts);
+  const hasOpenOverlayRef = useRef<boolean>(hasOpenOverlay);
+
+  // Sync synchronously on DOM commit so immediate keypresses after click selection never read stale handlers.
+  useLayoutEffect(() => {
+    shortcutsRef.current = shortcuts;
+    hasOpenOverlayRef.current = hasOpenOverlay;
+  }, [hasOpenOverlay, shortcuts]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent): void => {
@@ -47,7 +55,7 @@ export function useKeyboardShortcuts(shortcuts: ShortcutMap): void {
         return;
       }
       if (
-        hasOpenOverlay ||
+        hasOpenOverlayRef.current ||
         (typeof document !== 'undefined' &&
           document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]') !== null)
       ) {
@@ -78,7 +86,7 @@ export function useKeyboardShortcuts(shortcuts: ShortcutMap): void {
       const combination = parts.join('+');
 
       // Check if we have a handler for this combination
-      const handler = shortcuts[combination];
+      const handler = shortcutsRef.current[combination];
       if (handler) {
         e.preventDefault();
         e.stopPropagation();
@@ -91,5 +99,5 @@ export function useKeyboardShortcuts(shortcuts: ShortcutMap): void {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [hasOpenOverlay, shortcuts]);
+  }, []);
 }
