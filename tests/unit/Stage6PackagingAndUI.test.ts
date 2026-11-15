@@ -50,6 +50,8 @@ describe('Stage 6 (M12): Packaging Contracts, Icons, & Copilot/Organizer UI Comp
         author?: string;
         license?: string;
         scripts?: Record<string, string>;
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
       };
       const licenseText = fs.readFileSync(path.join(REPO_ROOT, 'LICENSE'), 'utf-8');
       const builderYaml = fs.readFileSync(
@@ -61,6 +63,8 @@ describe('Stage 6 (M12): Packaging Contracts, Icons, & Copilot/Organizer UI Comp
       expect(pkg.license).toBe('CC-BY-NC-4.0');
       expect(licenseText).toContain('Creative Commons Attribution-NonCommercial 4.0');
       expect(pkg.scripts?.lint).toContain('--max-warnings=0');
+      expect(pkg.dependencies?.electron).toBeUndefined();
+      expect(pkg.devDependencies?.electron).toBeDefined();
 
       expect(builderYaml).toContain('asar: true');
       expect(builderYaml).toContain('node_modules/**/*.node');
