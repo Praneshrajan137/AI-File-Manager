@@ -24,11 +24,18 @@ import {
 } from '@main/services/ReactiveWorkspaceKernel';
 import { ConfigManager } from '@shared/config';
 import {
+  AgentTraceStep,
   ContentSearchMatch,
+  CopilotContextScope,
+  CopilotQueryMode,
   GraphInsightsResponse,
   IndexingStatus,
   LLMModelsSnapshot,
   MAX_INDEXABLE_FILE_SIZE,
+  OrganizeApplyResult,
+  OrganizePlanOperation,
+  OrganizePlanResult,
+  OrganizeStrategy,
   RetrievalSource,
 } from '../../shared/contracts';
 import { IPCChannel } from '@shared/ipc/contracts';
@@ -38,11 +45,16 @@ import { WorkspaceKnowledgeGraph } from '../services/WorkspaceKnowledgeGraph';
 import { EmbeddingWorkerPool } from '../../llm/workers/EmbeddingWorkerPool';
 import { IndexingService } from '../../llm/services/IndexingService';
 import { RetrievalService } from '../../llm/services/RetrievalService';
-import { ContextManager } from '../../llm/services/ContextManager';
+import { ContextManager, formatUntrustedWorkspaceData } from '../../llm/services/ContextManager';
+import { WorkspaceReActAgent } from '../../llm/agent/WorkspaceReActAgent';
 import { LLMMetrics, MetricOperation } from '../../llm/services/LLMMetrics';
 import { LLMInterface } from '../../llm/services/LLMInterface';
 import { FileSystemService } from '../services/FileSystemService';
 import { DirectoryScanner } from '../services/DirectoryScanner';
+import { PathValidator } from '../services/PathValidator';
+import { getOperationJournal } from '../services/OperationJournal';
+import { AIOrganizerService } from '../services/AIOrganizerService';
+import { searchWorkspacePaths } from './searchHandlers';
 import path from 'path';
 import os from 'os';
 
@@ -276,10 +288,20 @@ async function ensureServicesInitialized(): Promise<void> {
  */
 async function handleQuery(
   event: IpcMainInvokeEvent,
-  input: { query: string; channel: string }
-): Promise<{ success: boolean; error?: string; sources?: RetrievalSource[] }> {
-  const { query, channel } = input;
-  LLMLogger.info('LLM query received', { query: query.substring(0, 100) });
+  input: {
+    query: string;
+    channel: string;
+    mode?: CopilotQueryMode;
+    contextScope?: CopilotContextScope;
+  }
+): Promise<{
+  success: boolean;
+  error?: string;
+  sources?: RetrievalSource[];
+  agentSteps?: AgentTraceStep[];
+}> {
+  const { query, channel, mode = 'rag', contextScope } = input;
+  LLMLogger.info('LLM query received', { query: query.substring(0, 100), mode });
 
   const safeSend = (streamChannel: string, payload: unknown): void => {
     if (!event.sender.isDestroyed()) {
@@ -298,11 +320,131 @@ async function handleQuery(
   }
 
   try {
+    const llmConfig = (() => {
+      try {
+        return ConfigManager.getInstance().get('llm');
+      } catch {
+        return undefined;
+      }
+    })();
+
+    if (mode === 'agent') {
+      const ollamaUrl = resolveOllamaUrl() || 'http://localhost:11434';
+      const activeClient = llmInterface ?? new LLMInterface(ollamaUrl, { model: llmConfig?.model });
+      const ollamaAvailable = await activeClient.checkConnection();
+      if (!ollamaAvailable) {
+        const msg = 'Ollama is not running. Please start Ollama with: ollama serve';
+        safeSend(channel, msg);
+        safeSend(`${channel}:end`, { ok: false, error: 'Ollama not available' });
+        RuntimeDiagnostics.getInstance().recordLlmQuery({
+          success: false,
+          retrievalMs: 0,
+          generationMs: 0,
+          error: 'Ollama not available',
+        });
+        return { success: false, error: 'Ollama not available' };
+      }
+
+      const kernel = getReactiveWorkspaceKernel();
+      const fsService = kernel.getFileSystemService();
+      const validator = new PathValidator(fsService.getAllowedRoots());
+
+      const agent = new WorkspaceReActAgent({
+        ollamaUrl,
+        model: llmConfig?.model || activeClient.getModel(),
+        temperature: llmConfig?.temperature,
+        maxTokens: llmConfig?.maxTokens,
+        searchFiles: (q, root) => searchWorkspacePaths(q, root),
+        searchContent: (q, topK, root) => searchWorkspaceContent(q, topK ?? 8, root),
+        readFileRange: (filePath, startLine, endLine) =>
+          fsService.readFileRange(filePath, startLine, endLine),
+        queryGraph: (graphInput) => queryWorkspaceGraphInsights(graphInput),
+        validatePath: (candidate) => validator.validateCanonical(candidate),
+      });
+
+      const genStart = Date.now();
+      const agentResult = await agent.run(query, {
+        maxSteps: 4,
+        contextScope,
+        signal: queryAbort.signal,
+      });
+      generationMs = Date.now() - genStart;
+      LLMMetrics.getInstance().recordTiming(MetricOperation.LLM_QUERY, generationMs);
+
+      if (agentResult.answer && !event.sender.isDestroyed()) {
+        safeSend(channel, agentResult.answer);
+      }
+
+      safeSend(`${channel}:end`, {
+        ok: true,
+        sources: agentResult.sources,
+        agentSteps: agentResult.steps,
+        retrievalMs: 0,
+        generationMs,
+      });
+      RuntimeDiagnostics.getInstance().recordLlmQuery({
+        success: true,
+        retrievalMs: 0,
+        generationMs,
+      });
+
+      return {
+        success: true,
+        sources: agentResult.sources,
+        agentSteps: agentResult.steps,
+      };
+    }
+
     await ensureServicesInitialized();
 
     const retrievalStart = Date.now();
-    const retrievalResult = await retrievalService!.retrieve(query);
+    const retrievalResult = await retrievalService!.retrieve(query, contextScope);
     retrievalMs = Date.now() - retrievalStart;
+
+    if (
+      contextScope?.useSelection &&
+      Array.isArray(contextScope.selectedPaths) &&
+      contextScope.selectedPaths.length > 0
+    ) {
+      const kernelFs = getReactiveWorkspaceKernel().getFileSystemService();
+      const validator = new PathValidator(kernelFs.getAllowedRoots());
+      const pinnedBlocks: string[] = [];
+      const pinnedSources: RetrievalSource[] = [];
+
+      for (const candidate of contextScope.selectedPaths.slice(0, 3)) {
+        const check = await validator.validateCanonical(candidate);
+        if (!check.valid || !check.canonicalPath) continue;
+        try {
+          const range = await kernelFs.readFileRange(check.canonicalPath, 1, 50);
+          if (range.lines.length === 0) continue;
+          const citation = `${path.basename(range.path)}#L${range.startLine}-L${range.endLine}`;
+          const body = range.lines.map((l) => `${l.lineNumber}: ${l.text}`).join('\n');
+          pinnedBlocks.push(formatUntrustedWorkspaceData(range.path, citation, body));
+          pinnedSources.push({
+            filePath: range.path,
+            startLine: range.startLine,
+            endLine: range.endLine,
+            snippet: body.slice(0, 200),
+          });
+        } catch {
+          // Ignore non-file or unreadable selection items
+        }
+      }
+
+      if (pinnedBlocks.length > 0) {
+        const pinnedPrefix = pinnedBlocks.join('\n\n');
+        retrievalResult.context = retrievalResult.context
+          ? `${pinnedPrefix}\n\n${retrievalResult.context}`
+          : pinnedPrefix;
+        retrievalResult.sources = Array.from(
+          new Set([...pinnedSources.map((s) => s.filePath), ...retrievalResult.sources])
+        );
+        retrievalResult.structuredSources = [
+          ...pinnedSources,
+          ...(retrievalResult.structuredSources ?? []),
+        ];
+      }
+    }
 
     LLMLogger.info('Context retrieved', {
       sources: retrievalResult.sources.length,
@@ -322,14 +464,6 @@ async function handleQuery(
       });
       return { success: false, error: 'Ollama not available' };
     }
-
-    const llmConfig = (() => {
-      try {
-        return ConfigManager.getInstance().get('llm');
-      } catch {
-        return undefined;
-      }
-    })();
 
     const structuredSources: RetrievalSource[] =
       retrievalResult.structuredSources ??
@@ -820,6 +954,54 @@ async function handleClearIndex(
   }
 }
 
+function createOrganizerService(): AIOrganizerService {
+  const kernel = getReactiveWorkspaceKernel();
+  const fsService = kernel.getFileSystemService();
+  const validator = new PathValidator(fsService.getAllowedRoots());
+  const llmCfg = (() => {
+    try {
+      return ConfigManager.getInstance().get('llm');
+    } catch {
+      return undefined;
+    }
+  })();
+
+  return new AIOrganizerService({
+    validator,
+    operationJournal: getOperationJournal(),
+    ollamaUrl: resolveOllamaUrl(),
+    model: llmCfg?.model,
+  });
+}
+
+async function handlePlanOrganize(
+  _event: IpcMainInvokeEvent,
+  input: { targetDir: string; strategy?: OrganizeStrategy; useLLM?: boolean }
+): Promise<OrganizePlanResult> {
+  const canonicalTarget = await validateCanonicalPathOrThrow(input.targetDir);
+  return createOrganizerService().proposeOrganizationPlan({
+    targetDir: canonicalTarget,
+    strategy: input.strategy,
+    useLLM: input.useLLM,
+  });
+}
+
+async function handleApplyOrganize(
+  _event: IpcMainInvokeEvent,
+  input: {
+    planId: string;
+    targetDir: string;
+    operations: OrganizePlanOperation[];
+  }
+): Promise<OrganizeApplyResult> {
+  const canonicalTarget = await validateCanonicalPathOrThrow(input.targetDir);
+  return createOrganizerService().applyOrganizationPlan({
+    planId: input.planId,
+    targetDir: canonicalTarget,
+    operations: input.operations,
+  });
+}
+
 const LLM_CHANNELS: IPCChannel[] = [
   'LLM:QUERY',
   'LLM:INDEX_STATUS',
@@ -830,6 +1012,8 @@ const LLM_CHANNELS: IPCChannel[] = [
   'LLM:CLEAR_INDEX',
   'LLM:LIST_MODELS',
   'LLM:SET_MODEL_CONFIG',
+  'AI:ORGANIZE_PLAN',
+  'AI:ORGANIZE_APPLY',
 ];
 
 /**
@@ -847,6 +1031,8 @@ export function registerLLMHandlers(): IPCChannel[] {
   ipcMain.handle('LLM:CLEAR_INDEX', withContract('LLM:CLEAR_INDEX', handleClearIndex));
   ipcMain.handle('LLM:LIST_MODELS', withContract('LLM:LIST_MODELS', handleListModels));
   ipcMain.handle('LLM:SET_MODEL_CONFIG', withContract('LLM:SET_MODEL_CONFIG', handleSetModelConfig));
+  ipcMain.handle('AI:ORGANIZE_PLAN', withContract('AI:ORGANIZE_PLAN', handlePlanOrganize));
+  ipcMain.handle('AI:ORGANIZE_APPLY', withContract('AI:ORGANIZE_APPLY', handleApplyOrganize));
 
   configureKernelHooks({ indexMutationHook: handleKernelIndexMutation });
 

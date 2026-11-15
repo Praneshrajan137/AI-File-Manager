@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { User, Bot, FileCode2 } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { User, Bot, FileCode2, Cpu } from 'lucide-react';
 import { Message } from '@renderer/hooks/useLLM';
 import { parseCitationSegments } from '@renderer/utils/explorerHelpers';
 import { extractBasename } from '@renderer/utils/pathHelpers';
@@ -11,6 +11,7 @@ interface MessageBubbleProps {
 
 export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, onOpenCitation }) => {
   const isUser = message.role === 'user';
+  const [traceExpanded, setTraceExpanded] = useState<boolean>(false);
 
   const segments = useMemo(() => {
     if (isUser) return null;
@@ -74,6 +75,36 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, onOpenCit
                 })}
           </p>
         </div>
+
+        {message.agentSteps && message.agentSteps.length > 0 && (
+          <div className="mt-2">
+            <button
+              type="button"
+              data-testid="agent-trace-badge"
+              onClick={(): void => setTraceExpanded((prev) => !prev)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-50 dark:bg-purple-950/70 border border-purple-200 dark:border-purple-800 text-[11px] font-mono text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900"
+            >
+              <Cpu className="w-3 h-3" />
+              <span>
+                ReAct Trace ({message.agentSteps.length} step
+                {message.agentSteps.length === 1 ? '' : 's'})
+              </span>
+            </button>
+            {traceExpanded && (
+              <div
+                data-testid="agent-trace-details"
+                className="mt-1.5 p-2 rounded border border-purple-200 dark:border-purple-800 bg-purple-50/50 dark:bg-slate-900 text-[11px] font-mono space-y-1 text-purple-900 dark:text-purple-200"
+              >
+                {message.agentSteps.map((st) => (
+                  <div key={st.step}>
+                    #{st.step} [{st.allowed ? st.tool : `BLOCKED:${st.tool}`}] —{' '}
+                    {st.observationSummary} ({st.durationMs}ms)
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {message.structuredSources && message.structuredSources.length > 0 ? (
           <div className="mt-2 flex flex-wrap gap-1.5" data-testid="message-structured-sources">

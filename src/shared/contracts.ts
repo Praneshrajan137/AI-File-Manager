@@ -1050,3 +1050,78 @@ export const MAX_HISTORY_SIZE = 50;
  */
 export const RING_BUFFER_CAPACITY = 100;
 
+// ============================================================================
+// STAGE 5: COPILOT AGENT & AI ORGANIZER CONTRACTS
+// ============================================================================
+
+export type CopilotQueryMode = 'rag' | 'agent';
+
+export interface CopilotContextScope {
+  currentPath?: string;
+  selectedPaths?: string[];
+  useFolder?: boolean;
+  useSelection?: boolean;
+}
+
+export type AgentToolName =
+  | 'search_files'
+  | 'search_content'
+  | 'read_file_range'
+  | 'graph_lookup';
+
+export interface AgentTraceStep {
+  step: number;
+  thought?: string;
+  tool: string;
+  arguments: Record<string, unknown>;
+  allowed: boolean;
+  observationSummary: string;
+  durationMs: number;
+}
+
+export interface AgentRunResult {
+  answer: string;
+  steps: AgentTraceStep[];
+  sources: RetrievalSource[];
+  stepLimitReached: boolean;
+  aborted: boolean;
+}
+
+export type OrganizeStrategy =
+  | 'auto'
+  | 'smart_category'
+  | 'by_type'
+  | 'by_date'
+  | 'ai_suggested';
+
+export interface OrganizePlanOperation {
+  id: string;
+  action: 'move' | 'rename';
+  sourcePath: string;
+  destinationPath: string;
+  sourceSha256: string;
+  size: number;
+  category: string;
+  reason: string;
+}
+
+export interface OrganizePlanResult {
+  planId: string;
+  targetDir: string;
+  strategy: OrganizeStrategy;
+  usedLLM: boolean;
+  createdAt: number;
+  operations: OrganizePlanOperation[];
+  skippedFiles: number;
+  summary: string;
+}
+
+export interface OrganizeApplyResult {
+  success: boolean;
+  planId: string;
+  appliedCount: number;
+  operationId: string;
+  journalState: OperationJournalState;
+}
+
+

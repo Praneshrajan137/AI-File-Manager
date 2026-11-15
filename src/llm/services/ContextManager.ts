@@ -35,6 +35,27 @@ const DEFAULT_OPTIONS: Required<CompressionOptions> = {
     query: '',
 };
 
+/**
+ * Format passive workspace content inside explicit untrusted_workspace_data isolation
+ * fences so embedded instructions cannot override system or tool boundaries.
+ */
+export function formatUntrustedWorkspaceData(
+    source: string,
+    citation: string,
+    content: string,
+    heading?: string
+): string {
+    const safeSource = source.replace(/"/g, '&quot;');
+    const safeCitation = citation.replace(/"/g, '&quot;');
+    return `<untrusted_workspace_data source="${safeSource}" citation="${safeCitation}">
+📄 **FILE: ${citation}**${heading ? ` (${heading})` : ''}
+📍 PATH: ${source}
+---
+${content}
+---
+</untrusted_workspace_data>`;
+}
+
 export class ContextManager {
     private llmInterface: LLMInterface | null = null;
 
@@ -110,13 +131,12 @@ export class ContextManager {
                     ? `#L${record.start_line}${record.end_line && record.end_line !== record.start_line ? `-L${record.end_line}` : ''}`
                     : '';
                 const citation = `${fileName}${lineTag}`;
-                return `<untrusted_workspace_data source="${record.file_path}" citation="${citation}">
-📄 **FILE: ${citation}**${record.heading ? ` (${record.heading})` : ''}
-📍 PATH: ${record.file_path}
----
-${record.chunk_text}
----
-</untrusted_workspace_data>`;
+                return formatUntrustedWorkspaceData(
+                    record.file_path,
+                    citation,
+                    record.chunk_text,
+                    record.heading
+                );
             })
             .join('\n\n');
     }

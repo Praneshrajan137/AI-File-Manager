@@ -8,7 +8,9 @@
  * 4. ContextManager token-budget preservation / summarization
  * 5. LLMMetrics latency recording
  */
+import * as path from 'path';
 import {
+    CopilotContextScope,
     RetrievalResult,
     RetrievalSource,
     VectorRecord,
@@ -17,7 +19,7 @@ import {
 } from '../../shared/contracts';
 import { VectorStore } from './VectorStore';
 import { LexicalSearchMatch } from './HybridLexicalIndex';
-import { ContextManager } from './ContextManager';
+import { ContextManager, formatUntrustedWorkspaceData } from './ContextManager';
 import { LLMMetrics, MetricOperation } from './LLMMetrics';
 
 const RRF_K = 60;
@@ -51,7 +53,7 @@ export class RetrievalService {
      * Retrieve relevant context for user query using Hybrid Dense + SQLite FTS5 BM25
      * RRF + optional Cross-Encoder reranking (`Xenova/ms-marco-MiniLM-L-6-v2`).
      */
-    async retrieve(query: string): Promise<RetrievalResult> {
+    async retrieve(query: string, scope?: CopilotContextScope): Promise<RetrievalResult> {
         const timer = LLMMetrics.getInstance().startTimer(MetricOperation.RETRIEVAL);
 
         try {
@@ -59,14 +61,33 @@ export class RetrievalService {
             const queryEmbedding = await this.embeddingModel.embed(query);
 
             // 2. Dense vector candidates + SQLite FTS5 BM25 lexical candidates
-            const denseCandidates = await this.vectorStore.search(
+            const rawDense = await this.vectorStore.search(
                 queryEmbedding,
                 this.TOP_K
             );
-            const lexicalMatches: LexicalSearchMatch[] =
+            const rawLexical: LexicalSearchMatch[] =
                 typeof (this.vectorStore as Partial<VectorStore>).searchLexical === 'function'
                     ? this.vectorStore.searchLexical(query, this.TOP_K)
                     : [];
+
+            const normalizeCmp = (p: string): string => {
+                const resolved = path.resolve(p);
+                return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+            };
+            const folderPrefix =
+                scope?.useFolder && scope.currentPath
+                    ? `${normalizeCmp(scope.currentPath).replace(/[\\/]+$/, '')}${path.sep}`
+                    : null;
+            const folderExact =
+                scope?.useFolder && scope.currentPath ? normalizeCmp(scope.currentPath) : null;
+            const matchesScope = (filePath: string): boolean => {
+                if (!folderPrefix || !folderExact) return true;
+                const norm = normalizeCmp(filePath);
+                return norm === folderExact || norm.startsWith(folderPrefix);
+            };
+
+            const denseCandidates = rawDense.filter((c) => matchesScope(c.file_path));
+            const lexicalMatches = rawLexical.filter((m) => matchesScope(m.record.file_path));
 
             // Handle empty results
             if (denseCandidates.length === 0 && lexicalMatches.length === 0) {
@@ -273,13 +294,12 @@ export class RetrievalService {
                 : '';
             const citation = `${fileName}${lineTag}`;
 
-            return `<untrusted_workspace_data source="${record.file_path}" citation="${citation}">
-📄 **FILE: ${citation}**${record.heading ? ` (${record.heading})` : ''}
-📍 PATH: ${record.file_path}
----
-${record.chunk_text}
----
-</untrusted_workspace_data>`;
+            return formatUntrustedWorkspaceData(
+                record.file_path,
+                citation,
+                record.chunk_text,
+                record.heading
+            );
         });
 
         return formatted.join('\n\n');

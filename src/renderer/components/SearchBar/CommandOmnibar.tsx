@@ -38,6 +38,7 @@ interface CommandOmnibarProps {
   onToggleSplitPane: () => void;
   onToggleChat: () => void;
   onIndexCurrentDir: () => Promise<void> | void;
+  onOrganizeCurrentDir?: () => void;
 }
 
 type OmnibarRow =
@@ -57,6 +58,7 @@ export const CommandOmnibar: React.FC<CommandOmnibarProps> = ({
   onToggleSplitPane,
   onToggleChat,
   onIndexCurrentDir,
+  onOrganizeCurrentDir,
 }) => {
   const [query, setQuery] = useState('');
   const [activeTab, setActiveTab] = useState<OmnibarTab>('all');
@@ -98,8 +100,29 @@ export const CommandOmnibar: React.FC<CommandOmnibarProps> = ({
           void onIndexCurrentDir();
         },
       },
+      ...(onOrganizeCurrentDir
+        ? [
+            {
+              id: 'organize-current',
+              label: 'AI Organize Current Folder (Dry-Run)',
+              description: currentPath || 'No folder selected',
+              run: (): void => {
+                onOrganizeCurrentDir();
+              },
+            },
+          ]
+        : []),
     ],
-    [isDarkMode, splitPaneOpen, currentPath, onToggleTheme, onToggleSplitPane, onToggleChat, onIndexCurrentDir]
+    [
+      isDarkMode,
+      splitPaneOpen,
+      currentPath,
+      onToggleTheme,
+      onToggleSplitPane,
+      onToggleChat,
+      onIndexCurrentDir,
+      onOrganizeCurrentDir,
+    ]
   );
 
   useEffect(() => {

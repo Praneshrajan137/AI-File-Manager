@@ -7,6 +7,7 @@ import {
   Command,
   Eye,
   FilePlus,
+  FolderKanban,
   FolderPlus,
   MessageSquare,
   Moon,
@@ -52,6 +53,7 @@ interface ToolbarProps {
   onToggleSplitPane?: () => void;
   isDarkMode?: boolean;
   onToggleTheme?: () => void;
+  onOpenOrganize?: () => void;
   chatOpen: boolean;
   onToggleChat: () => void;
 }
@@ -87,6 +89,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onToggleSplitPane,
   isDarkMode = false,
   onToggleTheme,
+  onOpenOrganize,
   chatOpen,
   onToggleChat
 }) => (
@@ -227,6 +230,19 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Obsidian Dark Slate'}
         aria-label="Toggle Theme"
         data-testid="theme-toggle-button"
+      />
+    )}
+
+    {onOpenOrganize && (
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={<FolderKanban className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />}
+        onClick={onOpenOrganize}
+        disabled={!currentPath}
+        title="AI Organize Folder (Dry-Run Preview)"
+        aria-label="AI Organize Folder"
+        data-testid="toolbar-organize-button"
       />
     )}
 

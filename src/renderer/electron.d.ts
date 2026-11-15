@@ -3,7 +3,10 @@
  */
 
 import type {
+  AgentTraceStep,
   ContentSearchMatch,
+  CopilotContextScope,
+  CopilotQueryMode,
   FileDeleteMode,
   FileLineRangeResult,
   FileNode,
@@ -13,6 +16,10 @@ import type {
   IndexingStatus,
   LLMModelsSnapshot,
   OperationJournalState,
+  OrganizeApplyResult,
+  OrganizePlanOperation,
+  OrganizePlanResult,
+  OrganizeStrategy,
   RetrievalSource,
   SystemPaths,
   UndoRedoResult,
@@ -86,8 +93,14 @@ interface ElectronAPI {
   llm: {
     query: (
       query: string,
-      callback: (chunk: string) => void
-    ) => Promise<{ success: boolean; error?: string; sources?: RetrievalSource[] }>;
+      callback: (chunk: string) => void,
+      options?: { mode?: CopilotQueryMode; contextScope?: CopilotContextScope }
+    ) => Promise<{
+      success: boolean;
+      error?: string;
+      sources?: RetrievalSource[];
+      agentSteps?: AgentTraceStep[];
+    }>;
     getIndexingStatus: () => Promise<IndexingStatus>;
     onIndexingProgress: (callback: (status: IndexingStatus) => void) => () => void;
     startIndexing: (
@@ -107,6 +120,19 @@ interface ElectronAPI {
       embeddingModel?: string;
       rerankerModel?: string;
     }) => Promise<{ success: boolean; config: LLMModelsSnapshot }>;
+  };
+
+  ai?: {
+    planOrganize: (
+      targetDir: string,
+      strategy?: OrganizeStrategy,
+      useLLM?: boolean
+    ) => Promise<OrganizePlanResult>;
+    applyOrganize: (input: {
+      planId: string;
+      targetDir: string;
+      operations: OrganizePlanOperation[];
+    }) => Promise<OrganizeApplyResult>;
   };
 
   fileWatcher: {

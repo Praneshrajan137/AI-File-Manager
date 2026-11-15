@@ -25,7 +25,8 @@ interface PersistedJournalData {
 
 export type BatchOperationStep =
   | { type: 'move' | 'rename'; source: string; destination: string }
-  | { type: 'delete'; path: string; recursive?: boolean; mode?: FileDeleteMode };
+  | { type: 'delete'; path: string; recursive?: boolean; mode?: FileDeleteMode }
+  | { type: 'create_dir'; path: string };
 
 export interface OperationJournalOptions {
   vaultDir?: string;
@@ -600,6 +601,21 @@ export class OperationJournal {
             if (res.record) {
               completed.push(res.record);
               totalSize += res.record.size;
+            }
+          } else if (step.type === 'create_dir') {
+            const canonicalDir = await this.validateCanonicalOrThrow(step.path);
+            if (!(await this.pathExists(canonicalDir))) {
+              await this.fileSystemService.createDirectory(canonicalDir);
+              completed.push({
+                id: randomUUID(),
+                type: 'create_dir',
+                timestamp: Date.now(),
+                sourcePath: canonicalDir,
+                isDirectory: true,
+                size: 0,
+                undoable: true,
+                description: `Create folder ${path.basename(canonicalDir)}`,
+              });
             }
           } else {
             const res = await this.performSingleMoveUnlocked(

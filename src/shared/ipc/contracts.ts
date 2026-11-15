@@ -8,6 +8,7 @@
 
 import { z } from 'zod';
 import type {
+  AgentTraceStep,
   ContentSearchMatch,
   FileLineRangeResult,
   FileNode,
@@ -17,6 +18,8 @@ import type {
   IndexingStatus,
   LLMModelsSnapshot,
   OperationJournalState,
+  OrganizeApplyResult,
+  OrganizePlanResult,
   RetrievalSource,
   SystemPaths,
   UndoRedoResult,
@@ -177,6 +180,41 @@ export const IPC_SCHEMAS = {
       .string()
       .min(1)
       .regex(/^LLM:QUERY:[A-Za-z0-9:_-]+$/, 'Invalid stream channel name'),
+    mode: z.enum(['rag', 'agent']).optional(),
+    contextScope: z
+      .object({
+        currentPath: z.string().min(1).max(1000).optional(),
+        selectedPaths: z.array(z.string().min(1).max(1000)).max(25).optional(),
+        useFolder: z.boolean().optional(),
+        useSelection: z.boolean().optional(),
+      })
+      .optional(),
+  }),
+  'AI:ORGANIZE_PLAN': z.object({
+    targetDir: z.string().min(1),
+    strategy: z
+      .enum(['auto', 'smart_category', 'by_type', 'by_date', 'ai_suggested'])
+      .optional(),
+    useLLM: z.boolean().optional(),
+  }),
+  'AI:ORGANIZE_APPLY': z.object({
+    planId: z.string().min(1).max(120),
+    targetDir: z.string().min(1),
+    operations: z
+      .array(
+        z.object({
+          id: z.string().min(1).max(120),
+          action: z.enum(['move', 'rename']),
+          sourcePath: z.string().min(1),
+          destinationPath: z.string().min(1),
+          sourceSha256: z.string().regex(/^[a-f0-9]{64}$/i, 'Invalid SHA-256 hex digest'),
+          size: z.number().int().nonnegative(),
+          category: z.string().min(1).max(120),
+          reason: z.string().min(1).max(300),
+        })
+      )
+      .min(1)
+      .max(500),
   }),
   'LLM:INDEX_STATUS': optionalEmptyObjectSchema,
   'LLM:START_INDEXING': z.object({ path: z.string().min(1) }),
@@ -239,7 +277,14 @@ export interface IPCResponseMap {
   'SEARCH:QUERY': FileNode[];
   'SEARCH:CONTENT': ContentSearchMatch[];
   'GRAPH:QUERY_INSIGHTS': GraphInsightsResponse;
-  'LLM:QUERY': { success: boolean; error?: string; sources?: RetrievalSource[] };
+  'LLM:QUERY': {
+    success: boolean;
+    error?: string;
+    sources?: RetrievalSource[];
+    agentSteps?: AgentTraceStep[];
+  };
+  'AI:ORGANIZE_PLAN': OrganizePlanResult;
+  'AI:ORGANIZE_APPLY': OrganizeApplyResult;
   'LLM:INDEX_STATUS': IndexingStatus;
   'LLM:START_INDEXING': { success: boolean; message?: string; total?: number; error?: string };
   'LLM:STOP_INDEXING': { success: boolean };
@@ -529,6 +574,20 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     schema: IPC_SCHEMAS['LLM:SET_MODEL_CONFIG'],
     pathFields: [],
     rateLimit: LLM_RATE_LIMIT,
+  },
+  'AI:ORGANIZE_PLAN': {
+    channel: 'AI:ORGANIZE_PLAN',
+    group: 'llm',
+    schema: IPC_SCHEMAS['AI:ORGANIZE_PLAN'],
+    pathFields: ['targetDir'],
+    rateLimit: LLM_RATE_LIMIT,
+  },
+  'AI:ORGANIZE_APPLY': {
+    channel: 'AI:ORGANIZE_APPLY',
+    group: 'llm',
+    schema: IPC_SCHEMAS['AI:ORGANIZE_APPLY'],
+    pathFields: ['targetDir'],
+    rateLimit: WRITE_RATE_LIMIT,
   },
   'CLIPBOARD:WRITE_TEXT': {
     channel: 'CLIPBOARD:WRITE_TEXT',

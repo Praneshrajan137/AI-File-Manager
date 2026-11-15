@@ -1,5 +1,11 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import type { LLMModelsSnapshot, RetrievalSource } from '@shared/contracts';
+import type {
+  AgentTraceStep,
+  CopilotContextScope,
+  CopilotQueryMode,
+  LLMModelsSnapshot,
+  RetrievalSource,
+} from '@shared/contracts';
 
 let messageIdCounter = 0;
 
@@ -9,6 +15,7 @@ export interface Message {
   content: string;
   sources?: string[];
   structuredSources?: RetrievalSource[];
+  agentSteps?: AgentTraceStep[];
   timestamp: number;
 }
 
@@ -19,13 +26,18 @@ export interface IndexingStatus {
   currentFile?: string;
 }
 
+export interface SendQueryOptions {
+  mode?: CopilotQueryMode;
+  contextScope?: CopilotContextScope;
+}
+
 export interface UseLLMReturn {
   messages: Message[];
   loading: boolean;
   indexingStatus: IndexingStatus;
   modelsSnapshot: LLMModelsSnapshot | null;
 
-  sendQuery: (query: string) => Promise<void>;
+  sendQuery: (query: string, options?: SendQueryOptions) => Promise<void>;
   startIndexing: (path: string) => Promise<void>;
   stopIndexing: () => Promise<void>;
   clearIndex: () => Promise<void>;
@@ -65,7 +77,7 @@ export function useLLM(): UseLLMReturn {
     }
   }, []);
 
-  const sendQuery = useCallback(async (query: string) => {
+  const sendQuery = useCallback(async (query: string, options?: SendQueryOptions) => {
     if (!query.trim() || loadingRef.current) return;
 
     loadingRef.current = true;
@@ -84,36 +96,50 @@ export function useLLM(): UseLLMReturn {
       const assistantMessageId = messageIdCounter++;
       const assistantTimestamp = Date.now();
 
-      const result = await window.electronAPI.llm.query(query, (chunk: string) => {
-        responseContent += chunk;
-        const latestContent = responseContent;
+      const result = await window.electronAPI.llm.query(
+        query,
+        (chunk: string) => {
+          responseContent += chunk;
+          const latestContent = responseContent;
 
-        setMessages((prev) => {
-          const existingIndex = prev.findIndex((msg) => msg.id === assistantMessageId);
-          if (existingIndex >= 0) {
-            return prev.map((msg, idx) =>
-              idx === existingIndex ? { ...msg, content: latestContent } : msg
-            );
-          }
-          return [
-            ...prev,
-            {
-              id: assistantMessageId,
-              role: 'assistant',
-              content: latestContent,
-              timestamp: assistantTimestamp,
-            },
-          ];
-        });
-      });
+          setMessages((prev) => {
+            const existingIndex = prev.findIndex((msg) => msg.id === assistantMessageId);
+            if (existingIndex >= 0) {
+              return prev.map((msg, idx) =>
+                idx === existingIndex ? { ...msg, content: latestContent } : msg
+              );
+            }
+            return [
+              ...prev,
+              {
+                id: assistantMessageId,
+                role: 'assistant',
+                content: latestContent,
+                timestamp: assistantTimestamp,
+              },
+            ];
+          });
+        },
+        options
+      );
 
-      if (result?.sources && result.sources.length > 0) {
-        const structuredSources = result.sources;
+      if (
+        (result?.sources && result.sources.length > 0) ||
+        (result?.agentSteps && result.agentSteps.length > 0)
+      ) {
+        const structuredSources = result.sources ?? [];
         const uniquePaths = Array.from(new Set(structuredSources.map((s) => s.filePath)));
+        const agentSteps = result.agentSteps;
         setMessages((prev) =>
           prev.map((msg) =>
             msg.id === assistantMessageId
-              ? { ...msg, sources: uniquePaths, structuredSources }
+              ? {
+                  ...msg,
+                  sources: uniquePaths.length > 0 ? uniquePaths : msg.sources,
+                  structuredSources:
+                    structuredSources.length > 0 ? structuredSources : msg.structuredSources,
+                  agentSteps: agentSteps ?? msg.agentSteps,
+                }
               : msg
           )
         );

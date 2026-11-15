@@ -454,6 +454,32 @@ export function registerSearchHandlers(): IPCChannel[] {
 }
 
 /**
+ * Shared workspace path lookup helper reused by bounded ReAct agent tools.
+ */
+export async function searchWorkspacePaths(
+  query: string,
+  rootPath?: string
+): Promise<string[]> {
+  const kernel = getReactiveWorkspaceKernel();
+  if (rootPath) {
+    const matches = await getSearchService().search(query, rootPath);
+    return matches.map((m) => m.path);
+  }
+  const q = query.trim();
+  if (!q) {
+    return Array.from(kernel.getFileSystemService().getAllowedRoots());
+  }
+  const trie = kernel.getPathTrie();
+  return Array.from(
+    new Set([
+      ...trie.autocomplete(q, 25),
+      ...trie.autocomplete(q.toLowerCase(), 25),
+      ...trie.searchSubstring(q.toLowerCase(), 25),
+    ])
+  ).slice(0, 25);
+}
+
+/**
  * Get search service (exported for testing).
  * 
  * @returns SearchService instance

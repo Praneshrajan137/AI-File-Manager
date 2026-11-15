@@ -18,7 +18,18 @@ import {
   wrapIPCError,
   wrapIPCSuccess,
 } from '@shared/ipc/envelope';
-import type { FileDeleteMode, IndexingStatus, RetrievalSource } from '@shared/contracts';
+import type {
+  AgentTraceStep,
+  CopilotContextScope,
+  CopilotQueryMode,
+  FileDeleteMode,
+  IndexingStatus,
+  OrganizeApplyResult,
+  OrganizePlanOperation,
+  OrganizePlanResult,
+  OrganizeStrategy,
+  RetrievalSource,
+} from '@shared/contracts';
 import type { IPCChannel, IPCResponse } from '@shared/ipc/contracts';
 
 let llmStreamCounter = 0;
@@ -154,18 +165,23 @@ const electronAPI = {
    * LLM Operations
    */
   llm: {
-    query: async (query: string, callback: (chunk: string) => void) => {
+    query: async (
+      query: string,
+      callback: (chunk: string) => void,
+      options?: { mode?: CopilotQueryMode; contextScope?: CopilotContextScope }
+    ): Promise<IPCEnvelope<IPCResponse<'LLM:QUERY'>>> => {
       llmStreamCounter += 1;
       const channel = `LLM:QUERY:${Date.now()}:${llmStreamCounter}`;
       let streamEnded = false;
       let streamedSources: RetrievalSource[] | undefined;
+      let streamedAgentSteps: AgentTraceStep[] | undefined;
       let safetyTimer: ReturnType<typeof setTimeout> | null = null;
       let resolveEnd: (() => void) | null = null;
       const endPromise = new Promise<void>((resolve) => {
         resolveEnd = resolve;
       });
 
-      const handleChunk = (_event: IpcRendererEvent, chunk: unknown) => {
+      const handleChunk = (_event: IpcRendererEvent, chunk: unknown): void => {
         if (typeof chunk === 'string' && chunk !== '[DONE]') {
           callback(chunk);
         }
@@ -173,10 +189,17 @@ const electronAPI = {
 
       const handleEnd = (
         _event: IpcRendererEvent,
-        payload?: { ok?: boolean; sources?: RetrievalSource[] }
-      ) => {
+        payload?: {
+          ok?: boolean;
+          sources?: RetrievalSource[];
+          agentSteps?: AgentTraceStep[];
+        }
+      ): void => {
         if (Array.isArray(payload?.sources)) {
           streamedSources = payload.sources;
+        }
+        if (Array.isArray(payload?.agentSteps)) {
+          streamedAgentSteps = payload.agentSteps;
         }
         streamEnded = true;
         if (safetyTimer) {
@@ -190,7 +213,12 @@ const electronAPI = {
       ipcRenderer.once(`${channel}:end`, handleEnd);
 
       try {
-        const result = await invokeContract('LLM:QUERY', { query, channel });
+        const result = await invokeContract('LLM:QUERY', {
+          query,
+          channel,
+          mode: options?.mode,
+          contextScope: options?.contextScope,
+        });
         if (result.ok && !streamEnded) {
           await Promise.race([
             endPromise,
@@ -202,8 +230,16 @@ const electronAPI = {
             }),
           ]);
         }
-        if (result.ok && streamedSources && !result.data.sources) {
-          return wrapIPCSuccess({ ...result.data, sources: streamedSources });
+        if (
+          result.ok &&
+          ((streamedSources && !result.data.sources) ||
+            (streamedAgentSteps && !result.data.agentSteps))
+        ) {
+          return wrapIPCSuccess({
+            ...result.data,
+            sources: result.data.sources ?? streamedSources,
+            agentSteps: result.data.agentSteps ?? streamedAgentSteps,
+          });
         }
         return result;
       } finally {
@@ -271,6 +307,25 @@ const electronAPI = {
       embeddingModel?: string;
       rerankerModel?: string;
     }) => invokeContract('LLM:SET_MODEL_CONFIG', config),
+  },
+
+  /**
+   * Bounded AI Workspace Organizer Operations
+   */
+  ai: {
+    planOrganize: (
+      targetDir: string,
+      strategy?: OrganizeStrategy,
+      useLLM?: boolean
+    ): Promise<IPCEnvelope<OrganizePlanResult>> =>
+      invokeContract('AI:ORGANIZE_PLAN', { targetDir, strategy, useLLM }),
+
+    applyOrganize: (input: {
+      planId: string;
+      targetDir: string;
+      operations: OrganizePlanOperation[];
+    }): Promise<IPCEnvelope<OrganizeApplyResult>> =>
+      invokeContract('AI:ORGANIZE_APPLY', input),
   },
 
   /**

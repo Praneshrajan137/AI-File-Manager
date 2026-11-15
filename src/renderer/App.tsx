@@ -24,6 +24,7 @@ import { FileContextMenu } from './components/ContextMenu/FileContextMenu';
 import { DiagnosticsModal } from './components/Diagnostics/DiagnosticsModal';
 import { FilePreviewDrawer } from './components/Preview/FilePreviewDrawer';
 import { CommandOmnibar } from './components/SearchBar/CommandOmnibar';
+import { DryRunPlanModal } from './components/Organizer/DryRunPlanModal';
 import { Toast } from './components/common/Toast';
 import { RenameDialog } from './components/common/RenameDialog';
 import { CreateEntryDialog } from './components/common/CreateEntryDialog';
@@ -116,6 +117,7 @@ const FileManagerApp: React.FC = () => {
   const [chatOpen, setChatOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [omnibarOpen, setOmnibarOpen] = useState(false);
+  const [organizeTargetDir, setOrganizeTargetDir] = useState<string | null>(null);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem('fm_theme') === 'dark';
@@ -480,6 +482,7 @@ const FileManagerApp: React.FC = () => {
   const handleSpaceQuickLook = useCallback((): void => {
     if (
       omnibarOpen ||
+      organizeTargetDir !== null ||
       diagnosticsOpen ||
       renameFile !== null ||
       createEntryMode !== null ||
@@ -510,6 +513,7 @@ const FileManagerApp: React.FC = () => {
     }
   }, [
     omnibarOpen,
+    organizeTargetDir,
     diagnosticsOpen,
     renameFile,
     createEntryMode,
@@ -916,6 +920,11 @@ const FileManagerApp: React.FC = () => {
           onRedo={(): void => { void handleRedo(); }}
           onOpenDiagnostics={(): void => setDiagnosticsOpen(true)}
           onOpenOmnibar={(): void => setOmnibarOpen(true)}
+          onOpenOrganize={(): void => {
+            if (currentPath) {
+              setOrganizeTargetDir(currentPath);
+            }
+          }}
           splitPaneOpen={splitPaneOpen}
           onToggleSplitPane={handleToggleSplitPane}
           isDarkMode={isDarkMode}
@@ -1071,9 +1080,15 @@ const FileManagerApp: React.FC = () => {
             >
               <ChatInterface
                 currentPath={currentPath}
+                selectedPaths={selectedFiles}
                 llm={llmState}
                 onOpenCitation={(filePath, startLine, endLine): void => {
                   void handleOpenCitation(filePath, startLine, endLine);
+                }}
+                onOpenOrganize={(targetDir): void => {
+                  if (targetDir) {
+                    setOrganizeTargetDir(targetDir);
+                  }
                 }}
               />
             </div>
@@ -1232,6 +1247,34 @@ const FileManagerApp: React.FC = () => {
             setChatOpen(true);
             void llmState.startIndexing(currentPath);
           }
+        }}
+        onOrganizeCurrentDir={(): void => {
+          if (currentPath) {
+            setOrganizeTargetDir(currentPath);
+          }
+        }}
+      />
+
+      {/* AI Folder Organization Dry-Run Plan Modal */}
+      <DryRunPlanModal
+        isOpen={organizeTargetDir !== null}
+        targetDir={organizeTargetDir ?? currentPath}
+        onClose={(): void => setOrganizeTargetDir(null)}
+        onApplied={async (result): Promise<void> => {
+          setOrganizeTargetDir(null);
+          setSelectedFiles([]);
+          if (currentPath) {
+            await readDirectory(currentPath);
+          }
+          await refreshWorkspaceMetadata();
+          showToast({
+            type: 'success',
+            message: `Organized ${result.appliedCount} file(s)`,
+            actionLabel: 'Undo',
+            onAction: (): void => {
+              void handleUndo();
+            },
+          });
         }}
       />
     </div>

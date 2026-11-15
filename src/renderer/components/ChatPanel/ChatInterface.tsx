@@ -3,19 +3,24 @@ import { MessageBubble } from './MessageBubble';
 import { ChatInput } from './ChatInput';
 import { IndexingPanel } from './IndexingPanel';
 import { useLLM, UseLLMReturn } from '@renderer/hooks/useLLM';
-import { Bot, Sparkles } from 'lucide-react';
+import { Bot, FolderKanban, Sparkles } from 'lucide-react';
+import type { CopilotQueryMode } from '@shared/contracts';
 
 interface ChatInterfaceProps {
   currentPath?: string;
+  selectedPaths?: string[];
   llm?: UseLLMReturn;
   onOpenCitation?: (filePath: string, startLine?: number, endLine?: number) => void;
+  onOpenOrganize?: (targetDir: string) => void;
 }
 
 const ChatInterfaceBody: React.FC<{
   currentPath: string;
+  selectedPaths: string[];
   llmState: UseLLMReturn;
   onOpenCitation?: (filePath: string, startLine?: number, endLine?: number) => void;
-}> = ({ currentPath, llmState, onOpenCitation }) => {
+  onOpenOrganize?: (targetDir: string) => void;
+}> = ({ currentPath, selectedPaths, llmState, onOpenCitation, onOpenOrganize }) => {
   const {
     messages,
     loading,
@@ -28,6 +33,9 @@ const ChatInterfaceBody: React.FC<{
     setActiveModel,
   } = llmState;
   const [input, setInput] = useState('');
+  const [mode, setMode] = useState<CopilotQueryMode>('rag');
+  const [useFolder, setUseFolder] = useState<boolean>(false);
+  const [useSelection, setUseSelection] = useState<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -39,9 +47,26 @@ const ChatInterfaceBody: React.FC<{
   }, [messages]);
 
   const handleSend = async () => {
-    if (!input.trim() || loading) return;
+    const trimmed = input.trim();
+    if (!trimmed || loading) return;
 
-    await sendQuery(input);
+    const mentionsFolder = /(?:^|\s)@folder\b/i.test(trimmed);
+    const mentionsSelection = /(?:^|\s)@selection\b/i.test(trimmed);
+    const effectiveUseFolder = useFolder || mentionsFolder;
+    const effectiveUseSelection = (useSelection || mentionsSelection) && selectedPaths.length > 0;
+
+    await sendQuery(trimmed, {
+      mode,
+      contextScope:
+        effectiveUseFolder || effectiveUseSelection
+          ? {
+              currentPath: currentPath || undefined,
+              selectedPaths: effectiveUseSelection ? selectedPaths : undefined,
+              useFolder: effectiveUseFolder,
+              useSelection: effectiveUseSelection,
+            }
+          : undefined,
+    });
     setInput('');
   };
 
@@ -98,6 +123,18 @@ const ChatInterfaceBody: React.FC<{
                 ))}
               </select>
             </div>
+          )}
+          {onOpenOrganize && currentPath && (
+            <button
+              type="button"
+              onClick={(): void => onOpenOrganize(currentPath)}
+              data-testid="organize-folder-button"
+              title="Preview AI organization moves before applying"
+              className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white/15 hover:bg-white/25 text-white text-xs font-medium border border-white/20 transition-colors"
+            >
+              <FolderKanban className="w-3.5 h-3.5" />
+              <span>AI Organize Folder (Dry-Run)</span>
+            </button>
           )}
         </div>
       </div>
@@ -171,6 +208,14 @@ const ChatInterfaceBody: React.FC<{
         onChange={setInput}
         onSend={handleSend}
         disabled={loading}
+        currentPath={currentPath}
+        selectedCount={selectedPaths.length}
+        useFolder={useFolder}
+        useSelection={useSelection}
+        mode={mode}
+        onToggleFolder={(): void => setUseFolder((prev) => !prev)}
+        onToggleSelection={(): void => setUseSelection((prev) => !prev)}
+        onToggleMode={(): void => setMode((prev) => (prev === 'rag' ? 'agent' : 'rag'))}
       />
     </div>
   );
@@ -178,36 +223,46 @@ const ChatInterfaceBody: React.FC<{
 
 const ChatInterfaceStandalone: React.FC<{
   currentPath: string;
+  selectedPaths: string[];
   onOpenCitation?: (filePath: string, startLine?: number, endLine?: number) => void;
-}> = ({ currentPath, onOpenCitation }) => {
+  onOpenOrganize?: (targetDir: string) => void;
+}> = ({ currentPath, selectedPaths, onOpenCitation, onOpenOrganize }) => {
   const internalLlm = useLLM();
   return (
     <ChatInterfaceBody
       currentPath={currentPath}
+      selectedPaths={selectedPaths}
       llmState={internalLlm}
       onOpenCitation={onOpenCitation}
+      onOpenOrganize={onOpenOrganize}
     />
   );
 };
 
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   currentPath = '',
+  selectedPaths = [],
   llm,
   onOpenCitation,
+  onOpenOrganize,
 }) => {
   if (llm) {
     return (
       <ChatInterfaceBody
         currentPath={currentPath}
+        selectedPaths={selectedPaths}
         llmState={llm}
         onOpenCitation={onOpenCitation}
+        onOpenOrganize={onOpenOrganize}
       />
     );
   }
   return (
     <ChatInterfaceStandalone
       currentPath={currentPath}
+      selectedPaths={selectedPaths}
       onOpenCitation={onOpenCitation}
+      onOpenOrganize={onOpenOrganize}
     />
   );
 };
