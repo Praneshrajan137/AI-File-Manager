@@ -24,6 +24,8 @@ module.exports = {
     output: {
         path: path.resolve(__dirname, 'dist/renderer'),
         filename: 'bundle.js',
+        chunkFilename: '[name].chunk.js',
+        publicPath: './',
         // FIX: Set global object for webpack runtime
         globalObject: 'globalThis',
     },

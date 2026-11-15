@@ -1,5 +1,6 @@
 import React from 'react';
 import { Home, ChevronRight } from 'lucide-react';
+import { useSystemPaths } from '@renderer/contexts/SystemPathsContext';
 
 interface BreadcrumbProps {
   path: string;
@@ -33,41 +34,46 @@ function parseBreadcrumbPath(targetPath: string): { root: string; separator: str
 
 export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
   const { root, separator, segments } = parseBreadcrumbPath(path);
+  const { paths, retry } = useSystemPaths();
 
-  // Handle home button click - navigate to user's home directory
   const handleHomeClick = async (): Promise<void> => {
-    try {
-      const systemPaths = await window.electronAPI.fs.getSystemPaths();
-      onNavigate(systemPaths.home);
-    } catch {
-      // Ignore unavailable system paths
+    if (paths?.home) {
+      onNavigate(paths.home);
+      return;
+    }
+    const resolved = await retry();
+    if (resolved?.home) {
+      onNavigate(resolved.home);
     }
   };
 
   return (
-    <div
-      className="flex items-center gap-1.5 text-sm overflow-x-auto flex-1 min-w-[140px]"
-      role="navigation"
+    <nav
+      className="flex items-center gap-1 text-sm overflow-x-auto flex-1 min-w-[140px]"
       aria-label="Breadcrumb"
       data-testid="breadcrumb"
     >
       <button
-        onClick={handleHomeClick}
-        className="p-1.5 rounded-md text-primary-500 dark:text-slate-400 hover:text-primary-700 dark:hover:text-slate-100 hover:bg-primary-50 dark:hover:bg-slate-800 transition-all flex-shrink-0"
+        type="button"
+        onClick={() => void handleHomeClick()}
+        className="p-1.5 rounded-md text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
         aria-label="Home"
+        title="Home folder"
       >
-        <Home className="w-4 h-4" />
+        <Home className="w-4 h-4" aria-hidden="true" />
       </button>
 
       {root.startsWith('\\\\') && (
         <React.Fragment key={root}>
-          <ChevronRight className="w-3.5 h-3.5 text-primary-300 dark:text-slate-600 flex-shrink-0" />
+          <ChevronRight className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 flex-shrink-0" aria-hidden="true" />
           <button
+            type="button"
             onClick={() => onNavigate(root)}
-            className={`px-2 py-1 rounded-md truncate max-w-[180px] flex-shrink-0 transition-all ${
+            aria-current={segments.length === 0 ? 'page' : undefined}
+            className={`px-2 py-1 rounded-md truncate max-w-[180px] flex-shrink-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 ${
               segments.length === 0
-                ? 'font-medium text-primary-900 dark:text-slate-100 bg-primary-50 dark:bg-slate-800'
-                : 'text-primary-600 dark:text-slate-300 hover:text-primary-800 dark:hover:text-white hover:bg-primary-50 dark:hover:bg-slate-800'
+                ? 'font-medium text-slate-900 dark:text-slate-100 bg-slate-100 dark:bg-slate-800'
+                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
             }`}
           >
             {root}
@@ -83,20 +89,22 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
 
         return (
           <React.Fragment key={fullPath}>
-            <ChevronRight className="w-3.5 h-3.5 text-primary-300 dark:text-slate-600 flex-shrink-0" />
+            <ChevronRight className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 flex-shrink-0" aria-hidden="true" />
             <button
+              type="button"
               onClick={() => onNavigate(fullPath)}
-              className={`px-2 py-1 rounded-md truncate max-w-[150px] flex-shrink-0 transition-all ${isLast
-                  ? 'font-medium text-primary-900 dark:text-slate-100 bg-primary-50 dark:bg-slate-800'
-                  : 'text-primary-600 dark:text-slate-300 hover:text-primary-800 dark:hover:text-white hover:bg-primary-50 dark:hover:bg-slate-800'
-                }`}
+              aria-current={isLast ? 'page' : undefined}
+              className={`px-2 py-1 rounded-md truncate max-w-[150px] flex-shrink-0 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 ${
+                isLast
+                  ? 'font-medium text-slate-900 dark:text-slate-100 bg-slate-100 dark:bg-slate-800'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
             >
               {segment}
             </button>
           </React.Fragment>
         );
       })}
-    </div>
+    </nav>
   );
 };
-

@@ -18,24 +18,24 @@ export const Toast: React.FC<ToastProps> = ({
 
   const typeConfig = {
     success: {
-      bg: 'bg-success-500',
+      bg: 'bg-success-700',
       text: 'text-white',
-      icon: <CheckCircle className="w-5 h-5" />,
+      icon: <CheckCircle className="w-5 h-5" aria-hidden="true" />,
     },
     error: {
-      bg: 'bg-error-500',
+      bg: 'bg-error-700',
       text: 'text-white',
-      icon: <AlertCircle className="w-5 h-5" />,
+      icon: <AlertCircle className="w-5 h-5" aria-hidden="true" />,
     },
     warning: {
-      bg: 'bg-warning-500',
+      bg: 'bg-warning-700',
       text: 'text-white',
-      icon: <AlertTriangle className="w-5 h-5" />,
+      icon: <AlertTriangle className="w-5 h-5" aria-hidden="true" />,
     },
     info: {
-      bg: 'bg-info-500',
+      bg: 'bg-info-700',
       text: 'text-white',
-      icon: <Info className="w-5 h-5" />,
+      icon: <Info className="w-5 h-5" aria-hidden="true" />,
     },
   };
 
@@ -46,7 +46,7 @@ export const Toast: React.FC<ToastProps> = ({
       className={`
         ${config.bg} ${config.text}
         flex items-start gap-3 p-4 rounded-lg shadow-lg min-w-[300px] max-w-[500px]
-        animate-slideIn
+        animate-slideIn border border-white/15
       `}
       role="alert"
       aria-live="polite"
@@ -70,11 +70,12 @@ export const Toast: React.FC<ToastProps> = ({
       )}
 
       <button
+        type="button"
         onClick={onClose}
-        className="flex-shrink-0 hover:opacity-75 transition-opacity focus:outline-none focus:ring-2 focus:ring-white rounded"
+        className="flex-shrink-0 p-1 min-w-[24px] min-h-[24px] flex items-center justify-center hover:bg-white/20 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white rounded"
         aria-label="Close notification"
       >
-        <X className="w-5 h-5" />
+        <X className="w-4 h-4" aria-hidden="true" />
       </button>
     </div>
   );

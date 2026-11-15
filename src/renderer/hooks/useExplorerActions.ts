@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo } from 'react';
+import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import {
   FileDeleteMode,
   FileNode,
@@ -12,6 +12,12 @@ import {
   joinChildPath,
   normalizeComparablePath,
 } from '@renderer/utils/pathHelpers';
+
+export interface SelectionModifiers {
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+}
 
 export interface UseExplorerActionsOptions {
   files: FileNode[];
@@ -44,8 +50,8 @@ export interface UseExplorerActionsReturn {
   secondaryFiles: FileNode[];
   secondaryLoading: boolean;
   secondarySelectedFiles: string[];
-  handleFileClick: (file: FileNode, e?: React.MouseEvent) => void;
-  handleSecondaryFileClick: (file: FileNode, e?: React.MouseEvent) => void;
+  handleFileClick: (file: FileNode, e?: SelectionModifiers) => void;
+  handleSecondaryFileClick: (file: FileNode, e?: SelectionModifiers) => void;
   handleSelectAll: () => void;
   loadSecondaryDirectory: (targetPath: string) => Promise<void>;
   stopSecondaryWatch: () => void;
@@ -96,6 +102,29 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
     [secondaryFiles, sortBy, sortDirection]
   );
 
+  // Prune stale selections from prior folders without clearing post-navigation selections
+  useEffect(() => {
+    const validPaths = new Set(orderedFilePaths);
+    setSelectedFiles((prev) => {
+      const next = prev.filter((p) => validPaths.has(p));
+      return next.length === prev.length ? prev : next;
+    });
+    if (selectionAnchorRef.current && !validPaths.has(selectionAnchorRef.current)) {
+      selectionAnchorRef.current = null;
+    }
+  }, [orderedFilePaths]);
+
+  useEffect(() => {
+    const validSecondaryPaths = new Set(orderedSecondaryPaths);
+    setSecondarySelectedFiles((prev) => {
+      const next = prev.filter((p) => validSecondaryPaths.has(p));
+      return next.length === prev.length ? prev : next;
+    });
+    if (secondaryAnchorRef.current && !validSecondaryPaths.has(secondaryAnchorRef.current)) {
+      secondaryAnchorRef.current = null;
+    }
+  }, [orderedSecondaryPaths]);
+
   const loadSecondaryDirectory = useCallback(async (targetPath: string): Promise<void> => {
     const seq = ++secondaryReadSeqRef.current;
     setSecondaryLoading(true);
@@ -141,7 +170,7 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
   );
 
   const handleFileClick = useCallback(
-    (file: FileNode, e?: React.MouseEvent): void => {
+    (file: FileNode, e?: SelectionModifiers): void => {
       const result = toggleMultiSelection(
         selectedFiles,
         orderedFilePaths,
@@ -160,7 +189,7 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
   );
 
   const handleSecondaryFileClick = useCallback(
-    (file: FileNode, e?: React.MouseEvent): void => {
+    (file: FileNode, e?: SelectionModifiers): void => {
       const result = toggleMultiSelection(
         secondarySelectedFiles,
         orderedSecondaryPaths,
@@ -179,11 +208,11 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
   );
 
   const handleSelectAll = useCallback((): void => {
-    setSelectedFiles(files.map((f) => f.path));
-    if (files.length > 0) {
-      selectionAnchorRef.current = files[0].path;
+    setSelectedFiles(orderedFilePaths);
+    if (orderedFilePaths.length > 0) {
+      selectionAnchorRef.current = orderedFilePaths[0];
     }
-  }, [files]);
+  }, [orderedFilePaths]);
 
   const handleUndo = useCallback(async (): Promise<void> => {
     try {

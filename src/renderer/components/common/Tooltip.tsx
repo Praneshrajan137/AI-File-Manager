@@ -56,7 +56,7 @@ export const Tooltip: React.FC<TooltipProps> = ({
       {isVisible && content && (
         <div
           className={`
-            absolute z-50 px-2 py-1 text-xs text-white bg-gray-900 rounded whitespace-nowrap pointer-events-none
+            absolute z-50 px-2 py-1 text-xs text-white bg-slate-900 dark:bg-slate-800 border border-slate-700 rounded shadow-md whitespace-nowrap pointer-events-none
             ${positionClasses[position]}
           `}
           role="tooltip"
@@ -65,7 +65,7 @@ export const Tooltip: React.FC<TooltipProps> = ({
           {/* Arrow */}
           <div
             className={`
-              absolute w-2 h-2 bg-gray-900 transform rotate-45
+              absolute w-2 h-2 bg-slate-900 dark:bg-slate-800 transform rotate-45
               ${position === 'top' ? 'top-full left-1/2 -translate-x-1/2 -mt-1' : ''}
               ${position === 'bottom' ? 'bottom-full left-1/2 -translate-x-1/2 -mb-1' : ''}
               ${position === 'left' ? 'left-full top-1/2 -translate-y-1/2 -ml-1' : ''}

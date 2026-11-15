@@ -91,181 +91,206 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onToggleTheme,
   onOpenOrganize,
   chatOpen,
-  onToggleChat
+  onToggleChat,
 }) => (
-  <div className="h-14 bg-white dark:bg-slate-900 border-b border-primary-200 dark:border-slate-800 px-4 flex items-center gap-2 shadow-elite">
-    <NavigationButtons
-      canGoBack={canGoBack}
-      canGoForward={canGoForward}
-      onBack={onBack}
-      onForward={onForward}
-    />
+  <header
+    data-testid="main-toolbar"
+    className="min-h-[3.5rem] py-1.5 px-3 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 shadow-elite"
+  >
+    <div className="flex items-center gap-2 min-w-0 flex-1 basis-[220px]">
+      <NavigationButtons
+        canGoBack={canGoBack}
+        canGoForward={canGoForward}
+        onBack={onBack}
+        onForward={onForward}
+      />
 
-    <Breadcrumb path={currentPath} onNavigate={onNavigate} />
+      <Breadcrumb path={currentPath} onNavigate={onNavigate} />
+    </div>
 
-    <div className="flex items-center gap-2 flex-shrink-0">
+    <div className="flex flex-wrap items-center gap-1.5 min-w-0 max-w-full">
       <SearchBar onSearch={onSearch} onSelect={onSearchSelect ?? onNavigate} />
 
-      <div className="h-6 w-px bg-primary-200" />
+      <div className="hidden sm:block h-5 w-px bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
 
-    {onNewFile && (
-      <Button
-        variant="ghost"
-        size="sm"
-        icon={<FilePlus className="w-4 h-4 text-primary-600" />}
-        onClick={onNewFile}
-        disabled={!currentPath}
-        title="New File"
-        aria-label="New File"
-        data-testid="new-file-button"
-      />
-    )}
+      {onNewFile && (
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<FilePlus className="w-4 h-4 text-slate-600 dark:text-slate-300" aria-hidden="true" />}
+          onClick={onNewFile}
+          disabled={!currentPath}
+          title="New File"
+          aria-label="New File"
+          data-testid="new-file-button"
+        />
+      )}
 
-    {onNewFolder && (
-      <Button
-        variant="ghost"
-        size="sm"
-        icon={<FolderPlus className="w-4 h-4 text-primary-600" />}
-        onClick={onNewFolder}
-        disabled={!currentPath}
-        title="New Folder"
-        aria-label="New Folder"
-        data-testid="new-folder-button"
-      />
-    )}
+      {onNewFolder && (
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<FolderPlus className="w-4 h-4 text-slate-600 dark:text-slate-300" aria-hidden="true" />}
+          onClick={onNewFolder}
+          disabled={!currentPath}
+          title="New Folder"
+          aria-label="New Folder"
+          data-testid="new-folder-button"
+        />
+      )}
 
-    {onPreviewSelected && (
-      <Button
-        variant="ghost"
-        size="sm"
-        icon={<Eye className="w-4 h-4 text-primary-600" />}
-        onClick={onPreviewSelected}
-        disabled={!canPreviewSelected}
-        title="Quick Preview Selected File (Alt+P)"
-        aria-label="Quick Preview"
-        data-testid="preview-button"
-      />
-    )}
+      {onPreviewSelected && (
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<Eye className="w-4 h-4 text-slate-600 dark:text-slate-300" aria-hidden="true" />}
+          onClick={onPreviewSelected}
+          disabled={!canPreviewSelected}
+          title="Quick Preview Selected File (Alt+P)"
+          aria-label="Quick Preview"
+          data-testid="preview-button"
+        />
+      )}
 
-    {onUndo && (
-      <Button
-        variant="ghost"
-        size="sm"
-        icon={<Undo2 className="w-4 h-4 text-primary-600" />}
-        onClick={onUndo}
-        disabled={!canUndo}
-        title={undoDescription ? `Undo: ${undoDescription} (Ctrl+Z)` : 'Undo (Ctrl+Z)'}
-        aria-label="Undo"
-        data-testid="undo-button"
-      />
-    )}
+      {onUndo && (
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<Undo2 className="w-4 h-4 text-slate-600 dark:text-slate-300" aria-hidden="true" />}
+          onClick={onUndo}
+          disabled={!canUndo}
+          title={undoDescription ? `Undo: ${undoDescription} (Ctrl+Z)` : 'Undo (Ctrl+Z)'}
+          aria-label="Undo"
+          data-testid="undo-button"
+        />
+      )}
 
-    {onRedo && (
-      <Button
-        variant="ghost"
-        size="sm"
-        icon={<Redo2 className="w-4 h-4 text-primary-600" />}
-        onClick={onRedo}
-        disabled={!canRedo}
-        title={redoDescription ? `Redo: ${redoDescription} (Ctrl+Y)` : 'Redo (Ctrl+Y)'}
-        aria-label="Redo"
-        data-testid="redo-button"
-      />
-    )}
+      {onRedo && (
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<Redo2 className="w-4 h-4 text-slate-600 dark:text-slate-300" aria-hidden="true" />}
+          onClick={onRedo}
+          disabled={!canRedo}
+          title={redoDescription ? `Redo: ${redoDescription} (Ctrl+Y)` : 'Redo (Ctrl+Y)'}
+          aria-label="Redo"
+          data-testid="redo-button"
+        />
+      )}
 
-    <ViewToggle mode={viewMode} onChange={onViewModeChange} />
-    <SortDropdown value={sortBy} onChange={onSortChange} />
+      <ViewToggle mode={viewMode} onChange={onViewModeChange} />
+      <SortDropdown value={sortBy} onChange={onSortChange} />
 
-    {onSortDirectionToggle && (
+      {onSortDirectionToggle && (
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={
+            sortDirection === 'asc' ? (
+              <ArrowUp className="w-4 h-4 text-slate-600 dark:text-slate-300" aria-hidden="true" />
+            ) : (
+              <ArrowDown className="w-4 h-4 text-slate-600 dark:text-slate-300" aria-hidden="true" />
+            )
+          }
+          onClick={onSortDirectionToggle}
+          title={`Sort order: ${sortDirection === 'asc' ? 'Ascending' : 'Descending'}`}
+          aria-label={sortDirection === 'asc' ? 'Sort ascending' : 'Sort descending'}
+          data-testid="sort-direction-toggle"
+        />
+      )}
+
+      <div className="hidden sm:block h-5 w-px bg-slate-200 dark:bg-slate-700" aria-hidden="true" />
+
+      {onOpenOmnibar && (
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<Command className="w-4 h-4 text-accent-600 dark:text-indigo-400" aria-hidden="true" />}
+          onClick={onOpenOmnibar}
+          title="Command & Content Omnibar (Ctrl+K)"
+          aria-label="Command Omnibar"
+          data-testid="omnibar-trigger-button"
+        />
+      )}
+
+      {onToggleSplitPane && (
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={
+            <Columns
+              className={`w-4 h-4 ${splitPaneOpen ? 'text-accent-600 dark:text-indigo-400' : 'text-slate-600 dark:text-slate-300'}`}
+              aria-hidden="true"
+            />
+          }
+          onClick={onToggleSplitPane}
+          title="Toggle Split-Pane Dual Explorer (F6)"
+          aria-label="Toggle Split-Pane"
+          aria-pressed={splitPaneOpen}
+          data-testid="split-pane-button"
+          className={splitPaneOpen ? 'bg-indigo-50 dark:bg-indigo-950/60' : ''}
+        />
+      )}
+
+      {onToggleTheme && (
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={
+            isDarkMode ? (
+              <Sun className="w-4 h-4 text-amber-400" aria-hidden="true" />
+            ) : (
+              <Moon className="w-4 h-4 text-slate-600" aria-hidden="true" />
+            )
+          }
+          onClick={onToggleTheme}
+          title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Obsidian Dark Slate'}
+          aria-label="Toggle Theme"
+          aria-pressed={isDarkMode}
+          data-testid="theme-toggle-button"
+        />
+      )}
+
+      {onOpenOrganize && (
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<FolderKanban className="w-4 h-4 text-accent-600 dark:text-indigo-400" aria-hidden="true" />}
+          onClick={onOpenOrganize}
+          disabled={!currentPath}
+          title="AI Organize Folder (Dry-Run Preview)"
+          aria-label="AI Organize Folder"
+          data-testid="toolbar-organize-button"
+        />
+      )}
+
+      {onOpenDiagnostics && (
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<Activity className="w-4 h-4 text-emerald-700 dark:text-emerald-400" aria-hidden="true" />}
+          onClick={onOpenDiagnostics}
+          title="Kernel Runtime Diagnostics"
+          aria-label="Runtime Diagnostics"
+          data-testid="diagnostics-button"
+        />
+      )}
+
       <Button
         variant="ghost"
         size="sm"
         icon={
-          sortDirection === 'asc' ? (
-            <ArrowUp className="w-4 h-4 text-primary-600" />
-          ) : (
-            <ArrowDown className="w-4 h-4 text-primary-600" />
-          )
+          <MessageSquare
+            className={`w-4 h-4 ${chatOpen ? 'text-accent-600 dark:text-indigo-400' : 'text-slate-600 dark:text-slate-300'}`}
+            aria-hidden="true"
+          />
         }
-        onClick={onSortDirectionToggle}
-        title={`Sort order: ${sortDirection === 'asc' ? 'Ascending' : 'Descending'}`}
-        aria-label={sortDirection === 'asc' ? 'Sort ascending' : 'Sort descending'}
-        data-testid="sort-direction-toggle"
-      />
-    )}
-
-    <div className="h-6 w-px bg-primary-200 dark:bg-slate-700" />
-
-    {onOpenOmnibar && (
-      <Button
-        variant="ghost"
-        size="sm"
-        icon={<Command className="w-4 h-4 text-indigo-500" />}
-        onClick={onOpenOmnibar}
-        title="Command & Content Omnibar (Ctrl+K)"
-        aria-label="Command Omnibar"
-        data-testid="omnibar-trigger-button"
-      />
-    )}
-
-    {onToggleSplitPane && (
-      <Button
-        variant="ghost"
-        size="sm"
-        icon={<Columns className={`w-4 h-4 ${splitPaneOpen ? 'text-indigo-500' : 'text-primary-600 dark:text-slate-300'}`} />}
-        onClick={onToggleSplitPane}
-        title="Toggle Split-Pane Dual Explorer (F6)"
-        aria-label="Toggle Split-Pane"
-        data-testid="split-pane-button"
-        className={splitPaneOpen ? 'bg-indigo-50 dark:bg-indigo-950/60' : ''}
-      />
-    )}
-
-    {onToggleTheme && (
-      <Button
-        variant="ghost"
-        size="sm"
-        icon={isDarkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-primary-600" />}
-        onClick={onToggleTheme}
-        title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Obsidian Dark Slate'}
-        aria-label="Toggle Theme"
-        data-testid="theme-toggle-button"
-      />
-    )}
-
-    {onOpenOrganize && (
-      <Button
-        variant="ghost"
-        size="sm"
-        icon={<FolderKanban className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />}
-        onClick={onOpenOrganize}
-        disabled={!currentPath}
-        title="AI Organize Folder (Dry-Run Preview)"
-        aria-label="AI Organize Folder"
-        data-testid="toolbar-organize-button"
-      />
-    )}
-
-    {onOpenDiagnostics && (
-      <Button
-        variant="ghost"
-        size="sm"
-        icon={<Activity className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
-        onClick={onOpenDiagnostics}
-        title="Kernel Runtime Diagnostics"
-        aria-label="Runtime Diagnostics"
-        data-testid="diagnostics-button"
-      />
-    )}
-
-      <Button
-        variant="ghost"
-        icon={<MessageSquare className={`w-5 h-5 ${chatOpen ? 'text-indigo-600 dark:text-indigo-400' : 'text-primary-500 dark:text-slate-400'}`} />}
         onClick={onToggleChat}
         aria-label={chatOpen ? 'Close chat' : 'Open chat'}
+        aria-pressed={chatOpen}
         data-testid="chat-toggle-button"
         className={chatOpen ? 'bg-indigo-50 dark:bg-indigo-950/60' : ''}
       />
     </div>
-  </div>
+  </header>
 );

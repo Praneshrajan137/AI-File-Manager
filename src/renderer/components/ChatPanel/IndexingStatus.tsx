@@ -10,7 +10,7 @@ export const IndexingStatus: React.FC<IIndexingStatus> = ({
 }) => {
   if (!inProgress && indexed === total && total > 0) {
     return (
-      <div className="text-xs text-green-600">
+      <div className="text-xs text-emerald-700 dark:text-emerald-300">
         ✓ {indexed} files indexed
       </div>
     );
@@ -18,8 +18,8 @@ export const IndexingStatus: React.FC<IIndexingStatus> = ({
 
   if (inProgress) {
     return (
-      <div className="flex items-center gap-2 text-xs text-gray-500">
-        <Loader className="w-3 h-3 animate-spin" />
+      <div className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+        <Loader className="w-3 h-3 animate-spin" aria-hidden="true" />
         <span>Indexing: {indexed} / {total}</span>
         {currentFile && (
           <span className="truncate max-w-[150px]">({currentFile})</span>

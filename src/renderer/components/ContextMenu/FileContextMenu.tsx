@@ -1,6 +1,7 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Copy, Trash2, Edit, FolderOpen, Eye, Star, ArrowRightLeft, Files } from 'lucide-react';
 import { FileNode } from '@shared/contracts';
+import { useRegisterOverlay } from '@renderer/hooks/useOverlayStack';
 
 interface FileContextMenuProps {
   file: FileNode;
@@ -31,27 +32,51 @@ export const FileContextMenu: React.FC<FileContextMenuProps> = ({
   onCopyToOtherPane,
   isFavorite = false,
 }) => {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [coords, setCoords] = useState<{ left: number; top: number }>(() => {
+    if (typeof window === 'undefined') {
+      return { left: position.x, top: position.y };
+    }
+    return {
+      left: Math.max(8, Math.min(position.x, window.innerWidth - 220)),
+      top: Math.max(8, Math.min(position.y, window.innerHeight - 280)),
+    };
+  });
+
+  useRegisterOverlay('file-context-menu', true, onClose);
+
   useEffect(() => {
     const handleClickOutside = (): void => onClose();
-    const handleEscape = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose();
-    };
 
-    // Delay adding listeners to prevent immediate close
-    const timeoutId = setTimeout(() => {
-      window.addEventListener('click', handleClickOutside);
-      window.addEventListener('keydown', handleEscape);
+    if (menuRef.current && typeof window !== 'undefined') {
+      const rect = menuRef.current.getBoundingClientRect();
+      const clampedLeft = Math.max(
+        8,
+        Math.min(position.x, window.innerWidth - Math.max(rect.width, 190) - 8)
+      );
+      const clampedTop = Math.max(
+        8,
+        Math.min(position.y, window.innerHeight - Math.max(rect.height, 200) - 8)
+      );
+      setCoords({ left: clampedLeft, top: clampedTop });
+    }
+
+    const focusTimer = setTimeout(() => {
+      itemRefs.current[0]?.focus();
     }, 0);
 
-    return () => {
-      // Clear timeout if component unmounts before listeners are added
+    // Delay adding listener to prevent immediate dismissal from the triggering click
+    const timeoutId = setTimeout(() => {
+      window.addEventListener('click', handleClickOutside);
+    }, 0);
+
+    return (): void => {
+      clearTimeout(focusTimer);
       clearTimeout(timeoutId);
-      
-      // Remove listeners (safe to call even if never added)
       window.removeEventListener('click', handleClickOutside);
-      window.removeEventListener('keydown', handleEscape);
     };
-  }, [onClose]);
+  }, [onClose, position.x, position.y]);
 
   const menuItems = [
     { label: 'Open', icon: FolderOpen, action: onOpen },
@@ -72,26 +97,57 @@ export const FileContextMenu: React.FC<FileContextMenuProps> = ({
     { label: 'Copy Path', icon: Copy, action: onCopyPath },
   ];
 
+  const handleMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    const activeIdx = itemRefs.current.findIndex((btn) => btn === document.activeElement);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = (activeIdx + 1) % menuItems.length;
+      itemRefs.current[next]?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = (activeIdx - 1 + menuItems.length) % menuItems.length;
+      itemRefs.current[prev]?.focus();
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      itemRefs.current[0]?.focus();
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      itemRefs.current[menuItems.length - 1]?.focus();
+    } else if (e.key === 'Tab') {
+      onClose();
+    }
+  };
+
   return (
     <div
-      className="fixed bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-50 min-w-[160px]"
-      style={{ top: position.y, left: position.x }}
+      ref={menuRef}
+      className="fixed bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl py-1 z-50 min-w-[180px]"
+      style={{ top: coords.top, left: coords.left }}
       role="menu"
-      onClick={(e) => e.stopPropagation()} // Prevent click outside handler
+      aria-label={`Actions for ${file.name}`}
+      data-testid="file-context-menu"
+      onKeyDown={handleMenuKeyDown}
+      onClick={(e): void => e.stopPropagation()}
     >
       {menuItems.map((item, idx) => (
         <button
-          key={idx}
-          onClick={() => {
+          key={item.label}
+          ref={(el): void => {
+            itemRefs.current[idx] = el;
+          }}
+          type="button"
+          onClick={(): void => {
             item.action();
             onClose();
           }}
-          className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-100 transition-colors ${
-            item.danger ? 'text-error-600' : 'text-gray-700'
+          className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-slate-100 dark:hover:bg-slate-800 focus-visible:bg-slate-100 dark:focus-visible:bg-slate-800 focus-visible:outline-none transition-colors ${
+            item.danger
+              ? 'text-error-700 dark:text-red-400'
+              : 'text-slate-700 dark:text-slate-200'
           }`}
           role="menuitem"
         >
-          <item.icon className="w-4 h-4" />
+          <item.icon className="w-4 h-4 flex-shrink-0" aria-hidden="true" />
           <span>{item.label}</span>
         </button>
       ))}

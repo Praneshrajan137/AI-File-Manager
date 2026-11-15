@@ -15,6 +15,7 @@ interface ButtonProps {
   type?: 'button' | 'submit' | 'reset';
   title?: string;
   'aria-label'?: string;
+  'aria-pressed'?: boolean;
   'data-testid'?: string;
 }
 
@@ -32,15 +33,16 @@ export const Button: React.FC<ButtonProps> = ({
   type = 'button',
   title,
   'aria-label': ariaLabel,
+  'aria-pressed': ariaPressed,
   'data-testid': dataTestId,
 }) => {
-  const baseClasses = 'inline-flex items-center justify-center gap-2 font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed';
+  const baseClasses = 'inline-flex items-center justify-center gap-2 font-medium rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900 disabled:opacity-50 disabled:cursor-not-allowed';
 
   const variantClasses = {
-    primary: 'bg-primary-500 hover:bg-primary-600 active:bg-primary-700 text-white focus:ring-primary-500',
-    secondary: 'bg-gray-200 dark:bg-slate-800 hover:bg-gray-300 dark:hover:bg-slate-700 active:bg-gray-400 text-gray-800 dark:text-slate-100 focus:ring-gray-300 dark:focus:ring-slate-600',
-    ghost: 'bg-transparent hover:bg-gray-100 dark:hover:bg-slate-800 active:bg-gray-200 dark:active:bg-slate-700 text-gray-700 dark:text-slate-300 focus:ring-gray-300 dark:focus:ring-slate-600',
-    danger: 'bg-error-500 hover:bg-error-600 active:bg-error-700 text-white focus:ring-error-500',
+    primary: 'bg-accent-600 hover:bg-accent-700 active:bg-accent-800 text-white focus-visible:ring-accent-500',
+    secondary: 'bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 active:bg-slate-400 text-slate-900 dark:text-slate-100 focus-visible:ring-slate-500',
+    ghost: 'bg-transparent hover:bg-slate-100 dark:hover:bg-slate-800 active:bg-slate-200 dark:active:bg-slate-700 text-slate-700 dark:text-slate-200 focus-visible:ring-slate-500',
+    danger: 'bg-error-700 hover:bg-error-600 active:bg-red-800 text-white focus-visible:ring-error-500',
   };
 
   const sizeClasses = {
@@ -59,13 +61,6 @@ export const Button: React.FC<ButtonProps> = ({
     }
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent): void => {
-    if ((e.key === 'Enter' || e.key === ' ') && !isDisabled && onClick) {
-      e.preventDefault();
-      onClick();
-    }
-  };
-
   return (
     <button
       type={type}
@@ -77,10 +72,10 @@ export const Button: React.FC<ButtonProps> = ({
         ${className}
       `}
       onClick={handleClick}
-      onKeyPress={handleKeyPress}
       disabled={isDisabled}
       title={title}
       aria-label={ariaLabel || (typeof children === 'string' ? children : undefined)}
+      aria-pressed={ariaPressed}
       aria-busy={loading}
       data-testid={dataTestId}
     >

@@ -7,12 +7,15 @@ interface UseFileSystemReturn {
   currentPath: string;
   loading: boolean;
   error: FileSystemError | null;
+  searchQuery: string | null;
 
   // Actions
   readDirectory: (path: string) => Promise<boolean>;
   deleteFile: (path: string, recursive?: boolean, skipRefresh?: boolean, mode?: FileDeleteMode) => Promise<void>;
   moveFile: (source: string, destination: string) => Promise<void>;
-  setSearchResults: (results: FileNode[]) => void;
+  setSearchResults: (results: FileNode[], query?: string) => void;
+  clearSearch: () => Promise<void>;
+  getLatestFiles: () => FileNode[];
 }
 
 interface UseFileSystemOptions {
@@ -39,19 +42,23 @@ export function useFileSystem(options: UseFileSystemOptions = {}): UseFileSystem
   const [currentPath, setCurrentPath] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<FileSystemError | null>(null);
+  const [searchQuery, setSearchQuery] = useState<string | null>(null);
   const readSeqRef = useRef<number>(0);
+  const latestFilesRef = useRef<FileNode[]>([]);
   const { onError, onSuccess } = options;
 
   const readDirectory = useCallback(async (path: string): Promise<boolean> => {
     const requestSeq = ++readSeqRef.current;
     setLoading(true);
     setError(null);
+    setSearchQuery(null);
 
     try {
       const result = await window.electronAPI.fs.readDirectory(path);
       if (requestSeq !== readSeqRef.current) {
         return false;
       }
+      latestFilesRef.current = result;
       setFiles(result);
       setCurrentPath(path);
       return true;
@@ -114,18 +121,35 @@ export function useFileSystem(options: UseFileSystemOptions = {}): UseFileSystem
     }
   }, [currentPath, readDirectory, onSuccess, onError]);
 
-  const setSearchResults = useCallback((results: FileNode[]) => {
+  const setSearchResults = useCallback((results: FileNode[], query?: string) => {
+    readSeqRef.current += 1;
+    setLoading(false);
+    setError(null);
+    setSearchQuery(query?.trim() || 'Active search');
+    latestFilesRef.current = results;
     setFiles(results);
   }, []);
+
+  const clearSearch = useCallback(async (): Promise<void> => {
+    setSearchQuery(null);
+    if (currentPath) {
+      await readDirectory(currentPath);
+    }
+  }, [currentPath, readDirectory]);
+
+  const getLatestFiles = useCallback((): FileNode[] => latestFilesRef.current, []);
 
   return {
     files,
     currentPath,
     loading,
     error,
+    searchQuery,
     readDirectory,
     deleteFile,
     moveFile,
     setSearchResults,
+    clearSearch,
+    getLatestFiles,
   };
 }

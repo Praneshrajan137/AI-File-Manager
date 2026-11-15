@@ -34,7 +34,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onToggleSelection,
   onToggleMode,
 }) => {
-  const handleKeyPress = (e: React.KeyboardEvent): void => {
+  const handleKeyDown = (e: React.KeyboardEvent): void => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       onSend();
@@ -45,7 +45,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   return (
     <div
-      className="p-3 border-t border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-2"
+      className="p-3 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-2"
       data-testid="chat-input-container"
     >
       {/* Context Scope & Agent Mode Chips */}
@@ -58,13 +58,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             data-testid="chip-folder"
             aria-pressed={useFolder}
             title={currentPath ? `Scope answers to ${currentPath}` : 'Open a folder first'}
-            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border transition-colors disabled:opacity-45 ${
+            className={`inline-flex items-center gap-1 px-2 py-1 rounded-full border transition-colors disabled:opacity-50 ${
               useFolder
-                ? 'bg-indigo-100 dark:bg-indigo-950 border-indigo-400 dark:border-indigo-700 text-indigo-800 dark:text-indigo-200 font-medium'
-                : 'bg-gray-100 dark:bg-slate-800 border-gray-200 dark:border-slate-700 text-gray-600 dark:text-slate-300 hover:bg-gray-200 dark:hover:bg-slate-700'
+                ? 'bg-accent-100 dark:bg-accent-950 border-accent-400 dark:border-accent-700 text-accent-800 dark:text-accent-200 font-medium'
+                : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700'
             }`}
           >
-            <Folder className="w-3 h-3" />
+            <Folder className="w-3 h-3" aria-hidden="true" />
             <span className="truncate max-w-[110px]">@folder:{folderLabel}</span>
           </button>
         )}
@@ -77,13 +77,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             data-testid="chip-selection"
             aria-pressed={useSelection}
             title="Include currently selected files in prompt context"
-            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border transition-colors disabled:opacity-45 ${
+            className={`inline-flex items-center gap-1 px-2 py-1 rounded-full border transition-colors disabled:opacity-50 ${
               useSelection && selectedCount > 0
                 ? 'bg-emerald-100 dark:bg-emerald-950 border-emerald-400 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200 font-medium'
-                : 'bg-gray-100 dark:bg-slate-800 border-gray-200 dark:border-slate-700 text-gray-600 dark:text-slate-300 hover:bg-gray-200 dark:hover:bg-slate-700'
+                : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700'
             }`}
           >
-            <MousePointerClick className="w-3 h-3" />
+            <MousePointerClick className="w-3 h-3" aria-hidden="true" />
             <span>@selection ({selectedCount})</span>
           </button>
         )}
@@ -96,13 +96,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             data-testid="chip-agent-mode"
             aria-pressed={mode === 'agent'}
             title="Toggle bounded ReAct tool-calling agent (up to 4 read-only steps)"
-            className={`ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full border transition-colors ${
+            className={`ml-auto inline-flex items-center gap-1 px-2 py-1 rounded-full border transition-colors ${
               mode === 'agent'
                 ? 'bg-purple-100 dark:bg-purple-950 border-purple-400 dark:border-purple-700 text-purple-800 dark:text-purple-200 font-medium'
-                : 'bg-gray-100 dark:bg-slate-800 border-gray-200 dark:border-slate-700 text-gray-600 dark:text-slate-300 hover:bg-gray-200 dark:hover:bg-slate-700'
+                : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700'
             }`}
           >
-            <Bot className="w-3 h-3" />
+            <Bot className="w-3 h-3" aria-hidden="true" />
             <span>{mode === 'agent' ? 'Agent (ReAct)' : 'RAG Fast'}</span>
           </button>
         )}
@@ -113,35 +113,37 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           type="text"
           value={value}
           onChange={(e): void => onChange(e.target.value)}
-          onKeyPress={handleKeyPress}
+          onKeyDown={handleKeyDown}
+          aria-label="Ask AI Copilot"
           placeholder={
             mode === 'agent'
               ? 'Ask Agent to inspect workspace files (@folder / @selection)...'
               : 'Ask about your files (@folder / @selection)...'
           }
           disabled={disabled}
-          className="flex-1 px-4 py-2 border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-gray-900 dark:text-slate-100 placeholder:text-gray-400 dark:placeholder:text-slate-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 text-sm disabled:opacity-50"
+          className="flex-1 min-w-0 px-3.5 py-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder:text-slate-500 dark:placeholder:text-slate-400 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-500 text-sm disabled:opacity-50"
           data-testid="chat-input"
         />
         <button
+          type="button"
           onClick={onSend}
           disabled={!value.trim() || disabled}
-          className="px-4 py-2 bg-primary-500 text-white rounded-lg hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="px-4 py-2 bg-accent-600 text-white rounded-lg hover:bg-accent-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           aria-label="Send message"
           data-testid="send-button"
         >
-          <Send className="w-4 h-4" />
+          <Send className="w-4 h-4" aria-hidden="true" />
         </button>
         {disabled && onCancel && (
           <button
             type="button"
             onClick={onCancel}
-            className="px-3 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center gap-1 text-xs font-medium"
+            className="px-3 py-2 bg-error-700 text-white rounded-lg hover:bg-error-600 transition-colors flex items-center gap-1 text-xs font-medium"
             aria-label="Stop generation"
             data-testid="cancel-query-button"
             title="Cancel running AI response"
           >
-            <Square className="w-3.5 h-3.5 fill-current" />
+            <Square className="w-3.5 h-3.5 fill-current" aria-hidden="true" />
             <span>Stop</span>
           </button>
         )}

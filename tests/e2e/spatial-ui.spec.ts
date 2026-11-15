@@ -216,7 +216,7 @@ test.describe('Stage 4 Spatial UI & Security E2E', () => {
       await expect(option).toBeVisible({ timeout: 10000 });
       await option.click();
 
-      await expect(page.locator('[data-testid="file-list"] [role="button"]', { hasText: 'sample.png' })).toBeVisible({
+      await expect(page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'sample.png' })).toBeVisible({
         timeout: 10000,
       });
 
@@ -225,8 +225,8 @@ test.describe('Stage 4 Spatial UI & Security E2E', () => {
       const fileGrid = page.locator('[data-testid="file-grid"]');
       await expect(fileGrid).toBeVisible({ timeout: 10000 });
 
-      const alphaCard = fileGrid.locator('[role="button"]', { hasText: 'alpha.txt' });
-      const betaCard = fileGrid.locator('[role="button"]', { hasText: 'beta.txt' });
+      const alphaCard = fileGrid.locator('[role="option"]', { hasText: 'alpha.txt' });
+      const betaCard = fileGrid.locator('[role="option"]', { hasText: 'beta.txt' });
       await alphaCard.click();
       const modKey = process.platform === 'darwin' ? 'Meta' : 'Control';
       await betaCard.click({ modifiers: [modKey] });
@@ -234,7 +234,7 @@ test.describe('Stage 4 Spatial UI & Security E2E', () => {
       await expect(betaCard).toHaveAttribute('aria-selected', 'true');
 
       // 4. Spacebar QuickLook on PNG via vault-asset:// & SVG & binary fallback
-      const pngCard = fileGrid.locator('[role="button"]', { hasText: 'sample.png' });
+      const pngCard = fileGrid.locator('[role="option"]', { hasText: 'sample.png' });
       await pngCard.click();
       await page.keyboard.press('Space');
 
@@ -258,14 +258,14 @@ test.describe('Stage 4 Spatial UI & Security E2E', () => {
       await expect(previewDrawer).toBeHidden();
 
       // SVG preview renders
-      await fileGrid.locator('[role="button"]', { hasText: 'diagram.svg' }).click();
+      await fileGrid.locator('[role="option"]', { hasText: 'diagram.svg' }).click();
       await page.keyboard.press('Space');
       await expect(previewImg).toBeVisible({ timeout: 10000 });
       await page.locator('[data-testid="preview-close"]').click();
       await expect(previewDrawer).toBeHidden();
 
       // Binary preview preserves binary notice rather than media error
-      await fileGrid.locator('[role="button"]', { hasText: 'blob.bin' }).click();
+      await fileGrid.locator('[role="option"]', { hasText: 'blob.bin' }).click();
       await page.keyboard.press('Space');
       await expect(page.locator('[data-testid="preview-binary-notice"]')).toBeVisible({ timeout: 10000 });
       await page.locator('[data-testid="preview-close"]').click();
@@ -297,7 +297,7 @@ test.describe('Stage 4 Spatial UI & Security E2E', () => {
       await page.keyboard.press('F6');
       const rightPane = page.locator('[data-testid="split-pane-right"]');
       await expect(rightPane).toBeVisible({ timeout: 5000 });
-      const rightDestFolder = rightPane.locator('[role="button"]', { hasText: 'dest-folder' });
+      const rightDestFolder = rightPane.locator('[role="option"]', { hasText: 'dest-folder' });
       await expect(rightDestFolder).toBeVisible({ timeout: 5000 });
       await rightDestFolder.dblclick();
       await expect(page.locator('[data-testid="split-pane-path"]')).toContainText('dest-folder', {

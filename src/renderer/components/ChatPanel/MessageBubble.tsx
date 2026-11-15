@@ -8,9 +8,10 @@ import {
   FolderKanban,
   ShieldCheck,
   ShieldAlert,
+  RotateCcw,
 } from 'lucide-react';
 import type { OrganizePlanResult } from '@shared/contracts';
-import { Message } from '@renderer/hooks/useLLM';
+import { Message, SendQueryOptions } from '@renderer/hooks/useLLM';
 import { parseCitationSegments } from '@renderer/utils/explorerHelpers';
 import { extractBasename } from '@renderer/utils/pathHelpers';
 
@@ -18,12 +19,14 @@ interface MessageBubbleProps {
   message: Message;
   onOpenCitation?: (filePath: string, startLine?: number, endLine?: number) => void;
   onPreviewOrganizePlan?: (plan: OrganizePlanResult) => void;
+  onRetry?: (query: string, options?: SendQueryOptions) => void;
 }
 
 export const MessageBubble: React.FC<MessageBubbleProps> = ({
   message,
   onOpenCitation,
   onPreviewOrganizePlan,
+  onRetry,
 }) => {
   const isUser = message.role === 'user';
   const [traceExpanded, setTraceExpanded] = useState<boolean>(false);
@@ -54,8 +57,8 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
       data-testid={isUser ? 'user-message' : 'assistant-message'}
     >
       {!isUser && (
-        <div className="w-8 h-8 rounded-full bg-primary-500 flex items-center justify-center flex-shrink-0">
-          <Bot className="w-5 h-5 text-white" />
+        <div className="w-8 h-8 rounded-full bg-accent-600 flex items-center justify-center flex-shrink-0">
+          <Bot className="w-5 h-5 text-white" aria-hidden="true" />
         </div>
       )}
 
@@ -63,8 +66,10 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
         <div
           className={`rounded-lg p-3 ${
             isUser
-              ? 'bg-primary-500 text-white'
-              : 'bg-gray-100 dark:bg-slate-800 text-gray-800 dark:text-slate-100'
+              ? 'bg-accent-600 text-white'
+              : message.isError
+                ? 'bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 text-red-900 dark:text-red-100'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100'
           }`}
         >
           <p className="text-sm whitespace-pre-wrap">
@@ -79,7 +84,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
                         type="button"
                         data-testid="inline-citation-link"
                         onClick={() => onOpenCitation?.(targetPath, seg.startLine, seg.endLine)}
-                        className="inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 font-mono text-xs hover:underline cursor-pointer"
+                        className="inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded bg-accent-100 dark:bg-accent-950 text-accent-700 dark:text-accent-300 font-mono text-xs hover:underline cursor-pointer"
                         title={`Inspect ${targetPath}${seg.startLine ? ` at line ${seg.startLine}` : ''}`}
                       >
                         {seg.content}
@@ -89,6 +94,19 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
                   return <React.Fragment key={idx}>{seg.content}</React.Fragment>;
                 })}
           </p>
+          {!isUser && message.isError && message.retryQuery && onRetry && (
+            <div className="mt-2 pt-2 border-t border-red-200/80 dark:border-red-800/80">
+              <button
+                type="button"
+                data-testid="retry-query-button"
+                onClick={(): void => onRetry(message.retryQuery!, message.retryOptions)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-error-700 hover:bg-error-600 text-white text-xs font-medium"
+              >
+                <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                <span>Retry Request</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {message.offlineSynthesis && !isUser && (

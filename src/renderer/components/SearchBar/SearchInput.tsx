@@ -8,6 +8,9 @@ interface SearchInputProps {
   onFocus: () => void;
   onKeyDown?: (e: React.KeyboardEvent) => void;
   placeholder?: string;
+  expanded?: boolean;
+  listboxId?: string;
+  activeDescendantId?: string;
 }
 
 export const SearchInput: React.FC<SearchInputProps> = ({
@@ -15,7 +18,10 @@ export const SearchInput: React.FC<SearchInputProps> = ({
   onChange,
   onFocus,
   onKeyDown,
-  placeholder = 'Search files... (Ctrl+F)'
+  placeholder = 'Search files... (Ctrl+F)',
+  expanded = false,
+  listboxId,
+  activeDescendantId,
 }) => (
   <Input
     value={value}
@@ -26,7 +32,13 @@ export const SearchInput: React.FC<SearchInputProps> = ({
     icon={<Search className="w-4 h-4" />}
     iconPosition="left"
     type="search"
-    className="w-44 lg:w-56"
+    role="combobox"
+    aria-label="Search files"
+    aria-expanded={expanded}
+    aria-controls={listboxId}
+    aria-activedescendant={activeDescendantId}
+    aria-autocomplete="list"
+    className="w-36 sm:w-44 lg:w-56"
     data-testid="search-input"
   />
 );

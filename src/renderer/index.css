@@ -1,21 +1,39 @@
 /**
- * index.css - Global Styles with Tailwind CSS
- * 
- * Elite File Manager - Premium design system
- * Uses system fonts for security (no external requests)
+ * index.css - Global Styles & Semantic Design Tokens
+ *
+ * Local-only system typography (zero external network font requests).
+ * Light and Dark surfaces maintain >= 4.5:1 normal-text contrast per WCAG 2.2 AA.
  */
 
-/* Tailwind CSS Imports */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Global Styles */
 @layer base {
-  * {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
+  :root {
+    --bg-canvas: #F8FAFC;
+    --bg-surface: #FFFFFF;
+    --bg-elevated: #FFFFFF;
+    --bg-subtle: #F1F5F9;
+    --text-primary: #0F172A;
+    --text-secondary: #475569;
+    --border-subtle: #E2E8F0;
+    --accent-primary: #4F46E5;
+    --accent-primary-hover: #4338CA;
+    --focus-ring: #4F46E5;
+  }
+
+  html.dark {
+    --bg-canvas: #020617;
+    --bg-surface: #0F172A;
+    --bg-elevated: #1E293B;
+    --bg-subtle: #1E293B;
+    --text-primary: #F1F5F9;
+    --text-secondary: #CBD5E1;
+    --border-subtle: #334155;
+    --accent-primary: #4F46E5;
+    --accent-primary-hover: #4338CA;
+    --focus-ring: #818CF8;
   }
 
   html,
@@ -30,33 +48,33 @@
       'Helvetica Neue', sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background-color: #F8FAFC;
-    color: #1E293B;
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
-  }
-
-  html.dark body {
-    background-color: #020617;
-    color: #F1F5F9;
   }
 
   code {
     font-family: 'JetBrains Mono', source-code-pro, Menlo, Monaco, Consolas, monospace;
   }
 
-  /* Smooth transitions globally */
-  button,
-  a,
-  input,
-  select {
-    transition: all 0.15s ease;
+  :focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
 
-/* Custom Utility Classes */
 @layer utilities {
-
-  /* Elite scrollbar */
   .scrollbar-thin {
     scrollbar-width: thin;
     scrollbar-color: #CBD5E1 transparent;
@@ -92,7 +110,6 @@
     background: #475569;
   }
 
-  /* Hide scrollbar until hover */
   .scrollbar-hidden::-webkit-scrollbar-thumb {
     background: transparent;
   }
@@ -101,7 +118,6 @@
     background: #CBD5E1;
   }
 
-  /* Toast slide-in animation */
   @keyframes slideIn {
     from {
       transform: translateX(100%);
@@ -115,10 +131,9 @@
   }
 
   .animate-slideIn {
-    animation: slideIn 0.3s ease-out;
+    animation: slideIn 0.2s ease-out;
   }
 
-  /* Subtle fade in */
   @keyframes fadeIn {
     from {
       opacity: 0;
@@ -130,31 +145,26 @@
   }
 
   .animate-fadeIn {
-    animation: fadeIn 0.2s ease-out;
+    animation: fadeIn 0.15s ease-out;
   }
 }
 
-/* Component layer for reusable patterns */
 @layer components {
-
-  /* Elite button base */
   .btn-elite {
-    @apply px-4 py-2 rounded-lg font-medium transition-all duration-150;
-    @apply bg-primary-800 text-white hover:bg-primary-900;
+    @apply px-4 py-2 rounded-lg font-medium transition-colors duration-150;
+    @apply bg-accent-600 text-white hover:bg-accent-700;
     @apply shadow-elite hover:shadow-elite-md;
   }
 
-  /* Elite card */
   .card-elite {
-    @apply bg-white rounded-lg border border-primary-200;
+    @apply bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800;
     @apply shadow-elite;
   }
 
-  /* Elite input */
   .input-elite {
-    @apply px-3 py-2 rounded-lg border border-primary-200;
-    @apply bg-white text-primary-900 placeholder-primary-400;
-    @apply focus:outline-none focus:ring-2 focus:ring-primary-300 focus:border-primary-300;
-    @apply transition-all duration-150;
+    @apply px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700;
+    @apply bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 placeholder-slate-500 dark:placeholder-slate-400;
+    @apply focus:outline-none focus:ring-2 focus:ring-accent-600 focus:border-accent-600;
+    @apply transition-colors duration-150;
   }
 }

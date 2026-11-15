@@ -1,19 +1,9 @@
 import { useEffect } from 'react';
+import { useOverlayStack } from '@renderer/hooks/useOverlayStack';
 
 type ShortcutHandler = () => void;
 type ShortcutMap = Record<string, ShortcutHandler>;
 
-/**
- * Hook to register global keyboard shortcuts
- * @param shortcuts - Map of keyboard shortcut strings to handler functions
- * @example
- * useKeyboardShortcuts({
- *   'Ctrl+F': handleSearch,
- *   'Ctrl+Shift+L': toggleChat,
- *   'Alt+Left': goBack,
- *   'Delete': handleDelete,
- * });
- */
 function isEditableElement(target: EventTarget | null): boolean {
   if (!target || typeof (target as HTMLElement).tagName !== 'string') {
     return false;
@@ -29,17 +19,42 @@ function isEditableElement(target: EventTarget | null): boolean {
   return typeof el.closest === 'function' && el.closest('[contenteditable="true"]') !== null;
 }
 
+const INTERACTIVE_WIDGET_SELECTOR =
+  'button, a[href], summary, [role="button"], [role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="treeitem"], [role="checkbox"], [role="radio"], [role="switch"], [role="combobox"]';
+
+function isInteractiveWidgetElement(target: EventTarget | null): boolean {
+  if (!target || typeof (target as HTMLElement).tagName !== 'string') {
+    return false;
+  }
+  const el = target as HTMLElement;
+  const tag = el.tagName.toUpperCase();
+  if (tag === 'BUTTON' || tag === 'SUMMARY' || (tag === 'A' && el.hasAttribute('href'))) {
+    return true;
+  }
+  return typeof el.closest === 'function' && el.closest(INTERACTIVE_WIDGET_SELECTOR) !== null;
+}
+
+/**
+ * Hook to register global keyboard shortcuts while respecting active overlays,
+ * editable fields, and native interactive widget activation (Space on buttons/tabs).
+ */
 export function useKeyboardShortcuts(shortcuts: ShortcutMap): void {
+  const { hasOpenOverlay } = useOverlayStack();
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent): void => {
       if (isEditableElement(e.target)) {
         return;
       }
       if (
-        e.key === 'Delete' &&
-        typeof document !== 'undefined' &&
-        document.querySelector('[role="dialog"]') !== null
+        hasOpenOverlay ||
+        (typeof document !== 'undefined' &&
+          document.querySelector('[role="dialog"], [role="alertdialog"], [role="menu"]') !== null)
       ) {
+        return;
+      }
+      // Allow Spacebar to activate focused buttons, tabs, menus, treeitems, and checkboxes.
+      if (e.key === ' ' && !e.ctrlKey && !e.altKey && !e.metaKey && isInteractiveWidgetElement(e.target)) {
         return;
       }
 
@@ -76,5 +91,5 @@ export function useKeyboardShortcuts(shortcuts: ShortcutMap): void {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [shortcuts]);
+  }, [hasOpenOverlay, shortcuts]);
 }

@@ -43,7 +43,7 @@ test.describe('Stage 1 (M7) Safety Kernel: Trash Vault, Undo/Redo & Workspace Va
       await expect(vaultRootAlpha).toBeVisible({ timeout: 10000 });
       await vaultRootAlpha.getByText('vault-alpha').click();
 
-      const targetItem = page.locator('[data-testid="file-list"] [role="button"]', {
+      const targetItem = page.locator('[data-testid="file-list"] [role="option"]', {
         hasText: 'important-note.txt',
       });
       await expect(targetItem).toBeVisible({ timeout: 10000 });

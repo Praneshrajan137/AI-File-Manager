@@ -218,7 +218,7 @@ test.describe('Stage 5 Copilot Agent & AI Organizer E2E', () => {
       await expect(option).toBeVisible({ timeout: 10000 });
       await option.click();
 
-      const notesRow = page.locator('[data-testid="file-list"] [role="button"]', { hasText: 'notes.md' });
+      const notesRow = page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'notes.md' });
       await expect(notesRow).toBeVisible({ timeout: 10000 });
 
       // 1. Select notes.md, open ChatPanel, toggle @selection + Agent (ReAct), ask question

@@ -56,7 +56,7 @@ test.describe('Frontier Workflows E2E', () => {
       const fileList = page.locator('[data-testid="file-list"]');
       await expect(fileList).toBeVisible({ timeout: 10000 });
       await expect(
-        page.locator('[data-testid="file-list"] [role="button"]', { hasText: 'service.log' })
+        page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'service.log' })
       ).toBeVisible({ timeout: 10000 });
 
       // Ensure kernel FileWatcher is actively watching frontierRoot
@@ -80,7 +80,7 @@ test.describe('Frontier Workflows E2E', () => {
       await page.locator('[data-testid="create-entry-confirm"]').click();
 
       await expect(
-        page.locator('[data-testid="file-list"] [role="button"]', { hasText: 'sub-workspace' })
+        page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'sub-workspace' })
       ).toBeVisible({ timeout: 10000 });
       expect((await fs.stat(path.join(frontierRoot, 'sub-workspace'))).isDirectory()).toBe(true);
 
@@ -90,7 +90,7 @@ test.describe('Frontier Workflows E2E', () => {
       await page.locator('[data-testid="create-entry-confirm"]').click();
 
       await expect(
-        page.locator('[data-testid="file-list"] [role="button"]', { hasText: 'created-ui.txt' })
+        page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'created-ui.txt' })
       ).toBeVisible({ timeout: 10000 });
       expect((await fs.stat(path.join(frontierRoot, 'created-ui.txt'))).isFile()).toBe(true);
 
@@ -98,7 +98,7 @@ test.describe('Frontier Workflows E2E', () => {
       await page.locator('[aria-label="Grid view"]').click();
       await expect(page.locator('[data-testid="file-grid"]')).toBeVisible({ timeout: 5000 });
       await expect(
-        page.locator('[data-testid="file-grid"] [role="button"]', { hasText: 'created-ui.txt' })
+        page.locator('[data-testid="file-grid"] [role="option"]', { hasText: 'created-ui.txt' })
       ).toBeVisible();
 
       await page.locator('[aria-label="List view"]').click();
@@ -106,7 +106,7 @@ test.describe('Frontier Workflows E2E', () => {
 
       // 4. Sort direction toggle (asc vs desc)
       const getListOrderText = async (): Promise<string[]> =>
-        page.locator('[data-testid="file-list"] [role="button"]').allInnerTexts();
+        page.locator('[data-testid="file-list"] [role="option"]').allInnerTexts();
 
       await expect
         .poll(async () => {
@@ -131,7 +131,7 @@ test.describe('Frontier Workflows E2E', () => {
       await page.locator('[data-testid="sort-direction-toggle"]').click();
 
       // 5. FilePreviewDrawer: RingBuffer(100), Capped, LRUCache HIT on reopen, and Binary notice
-      await page.locator('[data-testid="file-list"] [role="button"]', { hasText: 'service.log' }).click();
+      await page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'service.log' }).click();
       const previewButton = page.locator('[data-testid="preview-button"]');
       await expect(previewButton).toBeEnabled();
       await previewButton.click();
@@ -149,20 +149,20 @@ test.describe('Frontier Workflows E2E', () => {
       await expect(previewDrawer).toBeHidden();
 
       // Reopen via Alt+P shortcut and verify LRUCache HIT
-      await page.locator('[data-testid="file-list"] [role="button"]', { hasText: 'service.log' }).click();
+      await page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'service.log' }).click();
       await page.keyboard.press('Alt+p');
       await expect(previewDrawer).toBeVisible({ timeout: 5000 });
       await expect(page.locator('[data-testid="preview-cache-badge"]')).toContainText('LRUCache HIT');
 
       // Open binary file in drawer and verify binary guard notice
-      await page.locator('[data-testid="file-list"] [role="button"]', { hasText: 'blob.bin' }).click();
+      await page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'blob.bin' }).click();
       await page.locator('[data-testid="preview-button"]').click();
       await expect(page.locator('[data-testid="preview-binary-notice"]')).toBeVisible({ timeout: 5000 });
       await page.locator('[data-testid="preview-close"]').click();
       await expect(previewDrawer).toBeHidden();
 
       // 5b. Editable target shortcut guard + PathTrie file suggestion preview flow
-      await page.locator('[data-testid="file-list"] [role="button"]', { hasText: 'alpha.txt' }).click();
+      await page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'alpha.txt' }).click();
       await searchInput.click();
       await page.keyboard.press('Delete');
       expect((await fs.stat(alphaFile)).isFile()).toBe(true);
@@ -188,7 +188,7 @@ test.describe('Frontier Workflows E2E', () => {
       await fs.writeFile(path.join(frontierRoot, 'external-signal.txt'), 'watcher signal', 'utf-8');
 
       await expect(
-        page.locator('[data-testid="file-list"] [role="button"]', { hasText: 'external-signal.txt' })
+        page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'external-signal.txt' })
       ).toBeVisible({ timeout: 10000 });
 
       const toastLocator = page.locator('[role="alert"], .toast, [data-testid="toast"]', {
@@ -505,7 +505,7 @@ test.describe('Frontier Workflows E2E', () => {
       await expect(option).toBeVisible({ timeout: 10000 });
       await option.click();
       await expect(
-        page.locator('[data-testid="file-explorer"] [role="button"]', { hasText: 'auth-guide.md' })
+        page.locator('[data-testid="file-explorer"] [role="option"]', { hasText: 'auth-guide.md' })
       ).toBeVisible({ timeout: 10000 });
 
       // 2. Index docs + identical duplicates into VectorStore & Knowledge Graph
@@ -535,10 +535,10 @@ test.describe('Frontier Workflows E2E', () => {
       await page.locator('[data-testid="split-pane-button"]').click();
       const rightPane = page.locator('[data-testid="split-pane-right"]');
       await expect(rightPane).toBeVisible({ timeout: 10000 });
-      await rightPane.locator('[role="button"]', { hasText: 'dest-folder' }).first().dblclick();
+      await rightPane.locator('[role="option"]', { hasText: 'dest-folder' }).first().dblclick();
       await expect(page.locator('[data-testid="split-pane-path"]')).toContainText('dest-folder', { timeout: 10000 });
 
-      await page.locator('[data-testid="file-explorer"] [role="button"]', { hasText: 'auth-guide.md' }).first().click();
+      await page.locator('[data-testid="file-explorer"] [role="option"]', { hasText: 'auth-guide.md' }).first().click();
       await page.locator('[data-testid="split-pane-copy-button"]').click();
       await expect
         .poll(

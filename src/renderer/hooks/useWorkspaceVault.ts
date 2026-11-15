@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   ExplorerLens,
   FileEvent,
@@ -46,38 +46,30 @@ export interface UseWorkspaceVaultReturn {
   handleEmptyTrashVault: () => Promise<void>;
 }
 
-function readInitialDarkMode(): boolean {
-  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
-    return false;
-  }
-  try {
-    return window.localStorage.getItem('fm-theme') === 'dark';
-  } catch {
-    return false;
-  }
-}
-
 export function useWorkspaceVault(options: UseWorkspaceVaultOptions): UseWorkspaceVaultReturn {
   const { currentPath, onNavigate, onIndexRootEnabled, showToast } = options;
 
   const [vaultConfig, setVaultConfig] = useState<VaultConfigSnapshot | null>(null);
   const [journalState, setJournalState] = useState<OperationJournalState | null>(null);
   const [lastWatcherEvent, setLastWatcherEvent] = useState<FileEvent | null>(null);
-  const [isDarkMode, setIsDarkMode] = useState<boolean>(readInitialDarkMode);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [explorerLens, setExplorerLensState] = useState<ExplorerLens>('files');
   const [viewMode, setViewModeState] = useState<ViewMode>('list');
   const [splitPaneOpen, setSplitPaneOpenState] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<SortCriteria>('name');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
+  const uiHydratedRef = useRef<boolean>(false);
+  const dirtyUiKeysRef = useRef<{
+    theme?: boolean;
+    explorerLens?: boolean;
+    viewMode?: boolean;
+    splitPaneOpen?: boolean;
+  }>({});
+
   useEffect(() => {
     if (typeof document !== 'undefined') {
       document.documentElement.classList.toggle('dark', isDarkMode);
-    }
-    try {
-      window.localStorage?.setItem('fm-theme', isDarkMode ? 'dark' : 'light');
-    } catch {
-      // Ignore storage access restriction in hardened environments
     }
   }, [isDarkMode]);
 
@@ -91,11 +83,21 @@ export function useWorkspaceVault(options: UseWorkspaceVaultOptions): UseWorkspa
     if (configRes.status === 'fulfilled' && configRes.value) {
       nextConfig = configRes.value;
       setVaultConfig(configRes.value);
-      if (configRes.value.ui?.explorerLens) {
-        setExplorerLensState(configRes.value.ui.explorerLens);
-      }
-      if (configRes.value.ui?.viewMode) {
-        setViewModeState(configRes.value.ui.viewMode);
+      const ui = configRes.value.ui;
+      if (!uiHydratedRef.current && ui) {
+        uiHydratedRef.current = true;
+        if (ui.theme && !dirtyUiKeysRef.current.theme) {
+          setIsDarkMode(ui.theme === 'dark');
+        }
+        if (ui.explorerLens && !dirtyUiKeysRef.current.explorerLens) {
+          setExplorerLensState(ui.explorerLens);
+        }
+        if (ui.viewMode && !dirtyUiKeysRef.current.viewMode) {
+          setViewModeState(ui.viewMode);
+        }
+        if (typeof ui.splitPaneOpen === 'boolean' && !dirtyUiKeysRef.current.splitPaneOpen) {
+          setSplitPaneOpenState(ui.splitPaneOpen);
+        }
       }
     }
 
@@ -119,6 +121,7 @@ export function useWorkspaceVault(options: UseWorkspaceVaultOptions): UseWorkspa
   );
 
   const toggleDarkMode = useCallback((): void => {
+    dirtyUiKeysRef.current.theme = true;
     setIsDarkMode((prev) => {
       const next = !prev;
       persistUiPrefs({ theme: next ? 'dark' : 'light' });
@@ -128,6 +131,7 @@ export function useWorkspaceVault(options: UseWorkspaceVaultOptions): UseWorkspa
 
   const setExplorerLens = useCallback(
     (lens: ExplorerLens): void => {
+      dirtyUiKeysRef.current.explorerLens = true;
       setExplorerLensState(lens);
       persistUiPrefs({ explorerLens: lens });
     },
@@ -136,6 +140,7 @@ export function useWorkspaceVault(options: UseWorkspaceVaultOptions): UseWorkspa
 
   const setViewMode = useCallback(
     (mode: ViewMode): void => {
+      dirtyUiKeysRef.current.viewMode = true;
       setViewModeState(mode);
       persistUiPrefs({ viewMode: mode });
     },
@@ -144,6 +149,7 @@ export function useWorkspaceVault(options: UseWorkspaceVaultOptions): UseWorkspa
 
   const setSplitPaneOpen = useCallback(
     (open: boolean): void => {
+      dirtyUiKeysRef.current.splitPaneOpen = true;
       setSplitPaneOpenState(open);
       persistUiPrefs({ splitPaneOpen: open });
     },

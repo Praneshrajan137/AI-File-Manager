@@ -11,6 +11,7 @@ export interface UseSpatialLensReturn {
   collections: WorkspaceCollectionGroup[];
   graphInsights: GraphInsightsResponse | null;
   spatialLoading: boolean;
+  spatialError: string | null;
   graphScopeToFolder: boolean;
   setGraphScopeToFolder: (scoped: boolean) => void;
   selectedGraphNodePath: string | null;
@@ -26,12 +27,14 @@ export function useSpatialLens(
   const [collections, setCollections] = useState<WorkspaceCollectionGroup[]>([]);
   const [graphInsights, setGraphInsights] = useState<GraphInsightsResponse | null>(null);
   const [spatialLoading, setSpatialLoading] = useState<boolean>(false);
+  const [spatialError, setSpatialError] = useState<string | null>(null);
   const [graphScopeToFolder, setGraphScopeToFolder] = useState<boolean>(true);
   const [selectedGraphNodePath, setSelectedGraphNodePath] = useState<string | null>(null);
 
   const refreshSpatialData = useCallback(
     async (lensOverride = explorerLens, scopeOverride = graphScopeToFolder): Promise<void> => {
       setSpatialLoading(true);
+      setSpatialError(null);
       try {
         const rootPrefix = scopeOverride && currentPath ? currentPath : undefined;
         const [insightsRes, mapRes, colRes] = await Promise.allSettled([
@@ -44,14 +47,39 @@ export function useSpatialLens(
             : Promise.resolve(null),
         ]);
 
+        const failures: string[] = [];
         if (insightsRes.status === 'fulfilled' && insightsRes.value) {
           setGraphInsights(insightsRes.value);
+        } else if (insightsRes.status === 'rejected') {
+          failures.push(
+            insightsRes.reason instanceof Error
+              ? insightsRes.reason.message
+              : 'Failed to load workspace graph insights'
+          );
         }
+
         if (mapRes.status === 'fulfilled' && mapRes.value) {
           setGraphMap(mapRes.value);
+        } else if (mapRes.status === 'rejected') {
+          failures.push(
+            mapRes.reason instanceof Error
+              ? mapRes.reason.message
+              : 'Failed to load link topology'
+          );
         }
+
         if (colRes.status === 'fulfilled' && colRes.value) {
           setCollections(colRes.value);
+        } else if (colRes.status === 'rejected') {
+          failures.push(
+            colRes.reason instanceof Error
+              ? colRes.reason.message
+              : 'Failed to load smart collections'
+          );
+        }
+
+        if (failures.length > 0) {
+          setSpatialError(failures[0]);
         }
       } finally {
         setSpatialLoading(false);
@@ -69,6 +97,7 @@ export function useSpatialLens(
     collections,
     graphInsights,
     spatialLoading,
+    spatialError,
     graphScopeToFolder,
     setGraphScopeToFolder,
     selectedGraphNodePath,

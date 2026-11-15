@@ -17,6 +17,9 @@ export interface Message {
   id: number;
   role: 'user' | 'assistant';
   content: string;
+  isError?: boolean;
+  retryQuery?: string;
+  retryOptions?: SendQueryOptions;
   sources?: string[];
   structuredSources?: RetrievalSource[];
   agentSteps?: AgentTraceStep[];
@@ -44,6 +47,13 @@ export interface SendQueryOptions {
   history?: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
+export interface UseLLMOptions {
+  /** Whether the Copilot surface is currently open/active. */
+  isActive?: boolean;
+  /** Optional delay (ms) before background model/index status warmup runs when inactive. */
+  deferWarmupMs?: number;
+}
+
 export interface UseLLMReturn {
   messages: Message[];
   loading: boolean;
@@ -59,7 +69,10 @@ export interface UseLLMReturn {
   setActiveModel: (modelName: string) => Promise<void>;
 }
 
-export function useLLM(): UseLLMReturn {
+export function useLLM(hookOptions?: UseLLMOptions): UseLLMReturn {
+  const isActive = hookOptions?.isActive ?? true;
+  const deferWarmupMs = hookOptions?.deferWarmupMs ?? 0;
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [indexingStatus, setIndexingStatus] = useState<IndexingStatus>({
@@ -68,16 +81,33 @@ export function useLLM(): UseLLMReturn {
     inProgress: false,
   });
   const [modelsSnapshot, setModelsSnapshot] = useState<LLMModelsSnapshot | null>(null);
+  const [warmupReady, setWarmupReady] = useState<boolean>(isActive || deferWarmupMs <= 0);
 
   const loadingRef = useRef<boolean>(false);
   const messagesRef = useRef<Message[]>([]);
   const activeChannelRef = useRef<string | null>(null);
+  const querySeqRef = useRef<number>(0);
+  const activeQueryIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
 
-  const refreshModels = useCallback(async () => {
+  useEffect(() => {
+    if (warmupReady) {
+      return;
+    }
+    if (isActive || deferWarmupMs <= 0) {
+      setWarmupReady(true);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setWarmupReady(true);
+    }, deferWarmupMs);
+    return (): void => clearTimeout(timer);
+  }, [deferWarmupMs, isActive, warmupReady]);
+
+  const refreshModels = useCallback(async (): Promise<void> => {
     try {
       if (typeof window.electronAPI?.llm?.listModels === 'function') {
         const snapshot = await window.electronAPI.llm.listModels();
@@ -88,7 +118,7 @@ export function useLLM(): UseLLMReturn {
     }
   }, []);
 
-  const setActiveModel = useCallback(async (modelName: string) => {
+  const setActiveModel = useCallback(async (modelName: string): Promise<void> => {
     const trimmed = modelName.trim();
     if (!trimmed) return;
     if (typeof window.electronAPI?.llm?.setModelConfig === 'function') {
@@ -99,7 +129,10 @@ export function useLLM(): UseLLMReturn {
 
   const cancelQuery = useCallback(async (): Promise<void> => {
     const channel = activeChannelRef.current;
+    activeQueryIdRef.current = null;
     activeChannelRef.current = null;
+    loadingRef.current = false;
+    setLoading(false);
     if (channel && typeof window.electronAPI?.llm?.abortQuery === 'function') {
       try {
         await window.electronAPI.llm.abortQuery(channel);
@@ -107,13 +140,13 @@ export function useLLM(): UseLLMReturn {
         // Ignore cancellation race if stream already finished
       }
     }
-    loadingRef.current = false;
-    setLoading(false);
   }, []);
 
-  const sendQuery = useCallback(async (query: string, options?: SendQueryOptions) => {
+  const sendQuery = useCallback(async (query: string, options?: SendQueryOptions): Promise<void> => {
     if (!query.trim() || loadingRef.current) return;
 
+    const myQueryId = ++querySeqRef.current;
+    activeQueryIdRef.current = myQueryId;
     loadingRef.current = true;
     setLoading(true);
 
@@ -121,7 +154,7 @@ export function useLLM(): UseLLMReturn {
       options?.history ??
       messagesRef.current
         .slice(-6)
-        .filter((m) => m.content.trim().length > 0)
+        .filter((m) => !m.isError && m.content.trim().length > 0)
         .map((m) => ({ role: m.role, content: m.content }));
 
     const userMessage: Message = {
@@ -137,6 +170,9 @@ export function useLLM(): UseLLMReturn {
     const upsertAssistant = (
       patch: Partial<Message> | ((existing: Message | undefined) => Partial<Message>)
     ): void => {
+      if (activeQueryIdRef.current !== myQueryId) {
+        return;
+      }
       setMessages((prev) => {
         const idx = prev.findIndex((msg) => msg.id === assistantMessageId);
         const existing = idx >= 0 ? prev[idx] : undefined;
@@ -163,6 +199,9 @@ export function useLLM(): UseLLMReturn {
       const result = await window.electronAPI.llm.query(
         query,
         (chunk: string) => {
+          if (activeQueryIdRef.current !== myQueryId) {
+            return;
+          }
           responseContent += chunk;
           const latestContent = responseContent;
           upsertAssistant({ content: latestContent });
@@ -172,15 +211,24 @@ export function useLLM(): UseLLMReturn {
           contextScope: options?.contextScope,
           history: historyTurns.length > 0 ? historyTurns : undefined,
           onChannelCreated: (channel: string): void => {
-            activeChannelRef.current = channel;
+            if (activeQueryIdRef.current === myQueryId) {
+              activeChannelRef.current = channel;
+            }
           },
           onStep: (step: AgentTraceStep): void => {
+            if (activeQueryIdRef.current !== myQueryId) {
+              return;
+            }
             upsertAssistant((existing) => ({
               agentSteps: [...(existing?.agentSteps ?? []), step],
             }));
           },
         }
       );
+
+      if (activeQueryIdRef.current !== myQueryId) {
+        return;
+      }
 
       activeChannelRef.current = null;
 
@@ -221,23 +269,58 @@ export function useLLM(): UseLLMReturn {
             responseContent.trim().length > 0
               ? `${responseContent}\n\nError: ${errorText}`
               : `Error: ${errorText}`;
-          upsertAssistant({ content: finalContent });
+          upsertAssistant({
+            content: finalContent,
+            isError: true,
+            retryQuery: query,
+            retryOptions: options,
+          });
         }
       }
 
-      loadingRef.current = false;
-      setLoading(false);
-    } catch {
+      if (activeQueryIdRef.current === myQueryId) {
+        activeQueryIdRef.current = null;
+        loadingRef.current = false;
+        setLoading(false);
+      }
+    } catch (err: unknown) {
+      if (activeQueryIdRef.current !== myQueryId) {
+        return;
+      }
       activeChannelRef.current = null;
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: messageIdCounter++,
-          role: 'assistant',
-          content: 'Sorry, I encountered an error processing your request. Please try again.',
-          timestamp: Date.now(),
-        },
-      ]);
+      activeQueryIdRef.current = null;
+      const errMessage =
+        err instanceof Error && err.message
+          ? `Request failed: ${err.message}`
+          : 'Sorry, I encountered an error processing your request. Please try again.';
+      setMessages((prev) => {
+        const idx = prev.findIndex((msg) => msg.id === assistantMessageId);
+        if (idx >= 0) {
+          return prev.map((msg, i) =>
+            i === idx
+              ? {
+                  ...msg,
+                  content: msg.content ? `${msg.content}\n\n${errMessage}` : errMessage,
+                  isError: true,
+                  retryQuery: query,
+                  retryOptions: options,
+                }
+              : msg
+          );
+        }
+        return [
+          ...prev,
+          {
+            id: assistantMessageId,
+            role: 'assistant',
+            content: errMessage,
+            isError: true,
+            retryQuery: query,
+            retryOptions: options,
+            timestamp: Date.now(),
+          },
+        ];
+      });
 
       loadingRef.current = false;
       setLoading(false);
@@ -267,6 +350,9 @@ export function useLLM(): UseLLMReturn {
   }, []);
 
   useEffect(() => {
+    if (!warmupReady) {
+      return;
+    }
     void refreshModels();
     if (typeof window.electronAPI?.llm?.onIndexingProgress !== 'function') {
       return;
@@ -275,9 +361,12 @@ export function useLLM(): UseLLMReturn {
       setIndexingStatus(status);
     });
     return unsubscribe;
-  }, [refreshModels]);
+  }, [refreshModels, warmupReady]);
 
   useEffect(() => {
+    if (!warmupReady) {
+      return;
+    }
     let cancelled = false;
     let intervalId: NodeJS.Timeout | undefined;
 
@@ -304,7 +393,7 @@ export function useLLM(): UseLLMReturn {
         clearInterval(intervalId);
       }
     };
-  }, [indexingStatus.inProgress]);
+  }, [indexingStatus.inProgress, warmupReady]);
 
   return {
     messages,

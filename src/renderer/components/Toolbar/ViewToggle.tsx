@@ -8,20 +8,28 @@ interface ViewToggleProps {
 }
 
 export const ViewToggle: React.FC<ViewToggleProps> = ({ mode, onChange }) => (
-  <div className="flex gap-1 bg-gray-100 dark:bg-slate-800 rounded p-1">
+  <div
+    className="flex gap-1 bg-slate-100 dark:bg-slate-800 rounded-lg p-1"
+    role="group"
+    aria-label="View mode"
+  >
     <Button
       variant={mode === 'list' ? 'primary' : 'ghost'}
       size="sm"
       onClick={() => onChange('list')}
-      icon={<List className="w-4 h-4" />}
+      icon={<List className="w-4 h-4" aria-hidden="true" />}
       aria-label="List view"
+      aria-pressed={mode === 'list'}
+      data-testid="view-list-button"
     />
     <Button
       variant={mode === 'grid' ? 'primary' : 'ghost'}
       size="sm"
       onClick={() => onChange('grid')}
-      icon={<Grid className="w-4 h-4" />}
+      icon={<Grid className="w-4 h-4" aria-hidden="true" />}
       aria-label="Grid view"
+      aria-pressed={mode === 'grid'}
+      data-testid="view-grid-button"
     />
   </div>
 );

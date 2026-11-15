@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { QuickAccess } from './QuickAccess';
 import { DirectoryTree } from './DirectoryTree';
 import { FavoritesList } from './FavoritesList';
@@ -40,6 +40,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
     setIsResizing(true);
   };
 
+  const handleResizeKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    const step = e.shiftKey ? 32 : 16;
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      onResize(Math.min(UI_CONSTANTS.SIDEBAR_MAX_WIDTH, width + step));
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      onResize(Math.max(UI_CONSTANTS.SIDEBAR_MIN_WIDTH, width - step));
+    }
+  };
+
   useEffect(() => {
     if (!isResizing) return;
 
@@ -65,18 +76,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, [isResizing, onResize]);
 
   return (
-    <div
-      className="bg-white dark:bg-slate-900 border-r border-primary-200 dark:border-slate-800 flex flex-col h-full relative shadow-elite"
+    <aside
+      aria-label="Workspace sidebar"
+      className="bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 flex flex-col h-full relative shadow-elite flex-shrink-0 max-w-[40vw]"
       style={{ width: `${width}px` }}
     >
-      {/* Header - Elite branding */}
-      <div className="px-5 py-4 border-b border-primary-100 dark:border-slate-800 bg-gradient-to-b from-white to-primary-50/30 dark:from-slate-900 dark:to-slate-900">
-        <h1 className="text-lg font-semibold text-primary-900 dark:text-slate-100 tracking-tight">
+      {/* Header - Brand & Privacy Badge */}
+      <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 bg-gradient-to-b from-white to-slate-50/40 dark:from-slate-900 dark:to-slate-900">
+        <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-100 tracking-tight">
           File Manager
         </h1>
         <div className="flex items-center gap-1.5 mt-1">
-          <Shield className="w-3 h-3 text-primary-500 dark:text-indigo-400" />
-          <span className="text-[11px] font-medium text-primary-500 dark:text-slate-400 tracking-wide uppercase">
+          <Shield className="w-3 h-3 text-accent-600 dark:text-indigo-400" aria-hidden="true" />
+          <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300 tracking-wide uppercase">
             PrivateVault AI
           </span>
         </div>
@@ -104,13 +116,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
         />
       </div>
 
-      {/* Resize handle */}
+      {/* Keyboard + Pointer Accessible Resize Handle */}
       <div
-        className={`absolute right-0 top-0 bottom-0 w-1 cursor-col-resize transition-colors ${isResizing ? 'bg-primary-400' : 'bg-transparent hover:bg-primary-300'
-          }`}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        aria-valuemin={UI_CONSTANTS.SIDEBAR_MIN_WIDTH}
+        aria-valuemax={UI_CONSTANTS.SIDEBAR_MAX_WIDTH}
+        aria-valuenow={width}
+        tabIndex={0}
+        className={`absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize transition-colors focus-visible:outline-none focus-visible:bg-accent-500 ${
+          isResizing ? 'bg-accent-500' : 'bg-transparent hover:bg-slate-300 dark:hover:bg-slate-600'
+        }`}
         onMouseDown={handleMouseDown}
+        onKeyDown={handleResizeKeyDown}
       />
-    </div>
+    </aside>
   );
 };
-

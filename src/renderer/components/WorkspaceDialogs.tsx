@@ -1,7 +1,4 @@
-import React from 'react';
-import { DiagnosticsModal } from './Diagnostics/DiagnosticsModal';
-import { CommandOmnibar } from './SearchBar/CommandOmnibar';
-import { DryRunPlanModal } from './Organizer/DryRunPlanModal';
+import React, { Suspense } from 'react';
 import { FileContextMenu } from './ContextMenu/FileContextMenu';
 import { RenameDialog } from './common/RenameDialog';
 import { CreateEntryDialog } from './common/CreateEntryDialog';
@@ -18,6 +15,16 @@ import type {
   OrganizePlanResult,
   OrganizeStrategy,
 } from '@shared/contracts';
+
+const LazyDiagnosticsModal = React.lazy(() =>
+  import('./Diagnostics/DiagnosticsModal').then((m) => ({ default: m.DiagnosticsModal }))
+);
+const LazyCommandOmnibar = React.lazy(() =>
+  import('./SearchBar/CommandOmnibar').then((m) => ({ default: m.CommandOmnibar }))
+);
+const LazyDryRunPlanModal = React.lazy(() =>
+  import('./Organizer/DryRunPlanModal').then((m) => ({ default: m.DryRunPlanModal }))
+);
 
 export interface ContextMenuState {
   file: FileNode;
@@ -217,59 +224,77 @@ export const WorkspaceDialogs: React.FC<WorkspaceDialogsProps> = ({
         onCancel={onClosePendingDelete}
       />
 
-      <DiagnosticsModal isOpen={diagnosticsOpen} onClose={onCloseDiagnostics} />
+      {diagnosticsOpen && (
+        <Suspense fallback={null}>
+          <LazyDiagnosticsModal isOpen={diagnosticsOpen} onClose={onCloseDiagnostics} />
+        </Suspense>
+      )}
 
-      <CommandOmnibar
-        isOpen={omnibarOpen}
-        onClose={onCloseOmnibar}
-        currentPath={currentPath}
-        onNavigateFile={onSearchSelect}
-        onOpenCitation={onOpenCitation}
-        isDarkMode={vault.isDarkMode}
-        onToggleTheme={vault.toggleDarkMode}
-        splitPaneOpen={vault.splitPaneOpen}
-        onToggleSplitPane={onToggleSplitPane}
-        onToggleChat={onToggleChat}
-        onIndexCurrentDir={async (): Promise<void> => {
-          if (currentPath) {
-            await onStartIndexing(currentPath);
-            showToast({
-              type: 'info',
-              message: `Indexing started for ${extractBasename(currentPath)}`,
-            });
-          }
-        }}
-        onOrganizeCurrentDir={(): void => {
-          if (currentPath) onOpenOrganize(currentPath);
-        }}
-      />
+      {omnibarOpen && (
+        <Suspense fallback={null}>
+          <LazyCommandOmnibar
+            isOpen={omnibarOpen}
+            onClose={onCloseOmnibar}
+            currentPath={currentPath}
+            onNavigateFile={onSearchSelect}
+            onOpenCitation={onOpenCitation}
+            isDarkMode={vault.isDarkMode}
+            onToggleTheme={vault.toggleDarkMode}
+            splitPaneOpen={vault.splitPaneOpen}
+            onToggleSplitPane={onToggleSplitPane}
+            onToggleChat={onToggleChat}
+            onIndexCurrentDir={async (): Promise<void> => {
+              if (currentPath) {
+                await onStartIndexing(currentPath);
+                showToast({
+                  type: 'info',
+                  message: `Indexing started for ${extractBasename(currentPath)}`,
+                });
+              }
+            }}
+            onOrganizeCurrentDir={(): void => {
+              if (currentPath) onOpenOrganize(currentPath);
+            }}
+          />
+        </Suspense>
+      )}
 
-      <DryRunPlanModal
-        isOpen={organizeTargetDir !== null}
-        targetDir={organizeTargetDir ?? currentPath}
-        initialStrategy={organizeInitialStrategy}
-        initialPlan={organizeInitialPlan}
-        onClose={onCloseOrganize}
-        onApplied={async (result: OrganizeApplyResult): Promise<void> => {
-          onCloseOrganize();
-          await handleRefreshAll();
-          showToast({
-            type: 'success',
-            message: `Organized ${result.appliedCount} file(s)${
-              result.repairedLinksCount ? ` & repaired ${result.repairedLinksCount} link(s)` : ''
-            }`,
-            actionLabel: 'Undo',
-            onAction: (): void => {
-              void explorer.handleUndo();
-            },
-          });
-        }}
-      />
+      {organizeTargetDir !== null && (
+        <Suspense fallback={null}>
+          <LazyDryRunPlanModal
+            isOpen={true}
+            targetDir={organizeTargetDir}
+            initialStrategy={organizeInitialStrategy}
+            initialPlan={organizeInitialPlan}
+            onClose={onCloseOrganize}
+            onApplied={async (result: OrganizeApplyResult): Promise<void> => {
+              onCloseOrganize();
+              await handleRefreshAll();
+              showToast({
+                type: 'success',
+                message: `Organized ${result.appliedCount} file(s)${
+                  result.repairedLinksCount ? ` & repaired ${result.repairedLinksCount} link(s)` : ''
+                }`,
+                actionLabel: 'Undo',
+                onAction: (): void => {
+                  void explorer.handleUndo();
+                },
+              });
+            }}
+          />
+        </Suspense>
+      )}
 
-      <div className="fixed bottom-4 right-4 z-50 space-y-2">
-        {toasts.map((toast) => (
-          <Toast key={toast.id} {...toast} onClose={(): void => onRemoveToast(toast.id)} />
-        ))}
+      <div
+        className="fixed bottom-4 right-4 z-50 space-y-2 pointer-events-none"
+        aria-live="polite"
+        aria-atomic="false"
+      >
+        <div className="pointer-events-auto space-y-2">
+          {toasts.map((toast) => (
+            <Toast key={toast.id} {...toast} onClose={(): void => onRemoveToast(toast.id)} />
+          ))}
+        </div>
       </div>
     </>
   );
