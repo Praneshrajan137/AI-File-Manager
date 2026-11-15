@@ -3,12 +3,17 @@
  */
 
 import type {
+  ContentSearchMatch,
   FileDeleteMode,
+  FileLineRangeResult,
   FileNode,
   FilePreviewResult,
   FileStats,
+  GraphInsightsResponse,
   IndexingStatus,
+  LLMModelsSnapshot,
   OperationJournalState,
+  RetrievalSource,
   SystemPaths,
   UndoRedoResult,
   VaultConfigSnapshot,
@@ -20,6 +25,12 @@ interface ElectronAPI {
     readDirectory: (path: string) => Promise<FileNode[]>;
     readFile: (path: string) => Promise<{ content: string; encoding: string }>;
     previewFile: (path: string, maxLines?: number) => Promise<FilePreviewResult>;
+    readFileRange: (
+      path: string,
+      startLine: number,
+      endLine?: number,
+      contextLines?: number
+    ) => Promise<FileLineRangeResult>;
     writeFile: (path: string, content: string) => Promise<{ success: boolean }>;
     createFile: (
       path: string,
@@ -62,14 +73,23 @@ interface ElectronAPI {
   search: {
     autocomplete: (prefix: string, maxResults?: number) => Promise<string[]>;
     query: (query: string, searchRoot: string) => Promise<FileNode[]>;
+    content: (query: string, topK?: number, searchRoot?: string) => Promise<ContentSearchMatch[]>;
+  };
+
+  graph: {
+    queryInsights: (options?: {
+      symbolQuery?: string;
+      backlinkTarget?: string;
+    }) => Promise<GraphInsightsResponse>;
   };
 
   llm: {
     query: (
       query: string,
       callback: (chunk: string) => void
-    ) => Promise<{ success: boolean; error?: string }>;
+    ) => Promise<{ success: boolean; error?: string; sources?: RetrievalSource[] }>;
     getIndexingStatus: () => Promise<IndexingStatus>;
+    onIndexingProgress: (callback: (status: IndexingStatus) => void) => () => void;
     startIndexing: (
       path: string
     ) => Promise<{ success: boolean; message?: string; total?: number; error?: string }>;
@@ -79,6 +99,14 @@ interface ElectronAPI {
     ) => Promise<{ success: boolean; chunksCreated?: number; error?: string }>;
     checkOllama: () => Promise<{ available: boolean; models: string[] }>;
     clearIndex: () => Promise<{ success: boolean; error?: string }>;
+    listModels: () => Promise<LLMModelsSnapshot>;
+    setModelConfig: (config: {
+      model?: string;
+      temperature?: number;
+      maxTokens?: number;
+      embeddingModel?: string;
+      rerankerModel?: string;
+    }) => Promise<{ success: boolean; config: LLMModelsSnapshot }>;
   };
 
   fileWatcher: {

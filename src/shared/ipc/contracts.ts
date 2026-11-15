@@ -8,11 +8,16 @@
 
 import { z } from 'zod';
 import type {
+  ContentSearchMatch,
+  FileLineRangeResult,
   FileNode,
   FilePreviewResult,
   FileStats,
+  GraphInsightsResponse,
   IndexingStatus,
+  LLMModelsSnapshot,
   OperationJournalState,
+  RetrievalSource,
   SystemPaths,
   UndoRedoResult,
   VaultConfigSnapshot,
@@ -96,6 +101,12 @@ export const IPC_SCHEMAS = {
     path: z.string().min(1),
     maxLines: z.number().int().min(1).max(100).optional(),
   }),
+  'FS:READ_FILE_RANGE': z.object({
+    path: z.string().min(1),
+    startLine: z.number().int().min(1),
+    endLine: z.number().int().min(1).optional(),
+    contextLines: z.number().int().min(0).max(50).optional(),
+  }),
   'FS:WRITE_FILE': z.object({ path: z.string().min(1), content: z.string() }),
   'FS:DELETE': z.object({
     path: z.string().min(1),
@@ -145,6 +156,21 @@ export const IPC_SCHEMAS = {
     query: z.string(),
     searchRoot: z.string().min(1),
   }),
+  'SEARCH:CONTENT': z.object({
+    query: z.string().min(1).max(500),
+    topK: z.number().int().min(1).max(50).optional(),
+    searchRoot: z.string().min(1).optional(),
+  }),
+  'GRAPH:QUERY_INSIGHTS': z
+    .union([
+      z.undefined(),
+      z.null(),
+      z.object({
+        symbolQuery: z.string().max(200).optional(),
+        backlinkTarget: z.string().max(200).optional(),
+      }),
+    ])
+    .transform((v) => v ?? {}),
   'LLM:QUERY': z.object({
     query: z.string().min(1).max(8000),
     channel: z
@@ -161,6 +187,14 @@ export const IPC_SCHEMAS = {
   ]),
   'LLM:CHECK_OLLAMA': optionalEmptyObjectSchema,
   'LLM:CLEAR_INDEX': optionalEmptyObjectSchema,
+  'LLM:LIST_MODELS': optionalEmptyObjectSchema,
+  'LLM:SET_MODEL_CONFIG': z.object({
+    model: z.string().min(1).max(120).optional(),
+    temperature: z.number().min(0).max(1).optional(),
+    maxTokens: z.number().int().min(64).max(32768).optional(),
+    embeddingModel: z.string().min(1).max(120).optional(),
+    rerankerModel: z.string().min(1).max(120).optional(),
+  }),
   'CLIPBOARD:WRITE_TEXT': z.union([
     z.string().max(1024 * 1024).transform((text) => ({ text })),
     z.object({ text: z.string().max(1024 * 1024) }),
@@ -179,6 +213,7 @@ export interface IPCResponseMap {
   'FS:READ_DIR': FileNode[];
   'FS:READ_FILE': { content: string; encoding: string };
   'FS:PREVIEW_FILE': FilePreviewResult;
+  'FS:READ_FILE_RANGE': FileLineRangeResult;
   'FS:WRITE_FILE': { success: boolean };
   'FS:DELETE': { success: boolean };
   'FS:MOVE': { success: boolean; newPath: string };
@@ -202,13 +237,17 @@ export interface IPCResponseMap {
   'NAV:GET_STATE': { canGoBack: boolean; canGoForward: boolean };
   'SEARCH:AUTOCOMPLETE': string[];
   'SEARCH:QUERY': FileNode[];
-  'LLM:QUERY': { success: boolean; error?: string };
+  'SEARCH:CONTENT': ContentSearchMatch[];
+  'GRAPH:QUERY_INSIGHTS': GraphInsightsResponse;
+  'LLM:QUERY': { success: boolean; error?: string; sources?: RetrievalSource[] };
   'LLM:INDEX_STATUS': IndexingStatus;
   'LLM:START_INDEXING': { success: boolean; message?: string; total?: number; error?: string };
   'LLM:STOP_INDEXING': { success: boolean };
   'LLM:INDEX_FILE': { success: boolean; chunksCreated?: number; error?: string };
   'LLM:CHECK_OLLAMA': { available: boolean; models: string[] };
   'LLM:CLEAR_INDEX': { success: boolean; error?: string };
+  'LLM:LIST_MODELS': LLMModelsSnapshot;
+  'LLM:SET_MODEL_CONFIG': { success: boolean; config: LLMModelsSnapshot };
   'CLIPBOARD:WRITE_TEXT': { success: boolean };
   'SHELL:OPEN_PATH': { success: boolean; error?: string };
   'RUNTIME:GET_DIAGNOSTICS': RuntimeDiagnosticsSnapshot;
@@ -220,7 +259,7 @@ export type IPCResponse<C extends IPCChannel> = IPCResponseMap[C];
 
 export interface IPCContractEntry<C extends IPCChannel = IPCChannel> {
   channel: C;
-  group: 'fileSystem' | 'vault' | 'navigation' | 'search' | 'llm' | 'shell' | 'runtime';
+  group: 'fileSystem' | 'vault' | 'navigation' | 'search' | 'graph' | 'llm' | 'shell' | 'runtime';
   schema: (typeof IPC_SCHEMAS)[C];
   pathFields: readonly string[];
   linkSafePathFields?: readonly string[];
@@ -246,6 +285,13 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     channel: 'FS:PREVIEW_FILE',
     group: 'fileSystem',
     schema: IPC_SCHEMAS['FS:PREVIEW_FILE'],
+    pathFields: ['path'],
+    rateLimit: READ_RATE_LIMIT,
+  },
+  'FS:READ_FILE_RANGE': {
+    channel: 'FS:READ_FILE_RANGE',
+    group: 'fileSystem',
+    schema: IPC_SCHEMAS['FS:READ_FILE_RANGE'],
     pathFields: ['path'],
     rateLimit: READ_RATE_LIMIT,
   },
@@ -411,6 +457,20 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     pathFields: ['searchRoot'],
     rateLimit: SEARCH_RATE_LIMIT,
   },
+  'SEARCH:CONTENT': {
+    channel: 'SEARCH:CONTENT',
+    group: 'search',
+    schema: IPC_SCHEMAS['SEARCH:CONTENT'],
+    pathFields: [],
+    rateLimit: SEARCH_RATE_LIMIT,
+  },
+  'GRAPH:QUERY_INSIGHTS': {
+    channel: 'GRAPH:QUERY_INSIGHTS',
+    group: 'graph',
+    schema: IPC_SCHEMAS['GRAPH:QUERY_INSIGHTS'],
+    pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
+  },
   'LLM:QUERY': {
     channel: 'LLM:QUERY',
     group: 'llm',
@@ -456,6 +516,19 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     schema: IPC_SCHEMAS['LLM:CLEAR_INDEX'],
     pathFields: [],
     rateLimit: LLM_INDEX_RATE_LIMIT,
+  },
+  'LLM:LIST_MODELS': {
+    channel: 'LLM:LIST_MODELS',
+    group: 'llm',
+    schema: IPC_SCHEMAS['LLM:LIST_MODELS'],
+    pathFields: [],
+  },
+  'LLM:SET_MODEL_CONFIG': {
+    channel: 'LLM:SET_MODEL_CONFIG',
+    group: 'llm',
+    schema: IPC_SCHEMAS['LLM:SET_MODEL_CONFIG'],
+    pathFields: [],
+    rateLimit: LLM_RATE_LIMIT,
   },
   'CLIPBOARD:WRITE_TEXT': {
     channel: 'CLIPBOARD:WRITE_TEXT',

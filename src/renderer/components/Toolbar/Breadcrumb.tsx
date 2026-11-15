@@ -53,7 +53,7 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
     >
       <button
         onClick={handleHomeClick}
-        className="p-1.5 rounded-md text-primary-500 hover:text-primary-700 hover:bg-primary-50 transition-all flex-shrink-0"
+        className="p-1.5 rounded-md text-primary-500 dark:text-slate-400 hover:text-primary-700 dark:hover:text-slate-100 hover:bg-primary-50 dark:hover:bg-slate-800 transition-all flex-shrink-0"
         aria-label="Home"
       >
         <Home className="w-4 h-4" />
@@ -61,13 +61,13 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
 
       {root.startsWith('\\\\') && (
         <React.Fragment key={root}>
-          <ChevronRight className="w-3.5 h-3.5 text-primary-300 flex-shrink-0" />
+          <ChevronRight className="w-3.5 h-3.5 text-primary-300 dark:text-slate-600 flex-shrink-0" />
           <button
             onClick={() => onNavigate(root)}
             className={`px-2 py-1 rounded-md truncate max-w-[180px] flex-shrink-0 transition-all ${
               segments.length === 0
-                ? 'font-medium text-primary-900 bg-primary-50'
-                : 'text-primary-600 hover:text-primary-800 hover:bg-primary-50'
+                ? 'font-medium text-primary-900 dark:text-slate-100 bg-primary-50 dark:bg-slate-800'
+                : 'text-primary-600 dark:text-slate-300 hover:text-primary-800 dark:hover:text-white hover:bg-primary-50 dark:hover:bg-slate-800'
             }`}
           >
             {root}
@@ -83,12 +83,12 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onNavigate }) => {
 
         return (
           <React.Fragment key={fullPath}>
-            <ChevronRight className="w-3.5 h-3.5 text-primary-300 flex-shrink-0" />
+            <ChevronRight className="w-3.5 h-3.5 text-primary-300 dark:text-slate-600 flex-shrink-0" />
             <button
               onClick={() => onNavigate(fullPath)}
               className={`px-2 py-1 rounded-md truncate max-w-[150px] flex-shrink-0 transition-all ${isLast
-                  ? 'font-medium text-primary-900 bg-primary-50'
-                  : 'text-primary-600 hover:text-primary-800 hover:bg-primary-50'
+                  ? 'font-medium text-primary-900 dark:text-slate-100 bg-primary-50 dark:bg-slate-800'
+                  : 'text-primary-600 dark:text-slate-300 hover:text-primary-800 dark:hover:text-white hover:bg-primary-50 dark:hover:bg-slate-800'
                 }`}
             >
               {segment}

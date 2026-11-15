@@ -3,11 +3,15 @@ import {
   Activity,
   ArrowDown,
   ArrowUp,
+  Columns,
+  Command,
   Eye,
   FilePlus,
   FolderPlus,
   MessageSquare,
+  Moon,
   Redo2,
+  Sun,
   Undo2,
 } from 'lucide-react';
 import { NavigationButtons } from './NavigationButtons';
@@ -43,6 +47,11 @@ interface ToolbarProps {
   onUndo?: () => void;
   onRedo?: () => void;
   onOpenDiagnostics?: () => void;
+  onOpenOmnibar?: () => void;
+  splitPaneOpen?: boolean;
+  onToggleSplitPane?: () => void;
+  isDarkMode?: boolean;
+  onToggleTheme?: () => void;
   chatOpen: boolean;
   onToggleChat: () => void;
 }
@@ -73,10 +82,15 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onUndo,
   onRedo,
   onOpenDiagnostics,
+  onOpenOmnibar,
+  splitPaneOpen = false,
+  onToggleSplitPane,
+  isDarkMode = false,
+  onToggleTheme,
   chatOpen,
   onToggleChat
 }) => (
-  <div className="h-14 bg-white border-b border-primary-200 px-4 flex items-center gap-2.5 shadow-elite">
+  <div className="h-14 bg-white dark:bg-slate-900 border-b border-primary-200 dark:border-slate-800 px-4 flex items-center gap-2 shadow-elite">
     <NavigationButtons
       canGoBack={canGoBack}
       canGoForward={canGoForward}
@@ -177,13 +191,50 @@ export const Toolbar: React.FC<ToolbarProps> = ({
       />
     )}
 
-    <div className="h-6 w-px bg-primary-200" />
+    <div className="h-6 w-px bg-primary-200 dark:bg-slate-700" />
+
+    {onOpenOmnibar && (
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={<Command className="w-4 h-4 text-indigo-500" />}
+        onClick={onOpenOmnibar}
+        title="Command & Content Omnibar (Ctrl+K)"
+        aria-label="Command Omnibar"
+        data-testid="omnibar-trigger-button"
+      />
+    )}
+
+    {onToggleSplitPane && (
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={<Columns className={`w-4 h-4 ${splitPaneOpen ? 'text-indigo-500' : 'text-primary-600 dark:text-slate-300'}`} />}
+        onClick={onToggleSplitPane}
+        title="Toggle Split-Pane Dual Explorer (F6)"
+        aria-label="Toggle Split-Pane"
+        data-testid="split-pane-button"
+        className={splitPaneOpen ? 'bg-indigo-50 dark:bg-indigo-950/60' : ''}
+      />
+    )}
+
+    {onToggleTheme && (
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={isDarkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-primary-600" />}
+        onClick={onToggleTheme}
+        title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Obsidian Dark Slate'}
+        aria-label="Toggle Theme"
+        data-testid="theme-toggle-button"
+      />
+    )}
 
     {onOpenDiagnostics && (
       <Button
         variant="ghost"
         size="sm"
-        icon={<Activity className="w-4 h-4 text-emerald-600" />}
+        icon={<Activity className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
         onClick={onOpenDiagnostics}
         title="Kernel Runtime Diagnostics"
         aria-label="Runtime Diagnostics"
@@ -193,11 +244,11 @@ export const Toolbar: React.FC<ToolbarProps> = ({
 
       <Button
         variant="ghost"
-        icon={<MessageSquare className={`w-5 h-5 ${chatOpen ? 'text-indigo-600' : 'text-primary-500'}`} />}
+        icon={<MessageSquare className={`w-5 h-5 ${chatOpen ? 'text-indigo-600 dark:text-indigo-400' : 'text-primary-500 dark:text-slate-400'}`} />}
         onClick={onToggleChat}
         aria-label={chatOpen ? 'Close chat' : 'Open chat'}
         data-testid="chat-toggle-button"
-        className={chatOpen ? 'bg-indigo-50' : ''}
+        className={chatOpen ? 'bg-indigo-50 dark:bg-indigo-950/60' : ''}
       />
     </div>
   </div>

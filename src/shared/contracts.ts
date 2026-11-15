@@ -100,6 +100,87 @@ export interface FilePreviewResult {
   fromCache: boolean;
 }
 
+export interface FileRangeLine {
+  lineNumber: number;
+  text: string;
+}
+
+export interface FileLineRangeResult {
+  path: string;
+  name: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+  lines: FileRangeLine[];
+  truncated: boolean;
+}
+
+export interface ContentSearchMatch {
+  chunkId: string;
+  filePath: string;
+  fileName: string;
+  chunkIndex: number;
+  startLine?: number;
+  endLine?: number;
+  heading?: string;
+  snippet: string;
+  score?: number;
+}
+
+export interface GraphInsightDuplicateCluster {
+  sha256: string;
+  files: string[];
+  fileSize: number;
+  wastedBytes: number;
+}
+
+export interface GraphInsightHubTarget {
+  targetRef: string;
+  backlinkCount: number;
+}
+
+export interface GraphInsightRecentFile {
+  path: string;
+  fileType: string;
+  chunkCount: number;
+  indexedAt: number;
+}
+
+export interface GraphInsightsResponse {
+  stats: {
+    totalFiles: number;
+    totalChunks: number;
+    totalTokens: number;
+    lastIndexed: number;
+    duplicateClusters: GraphInsightDuplicateCluster[];
+    totalWastedBytes: number;
+    topHubs: GraphInsightHubTarget[];
+    recentFiles: GraphInsightRecentFile[];
+  };
+  symbolMatches?: Array<{
+    filePath: string;
+    symbolName: string;
+    kind: string;
+    lineNumber: number;
+  }>;
+  backlinks?: Array<{
+    sourcePath: string;
+    targetRef: string;
+    kind: string;
+    lineNumber: number;
+  }>;
+}
+
+export interface LLMModelsSnapshot {
+  available: boolean;
+  models: string[];
+  activeModel: string;
+  embeddingModel: string;
+  rerankerModel: string;
+  temperature: number;
+  maxTokens: number;
+}
+
 export interface SystemPaths {
   home: string;
   documents: string;

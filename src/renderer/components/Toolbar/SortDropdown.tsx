@@ -11,7 +11,7 @@ export const SortDropdown: React.FC<SortDropdownProps> = ({ value, onChange }) =
     <select
       value={value}
       onChange={(e) => onChange(e.target.value as 'name' | 'size' | 'modified' | 'type')}
-      className="appearance-none pl-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm bg-white hover:bg-gray-50 cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary-500"
+      className="appearance-none pl-3 pr-8 py-2 border border-gray-300 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-800 text-gray-800 dark:text-slate-100 hover:bg-gray-50 dark:hover:bg-slate-700 cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary-500"
     >
       <option value="name">Name</option>
       <option value="size">Size</option>

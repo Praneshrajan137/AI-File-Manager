@@ -1,32 +1,59 @@
-import React, { useEffect } from 'react';
-import { X, RefreshCw, ExternalLink, Copy, FileText, AlertTriangle } from 'lucide-react';
-import type { FileNode, FilePreviewResult } from '@shared/contracts';
+import React, { useEffect, useState } from 'react';
+import {
+  X,
+  RefreshCw,
+  ExternalLink,
+  Copy,
+  FileText,
+  AlertTriangle,
+  Image as ImageIcon,
+  FileCode2,
+} from 'lucide-react';
+import type { FileLineRangeResult, FileNode, FilePreviewResult } from '@shared/contracts';
 import { formatFileSize } from '@renderer/utils/formatters';
+import { buildVaultAssetUrl, getVaultAssetKind } from '@shared/utils/vaultAssetUrl';
 import { Spinner } from '@renderer/components/common/Spinner';
+
+interface CitationHighlightRange {
+  startLine: number;
+  endLine?: number;
+}
 
 interface FilePreviewDrawerProps {
   isOpen: boolean;
   file: FileNode | null;
   preview: FilePreviewResult | null;
+  lineRange?: FileLineRangeResult | null;
+  highlightRange?: CitationHighlightRange | null;
   loading: boolean;
   error: string | null;
   onClose: () => void;
   onRefresh: () => void;
   onOpenExternal: () => void;
   onCopyPath: () => void;
+  onClearRangeFocus?: () => void;
 }
 
 export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
   isOpen,
   file,
   preview,
+  lineRange = null,
+  highlightRange = null,
   loading,
   error,
   onClose,
   onRefresh,
   onOpenExternal,
   onCopyPath,
+  onClearRangeFocus,
 }) => {
+  const [assetError, setAssetError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setAssetError(null);
+  }, [file?.path]);
+
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent): void => {
@@ -42,39 +69,82 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
     return null;
   }
 
+  const assetKind = getVaultAssetKind(file.extension || file.name);
+  const assetUrl = assetKind !== 'unsupported' ? buildVaultAssetUrl(file.path) : null;
+  const focusEndLine = highlightRange
+    ? highlightRange.endLine ?? highlightRange.startLine
+    : undefined;
+
   return (
     <aside
-      className="w-[420px] bg-white border-l border-gray-200 shadow-xl flex flex-col h-full"
+      className="w-[440px] bg-white dark:bg-slate-900 border-l border-gray-200 dark:border-slate-800 shadow-xl flex flex-col h-full"
       data-testid="file-preview-drawer"
       aria-label={`Quick Preview: ${file.name}`}
     >
       {/* Header */}
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+      <div className="px-4 py-3 border-b border-gray-200 dark:border-slate-800 flex items-center justify-between bg-gray-50 dark:bg-slate-950/60">
         <div className="min-w-0 flex-1 pr-2">
           <div className="flex items-center gap-2">
-            <FileText className="w-4 h-4 text-primary-600 flex-shrink-0" />
-            <h3 className="text-sm font-semibold text-gray-900 truncate" title={file.name}>
+            {assetKind === 'image' ? (
+              <ImageIcon className="w-4 h-4 text-indigo-500 flex-shrink-0" />
+            ) : lineRange ? (
+              <FileCode2 className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+            ) : (
+              <FileText className="w-4 h-4 text-primary-600 dark:text-slate-300 flex-shrink-0" />
+            )}
+            <h3
+              className="text-sm font-semibold text-gray-900 dark:text-slate-100 truncate"
+              title={file.name}
+            >
               {file.name}
             </h3>
           </div>
-          <div className="flex items-center gap-2 mt-1 text-[11px] text-gray-500">
+          <div className="flex items-center flex-wrap gap-2 mt-1 text-[11px] text-gray-500 dark:text-slate-400">
             <span>{formatFileSize(preview?.size ?? file.size)}</span>
-            {preview && (
+            {lineRange && highlightRange && (
+              <span
+                data-testid="preview-citation-badge"
+                className="px-1.5 py-0.5 rounded font-mono bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300"
+              >
+                Citation L{highlightRange.startLine}
+                {focusEndLine && focusEndLine > highlightRange.startLine
+                  ? `-L${focusEndLine}`
+                  : ''}
+              </span>
+            )}
+            {!lineRange && assetUrl && (
+              <span
+                data-testid="preview-asset-badge"
+                className="px-1.5 py-0.5 rounded font-mono bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300"
+              >
+                vault-asset://{assetKind}
+              </span>
+            )}
+            {!lineRange && !assetUrl && preview && (
               <span
                 data-testid="preview-cache-badge"
                 className={`px-1.5 py-0.5 rounded font-mono ${
                   preview.fromCache
-                    ? 'bg-emerald-100 text-emerald-700'
-                    : 'bg-indigo-100 text-indigo-700'
+                    ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
+                    : 'bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300'
                 }`}
               >
                 {preview.fromCache ? 'LRUCache HIT' : 'RingBuffer(100)'}
               </span>
             )}
-            {preview?.truncated && (
-              <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">
+            {preview?.truncated && !lineRange && (
+              <span className="px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 font-medium">
                 Capped
               </span>
+            )}
+            {lineRange && onClearRangeFocus && (
+              <button
+                type="button"
+                onClick={onClearRangeFocus}
+                className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-medium"
+              >
+                Show File Head
+              </button>
             )}
           </div>
         </div>
@@ -85,7 +155,7 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
             onClick={onCopyPath}
             title="Copy file path"
             aria-label="Copy file path"
-            className="p-1.5 rounded hover:bg-gray-200 text-gray-600"
+            className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-slate-800 text-gray-600 dark:text-slate-300"
           >
             <Copy className="w-4 h-4" />
           </button>
@@ -96,7 +166,7 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
             title="Refresh preview"
             aria-label="Refresh preview"
             data-testid="preview-refresh"
-            className="p-1.5 rounded hover:bg-gray-200 text-gray-600 disabled:opacity-50"
+            className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-slate-800 text-gray-600 dark:text-slate-300 disabled:opacity-50"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
@@ -106,7 +176,7 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
             title="Open with OS default app"
             aria-label="Open externally"
             data-testid="preview-open-external"
-            className="p-1.5 rounded hover:bg-gray-200 text-gray-600"
+            className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-slate-800 text-gray-600 dark:text-slate-300"
           >
             <ExternalLink className="w-4 h-4" />
           </button>
@@ -116,7 +186,7 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
             title="Close preview"
             aria-label="Close preview"
             data-testid="preview-close"
-            className="p-1.5 rounded hover:bg-gray-200 text-gray-600"
+            className="p-1.5 rounded hover:bg-gray-200 dark:hover:bg-slate-800 text-gray-600 dark:text-slate-300"
           >
             <X className="w-4 h-4" />
           </button>
@@ -124,7 +194,7 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto p-3 bg-slate-950 text-slate-100 font-mono text-xs">
+      <div className="flex-1 overflow-auto p-3 bg-slate-950 text-slate-100 font-mono text-xs scrollbar-thin">
         {loading && (
           <div className="flex items-center justify-center h-full">
             <Spinner size="md" />
@@ -137,7 +207,90 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
           </div>
         )}
 
-        {!loading && !error && preview?.binary && (
+        {/* Line-Range Citation Inspector View (#Lx-Ly) */}
+        {!loading && !error && lineRange && (
+          <div className="space-y-0.5" data-testid="preview-line-range">
+            {lineRange.lines.length === 0 ? (
+              <div className="text-slate-400 italic p-2">(File is empty)</div>
+            ) : (
+              lineRange.lines.map((entry) => {
+                const isHighlighted =
+                  highlightRange !== null &&
+                  entry.lineNumber >= highlightRange.startLine &&
+                  entry.lineNumber <= (focusEndLine ?? highlightRange.startLine);
+
+                return (
+                  <div
+                    key={entry.lineNumber}
+                    data-highlighted={isHighlighted ? 'true' : 'false'}
+                    className={`flex px-1.5 py-0.5 rounded ${
+                      isHighlighted
+                        ? 'bg-indigo-900/50 border-l-2 border-indigo-400 text-white'
+                        : 'hover:bg-slate-900'
+                    }`}
+                  >
+                    <span className="w-10 text-right pr-3 text-slate-500 select-none flex-shrink-0 tabular-nums">
+                      {entry.lineNumber}
+                    </span>
+                    <span className="whitespace-pre-wrap break-all">{entry.text}</span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
+
+        {/* Rich Media Streaming via vault-asset:// (CSP-preserved, sandboxed SVG) */}
+        {!loading && !error && !lineRange && assetUrl && !assetError && (
+          <div className="h-full flex flex-col items-center justify-center p-2" data-testid="preview-asset-viewer">
+            {assetKind === 'image' && (
+              <img
+                src={assetUrl}
+                alt={file.name}
+                data-testid="preview-asset-image"
+                onError={() => setAssetError('Failed to stream image via vault-asset://')}
+                className="max-w-full max-h-[520px] rounded-lg border border-slate-800 object-contain bg-slate-900"
+              />
+            )}
+            {assetKind === 'pdf' && (
+              <iframe
+                src={assetUrl}
+                title={file.name}
+                data-testid="preview-asset-pdf"
+                className="w-full h-full min-h-[480px] rounded-lg border border-slate-700 bg-white"
+              />
+            )}
+            {assetKind === 'video' && (
+              <video
+                src={assetUrl}
+                controls
+                data-testid="preview-asset-video"
+                onError={() => setAssetError('Failed to stream video via vault-asset://')}
+                className="w-full max-h-[420px] rounded-lg bg-black"
+              />
+            )}
+            {assetKind === 'audio' && (
+              <div className="w-full p-4 rounded-xl bg-slate-900 border border-slate-700 space-y-3">
+                <p className="text-sm font-sans text-slate-200 truncate">{file.name}</p>
+                <audio
+                  src={assetUrl}
+                  controls
+                  data-testid="preview-asset-audio"
+                  onError={() => setAssetError('Failed to stream audio via vault-asset://')}
+                  className="w-full"
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {!loading && !error && !lineRange && assetError && (
+          <div className="p-3 rounded-lg bg-red-950/70 border border-red-800 text-red-200">
+            {assetError}
+          </div>
+        )}
+
+        {!loading && !error && !lineRange && !assetUrl && preview?.binary && (
           <div
             className="p-4 rounded-lg bg-slate-900 border border-slate-700 text-slate-200 space-y-2"
             data-testid="preview-binary-notice"
@@ -152,7 +305,7 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
           </div>
         )}
 
-        {!loading && !error && preview && !preview.binary && (
+        {!loading && !error && !lineRange && !assetUrl && preview && !preview.binary && (
           <div className="space-y-0.5" data-testid="preview-lines">
             {preview.lines.length === 0 ? (
               <div className="text-slate-400 italic p-2">(File is empty)</div>
@@ -171,11 +324,17 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
       </div>
 
       {/* Footer */}
-      {preview && (
-        <div className="px-4 py-2 border-t border-gray-200 bg-gray-50 text-[11px] text-gray-500 flex items-center justify-between">
-          <span>{preview.totalLinesBuffered} lines buffered (RingBuffer max 100)</span>
-          <span className="truncate max-w-[180px]" title={preview.path}>
-            {preview.path}
+      {(preview || lineRange || assetUrl) && (
+        <div className="px-4 py-2 border-t border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-950/60 text-[11px] text-gray-500 dark:text-slate-400 flex items-center justify-between">
+          <span>
+            {lineRange
+              ? `Lines ${lineRange.startLine}-${lineRange.endLine} of ${lineRange.totalLines}`
+              : assetUrl
+                ? `Streaming via vault-asset://`
+                : `${preview?.totalLinesBuffered ?? 0} lines buffered (RingBuffer max 100)`}
+          </span>
+          <span className="truncate max-w-[180px]" title={file.path}>
+            {file.path}
           </span>
         </div>
       )}

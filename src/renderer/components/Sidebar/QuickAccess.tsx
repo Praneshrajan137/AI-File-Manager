@@ -50,9 +50,9 @@ export const QuickAccess: React.FC<QuickAccessProps> = ({ onNavigate }) => {
           <li key={link.path}>
             <button
               onClick={() => onNavigate(link.path)}
-              className="w-full flex items-center gap-3 px-3 py-2 text-sm text-primary-700 hover:bg-primary-50 hover:text-primary-900 rounded-lg transition-all duration-150 group"
+              className="w-full flex items-center gap-3 px-3 py-2 text-sm text-primary-700 dark:text-slate-300 hover:bg-primary-50 dark:hover:bg-slate-800 hover:text-primary-900 dark:hover:text-white rounded-lg transition-all duration-150 group"
             >
-              <link.icon className="w-4 h-4 text-primary-400 group-hover:text-primary-600 transition-colors" />
+              <link.icon className="w-4 h-4 text-primary-400 dark:text-slate-400 group-hover:text-primary-600 dark:group-hover:text-indigo-400 transition-colors" />
               <span className="font-medium">{link.name}</span>
             </button>
           </li>

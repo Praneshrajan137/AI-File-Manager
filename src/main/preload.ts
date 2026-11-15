@@ -18,7 +18,7 @@ import {
   wrapIPCError,
   wrapIPCSuccess,
 } from '@shared/ipc/envelope';
-import type { FileDeleteMode } from '@shared/contracts';
+import type { FileDeleteMode, IndexingStatus, RetrievalSource } from '@shared/contracts';
 import type { IPCChannel, IPCResponse } from '@shared/ipc/contracts';
 
 let llmStreamCounter = 0;
@@ -63,6 +63,9 @@ const electronAPI = {
 
     previewFile: (path: string, maxLines?: number) =>
       invokeContract('FS:PREVIEW_FILE', { path, maxLines }),
+
+    readFileRange: (path: string, startLine: number, endLine?: number, contextLines?: number) =>
+      invokeContract('FS:READ_FILE_RANGE', { path, startLine, endLine, contextLines }),
 
     writeFile: (path: string, content: string) =>
       invokeContract('FS:WRITE_FILE', { path, content }),
@@ -134,6 +137,17 @@ const electronAPI = {
 
     query: (query: string, searchRoot: string) =>
       invokeContract('SEARCH:QUERY', { query, searchRoot }),
+
+    content: (query: string, topK?: number, searchRoot?: string) =>
+      invokeContract('SEARCH:CONTENT', { query, topK, searchRoot }),
+  },
+
+  /**
+   * Workspace Knowledge Graph Insights
+   */
+  graph: {
+    queryInsights: (options?: { symbolQuery?: string; backlinkTarget?: string }) =>
+      invokeContract('GRAPH:QUERY_INSIGHTS', options),
   },
 
   /**
@@ -144,6 +158,7 @@ const electronAPI = {
       llmStreamCounter += 1;
       const channel = `LLM:QUERY:${Date.now()}:${llmStreamCounter}`;
       let streamEnded = false;
+      let streamedSources: RetrievalSource[] | undefined;
       let safetyTimer: ReturnType<typeof setTimeout> | null = null;
       let resolveEnd: (() => void) | null = null;
       const endPromise = new Promise<void>((resolve) => {
@@ -156,7 +171,13 @@ const electronAPI = {
         }
       };
 
-      const handleEnd = () => {
+      const handleEnd = (
+        _event: IpcRendererEvent,
+        payload?: { ok?: boolean; sources?: RetrievalSource[] }
+      ) => {
+        if (Array.isArray(payload?.sources)) {
+          streamedSources = payload.sources;
+        }
         streamEnded = true;
         if (safetyTimer) {
           clearTimeout(safetyTimer);
@@ -181,6 +202,9 @@ const electronAPI = {
             }),
           ]);
         }
+        if (result.ok && streamedSources && !result.data.sources) {
+          return wrapIPCSuccess({ ...result.data, sources: streamedSources });
+        }
         return result;
       } finally {
         if (safetyTimer) {
@@ -194,6 +218,40 @@ const electronAPI = {
 
     getIndexingStatus: () => invokeContract('LLM:INDEX_STATUS'),
 
+    onIndexingProgress: (callback: (status: IndexingStatus) => void) => {
+      const handleProgress = (
+        _event: IpcRendererEvent,
+        payload: { indexed?: number; total?: number; currentFile?: string }
+      ) => {
+        callback({
+          indexed: payload?.indexed ?? 0,
+          total: payload?.total ?? 0,
+          inProgress: true,
+          currentFile: payload?.currentFile || undefined,
+        });
+      };
+
+      const handleComplete = (
+        _event: IpcRendererEvent,
+        payload: { indexed?: number; total?: number }
+      ) => {
+        callback({
+          indexed: payload?.indexed ?? 0,
+          total: payload?.total ?? 0,
+          inProgress: false,
+          currentFile: undefined,
+        });
+      };
+
+      ipcRenderer.on('LLM:INDEXING_PROGRESS', handleProgress);
+      ipcRenderer.on('LLM:INDEXING_COMPLETE', handleComplete);
+
+      return () => {
+        ipcRenderer.removeListener('LLM:INDEXING_PROGRESS', handleProgress);
+        ipcRenderer.removeListener('LLM:INDEXING_COMPLETE', handleComplete);
+      };
+    },
+
     startIndexing: (path: string) => invokeContract('LLM:START_INDEXING', { path }),
 
     stopIndexing: () => invokeContract('LLM:STOP_INDEXING'),
@@ -203,6 +261,16 @@ const electronAPI = {
     checkOllama: () => invokeContract('LLM:CHECK_OLLAMA'),
 
     clearIndex: () => invokeContract('LLM:CLEAR_INDEX'),
+
+    listModels: () => invokeContract('LLM:LIST_MODELS'),
+
+    setModelConfig: (config: {
+      model?: string;
+      temperature?: number;
+      maxTokens?: number;
+      embeddingModel?: string;
+      rerankerModel?: string;
+    }) => invokeContract('LLM:SET_MODEL_CONFIG', config),
   },
 
   /**

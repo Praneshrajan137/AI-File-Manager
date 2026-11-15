@@ -44,10 +44,12 @@ export const Input: React.FC<InputProps> = ({
   const baseClasses = 'w-full px-3 py-2 text-sm border rounded-lg transition-colors focus:outline-none focus:ring-2';
 
   const stateClasses = error
-    ? 'border-error-500 text-error-900 placeholder-error-300 focus:border-error-500 focus:ring-error-500'
-    : 'border-gray-300 text-gray-900 placeholder-gray-400 focus:border-primary-500 focus:ring-primary-500';
+    ? 'border-error-500 text-error-900 dark:text-red-200 placeholder-error-300 focus:border-error-500 focus:ring-error-500'
+    : 'border-gray-300 dark:border-slate-700 text-gray-900 dark:text-slate-100 placeholder-gray-400 dark:placeholder-slate-500 focus:border-primary-500 focus:ring-primary-500';
 
-  const disabledClasses = disabled ? 'opacity-50 cursor-not-allowed bg-gray-100' : 'bg-white';
+  const disabledClasses = disabled
+    ? 'opacity-50 cursor-not-allowed bg-gray-100 dark:bg-slate-800'
+    : 'bg-white dark:bg-slate-800';
 
   const paddingClasses = icon
     ? iconPosition === 'left'

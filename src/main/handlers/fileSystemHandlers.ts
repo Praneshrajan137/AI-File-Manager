@@ -20,6 +20,7 @@ import {
 import { getOperationJournal, resetOperationJournal } from '../services/OperationJournal';
 import {
   FileDeleteMode,
+  FileLineRangeResult,
   FileNode,
   FilePreviewResult,
   FileStats,
@@ -103,6 +104,19 @@ async function handlePreviewFile(
 ): Promise<FilePreviewResult> {
   const service = getFileSystemService();
   return await service.previewFile(input.path, input.maxLines);
+}
+
+async function handleReadFileRange(
+  _event: IpcMainInvokeEvent,
+  input: { path: string; startLine: number; endLine?: number; contextLines?: number }
+): Promise<FileLineRangeResult> {
+  const service = getFileSystemService();
+  return await service.readFileRange(
+    input.path,
+    input.startLine,
+    input.endLine,
+    input.contextLines
+  );
 }
 
 async function handleWriteFile(
@@ -311,6 +325,7 @@ const FILE_SYSTEM_CHANNELS: IPCChannel[] = [
   'FS:READ_DIR',
   'FS:READ_FILE',
   'FS:PREVIEW_FILE',
+  'FS:READ_FILE_RANGE',
   'FS:WRITE_FILE',
   'FS:DELETE',
   'FS:MOVE',
@@ -334,6 +349,7 @@ export function registerFileSystemHandlers(): IPCChannel[] {
   ipcMain.handle('FS:READ_DIR', withContract('FS:READ_DIR', handleReadDirectory));
   ipcMain.handle('FS:READ_FILE', withContract('FS:READ_FILE', handleReadFile));
   ipcMain.handle('FS:PREVIEW_FILE', withContract('FS:PREVIEW_FILE', handlePreviewFile));
+  ipcMain.handle('FS:READ_FILE_RANGE', withContract('FS:READ_FILE_RANGE', handleReadFileRange));
   ipcMain.handle('FS:WRITE_FILE', withContract('FS:WRITE_FILE', handleWriteFile));
   ipcMain.handle('FS:DELETE', withContract('FS:DELETE', handleDelete));
   ipcMain.handle('FS:MOVE', withContract('FS:MOVE', handleMove));

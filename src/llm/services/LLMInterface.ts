@@ -60,15 +60,29 @@ interface OllamaStreamChunk {
 
 export class LLMInterface {
     private readonly ollamaUrl: string;
-    private readonly defaultModel = 'llama3.2';
+    private activeModel = 'llama3.2';
     private readonly customFetch?: typeof fetch;
 
     constructor(
         ollamaUrl: string = process.env.OLLAMA_URL || 'http://localhost:11434',
-        options: LLMInterfaceOptions = {}
+        options: LLMInterfaceOptions & { model?: string } = {}
     ) {
         this.ollamaUrl = assertLocalOllamaUrl(ollamaUrl);
         this.customFetch = options.fetchImpl;
+        if (options.model && options.model.trim().length > 0) {
+            this.activeModel = options.model.trim();
+        }
+    }
+
+    getModel(): string {
+        return this.activeModel;
+    }
+
+    setModel(modelName: string): void {
+        const trimmed = modelName.trim();
+        if (trimmed.length > 0) {
+            this.activeModel = trimmed;
+        }
     }
 
     private fetchRequest(url: string, init?: RequestInit): Promise<Response> {
@@ -98,7 +112,7 @@ export class LLMInterface {
         retrievalResult: RetrievalResult,
         options?: LLMQueryOptions
     ): AsyncGenerator<string, void, unknown> {
-        const model = options?.model || this.defaultModel;
+        const model = options?.model || this.activeModel;
         const temperature = options?.temperature ?? 0.7;
         const maxTokens = options?.maxTokens ?? 1000;
 

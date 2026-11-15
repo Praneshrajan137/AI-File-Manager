@@ -23,10 +23,18 @@ import {
   getReactiveWorkspaceKernel,
 } from '@main/services/ReactiveWorkspaceKernel';
 import { ConfigManager } from '@shared/config';
-import { IndexingStatus, MAX_INDEXABLE_FILE_SIZE } from '../../shared/contracts';
+import {
+  ContentSearchMatch,
+  GraphInsightsResponse,
+  IndexingStatus,
+  LLMModelsSnapshot,
+  MAX_INDEXABLE_FILE_SIZE,
+  RetrievalSource,
+} from '../../shared/contracts';
 import { IPCChannel } from '@shared/ipc/contracts';
 import { IPCLogger, LLMLogger } from '../../shared/logging';
 import { VectorStore } from '../../llm/services/VectorStore';
+import { WorkspaceKnowledgeGraph } from '../services/WorkspaceKnowledgeGraph';
 import { EmbeddingWorkerPool } from '../../llm/workers/EmbeddingWorkerPool';
 import { IndexingService } from '../../llm/services/IndexingService';
 import { RetrievalService } from '../../llm/services/RetrievalService';
@@ -80,6 +88,110 @@ let currentFile = '';
 let abortIndexing = false;
 let activeIndexingPromise: Promise<void> | null = null;
 
+export function resolveVectorDbPath(): string {
+  const allowTestOverrides =
+    process.env.NODE_ENV === 'test' || process.env.E2E_TEST === 'true';
+  const overrideDbPath = allowTestOverrides ? process.env.FILE_MANAGER_VECTOR_DB_PATH : undefined;
+  return overrideDbPath && overrideDbPath.trim().length > 0
+    ? path.resolve(overrideDbPath.trim())
+    : path.join(os.homedir(), '.file-manager', 'vectordb');
+}
+
+function withKnowledgeGraph<T>(fn: (kg: WorkspaceKnowledgeGraph) => T): T {
+  const existingKg = vectorStore?.getKnowledgeGraph();
+  if (existingKg) {
+    return fn(existingKg);
+  }
+  const dbPath = resolveVectorDbPath();
+  const kg = new WorkspaceKnowledgeGraph(path.join(dbPath, 'knowledge-graph.sqlite'));
+  try {
+    return fn(kg);
+  } finally {
+    kg.close();
+  }
+}
+
+function normalizePathForRootMatch(targetPath: string): string {
+  const resolved = path.resolve(targetPath);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function stripContextualHeader(text: string): string {
+  return text.replace(/^\[File:[^\]]+\]\s*\n?/i, '').trim();
+}
+
+export function searchWorkspaceContent(
+  query: string,
+  topK: number = 20,
+  searchRoot?: string
+): ContentSearchMatch[] {
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const normalizedRoot = searchRoot ? normalizePathForRootMatch(searchRoot) : null;
+  const rootPrefix = normalizedRoot
+    ? normalizedRoot.endsWith(path.sep)
+      ? normalizedRoot
+      : `${normalizedRoot}${path.sep}`
+    : null;
+  const fetchLimit = normalizedRoot ? Math.min(200, Math.max(topK * 4, 40)) : topK;
+
+  return withKnowledgeGraph((kg) => {
+    const hits = kg.searchLexical(trimmed, fetchLimit);
+    const results: ContentSearchMatch[] = [];
+    for (const hit of hits) {
+      if (normalizedRoot && rootPrefix) {
+        const hitNorm = normalizePathForRootMatch(hit.filePath);
+        if (hitNorm !== normalizedRoot && !hitNorm.startsWith(rootPrefix)) {
+          continue;
+        }
+      }
+      const cleanText = stripContextualHeader(hit.chunkText);
+      const snippet = cleanText.length > 220 ? `${cleanText.slice(0, 217)}...` : cleanText;
+      results.push({
+        chunkId: hit.id,
+        filePath: hit.filePath,
+        fileName: path.basename(hit.filePath),
+        chunkIndex: hit.chunkIndex,
+        startLine: hit.startLine,
+        endLine: hit.endLine,
+        heading: hit.heading,
+        snippet,
+        score: hit.bm25Score,
+      });
+      if (results.length >= topK) {
+        break;
+      }
+    }
+    return results;
+  });
+}
+
+export function queryWorkspaceGraphInsights(input: {
+  symbolQuery?: string;
+  backlinkTarget?: string;
+}): GraphInsightsResponse {
+  return withKnowledgeGraph((kg) => {
+    const stats = kg.getInsights();
+    const symbolMatches =
+      input.symbolQuery && input.symbolQuery.trim().length > 0
+        ? kg.findBySymbol(input.symbolQuery.trim(), 25)
+        : undefined;
+    const backlinks =
+      input.backlinkTarget && input.backlinkTarget.trim().length > 0
+        ? kg.findBacklinks(input.backlinkTarget.trim(), 50)
+        : undefined;
+
+    return {
+      stats,
+      symbolMatches,
+      backlinks,
+    };
+  });
+}
+
 /**
  * Initialize LLM services (lazy, concurrency-safe).
  */
@@ -98,29 +210,24 @@ async function ensureServicesInitialized(): Promise<void> {
     let localEmbeddingModel: EmbeddingWorkerPool | null = null;
 
     try {
-      const configuredModel = (((): string | undefined => {
+      const llmConfig = (() => {
         try {
-          return ConfigManager.getInstance().getAll()?.llm?.embeddingModel;
+          return ConfigManager.getInstance().get('llm');
         } catch {
           return undefined;
         }
-      })());
+      })();
+      const configuredEmbeddingModel = llmConfig?.embeddingModel?.trim() || undefined;
       localVectorStore = new VectorStore({
-        modelId: configuredModel || undefined,
+        modelId: configuredEmbeddingModel,
       });
-      const allowTestOverrides =
-        process.env.NODE_ENV === 'test' || process.env.E2E_TEST === 'true';
-      const overrideDbPath = allowTestOverrides ? process.env.FILE_MANAGER_VECTOR_DB_PATH : undefined;
-      const dbPath =
-        overrideDbPath && overrideDbPath.trim().length > 0
-          ? path.resolve(overrideDbPath.trim())
-          : path.join(os.homedir(), '.file-manager', 'vectordb');
+      const dbPath = resolveVectorDbPath();
       await localVectorStore.initialize(dbPath);
       LLMLogger.info('VectorStore initialized', { dbPath });
 
       // Initialize embedding model (runs in worker thread to avoid blocking main process)
       localEmbeddingModel = new EmbeddingWorkerPool({
-        modelName: configuredModel || undefined,
+        modelName: configuredEmbeddingModel,
       });
       await localEmbeddingModel.initialize();
       LLMLogger.info('EmbeddingWorkerPool initialized (worker thread)');
@@ -129,7 +236,9 @@ async function ensureServicesInitialized(): Promise<void> {
       const kernel = getReactiveWorkspaceKernel();
       fileSystemService = kernel.getFileSystemService();
 
-      const localLlm = new LLMInterface(resolveOllamaUrl());
+      const localLlm = new LLMInterface(resolveOllamaUrl(), {
+        model: llmConfig?.model,
+      });
       const contextManager = new ContextManager(localLlm);
 
       vectorStore = localVectorStore;
@@ -168,7 +277,7 @@ async function ensureServicesInitialized(): Promise<void> {
 async function handleQuery(
   event: IpcMainInvokeEvent,
   input: { query: string; channel: string }
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; sources?: RetrievalSource[] }> {
   const { query, channel } = input;
   LLMLogger.info('LLM query received', { query: query.substring(0, 100) });
 
@@ -214,8 +323,23 @@ async function handleQuery(
       return { success: false, error: 'Ollama not available' };
     }
 
+    const llmConfig = (() => {
+      try {
+        return ConfigManager.getInstance().get('llm');
+      } catch {
+        return undefined;
+      }
+    })();
+
+    const structuredSources: RetrievalSource[] =
+      retrievalResult.structuredSources ??
+      retrievalResult.sources.map((filePath) => ({ filePath }));
+
     const genStart = Date.now();
     for await (const chunk of llmInterface!.query(query, retrievalResult, {
+      model: llmConfig?.model,
+      temperature: llmConfig?.temperature,
+      maxTokens: llmConfig?.maxTokens,
       signal: queryAbort.signal,
     } as Parameters<LLMInterface['query']>[2])) {
       if (event.sender.isDestroyed()) {
@@ -227,14 +351,19 @@ async function handleQuery(
     generationMs = Date.now() - genStart;
     LLMMetrics.getInstance().recordTiming(MetricOperation.LLM_QUERY, generationMs);
 
-    safeSend(`${channel}:end`, { ok: true });
+    safeSend(`${channel}:end`, {
+      ok: true,
+      sources: structuredSources,
+      retrievalMs,
+      generationMs,
+    });
     RuntimeDiagnostics.getInstance().recordLlmQuery({
       success: true,
       retrievalMs,
       generationMs,
     });
 
-    return { success: true };
+    return { success: true, sources: structuredSources };
   } catch (error: unknown) {
     const rawMsg = error instanceof Error ? error.message : String(error);
     const msg = ErrorSerializer.sanitizeText(rawMsg);
@@ -339,6 +468,14 @@ async function handleStartIndexing(
 
     totalToIndex = files.length;
     LLMLogger.info('Files to index', { count: totalToIndex });
+
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('LLM:INDEXING_PROGRESS', {
+        indexed: 0,
+        total: totalToIndex,
+        currentFile: '',
+      });
+    }
 
     activeIndexingPromise = indexFilesBackground(
       files.map((f) => f.path),
@@ -561,6 +698,95 @@ async function handleCheckOllama(
   }
 }
 
+async function buildModelsSnapshot(): Promise<LLMModelsSnapshot> {
+  const llmCfg = (() => {
+    try {
+      return ConfigManager.getInstance().get('llm');
+    } catch {
+      return undefined;
+    }
+  })();
+
+  let available = false;
+  let models: string[] = [];
+  try {
+    const client = llmInterface ?? new LLMInterface(resolveOllamaUrl(), { model: llmCfg?.model });
+    available = await client.checkConnection();
+    models = available ? await client.getAvailableModels() : [];
+  } catch {
+    available = false;
+    models = [];
+  }
+
+  return {
+    available,
+    models,
+    activeModel: llmCfg?.model ?? llmInterface?.getModel() ?? 'llama3.2',
+    embeddingModel: llmCfg?.embeddingModel ?? 'Xenova/bge-small-en-v1.5',
+    rerankerModel: llmCfg?.rerankerModel ?? 'Xenova/ms-marco-MiniLM-L-6-v2',
+    temperature: llmCfg?.temperature ?? 0.7,
+    maxTokens: llmCfg?.maxTokens ?? 2048,
+  };
+}
+
+async function handleListModels(
+  _event: IpcMainInvokeEvent,
+  _input: Record<string, never>
+): Promise<LLMModelsSnapshot> {
+  return buildModelsSnapshot();
+}
+
+async function handleSetModelConfig(
+  _event: IpcMainInvokeEvent,
+  input: {
+    model?: string;
+    temperature?: number;
+    maxTokens?: number;
+    embeddingModel?: string;
+    rerankerModel?: string;
+  }
+): Promise<{ success: boolean; config: LLMModelsSnapshot }> {
+  const updates: Array<[string, unknown]> = [];
+  if (input.model !== undefined) {
+    updates.push(['llm.model', input.model.trim()]);
+  }
+  if (input.temperature !== undefined) {
+    updates.push(['llm.temperature', input.temperature]);
+  }
+  if (input.maxTokens !== undefined) {
+    updates.push(['llm.maxTokens', input.maxTokens]);
+  }
+  if (input.embeddingModel !== undefined) {
+    updates.push(['llm.embeddingModel', input.embeddingModel.trim()]);
+  }
+  if (input.rerankerModel !== undefined) {
+    updates.push(['llm.rerankerModel', input.rerankerModel.trim()]);
+  }
+
+  if (updates.length > 0) {
+    const cm = ConfigManager.getInstance();
+    for (let i = 0; i < updates.length; i++) {
+      const [key, val] = updates[i];
+      cm.set(key, val, i === updates.length - 1);
+    }
+  }
+
+  if (input.model && llmInterface) {
+    llmInterface.setModel(input.model.trim());
+  }
+
+  LLMLogger.info('Updated LLM configuration', {
+    model: input.model,
+    temperature: input.temperature,
+    maxTokens: input.maxTokens,
+  });
+
+  return {
+    success: true,
+    config: await buildModelsSnapshot(),
+  };
+}
+
 /**
  * Handler: LLM:CLEAR_INDEX
  * Clear the vector database and reset indexing state.
@@ -602,6 +828,8 @@ const LLM_CHANNELS: IPCChannel[] = [
   'LLM:INDEX_FILE',
   'LLM:CHECK_OLLAMA',
   'LLM:CLEAR_INDEX',
+  'LLM:LIST_MODELS',
+  'LLM:SET_MODEL_CONFIG',
 ];
 
 /**
@@ -617,10 +845,12 @@ export function registerLLMHandlers(): IPCChannel[] {
   ipcMain.handle('LLM:INDEX_FILE', withContract('LLM:INDEX_FILE', handleIndexFile));
   ipcMain.handle('LLM:CHECK_OLLAMA', withContract('LLM:CHECK_OLLAMA', handleCheckOllama));
   ipcMain.handle('LLM:CLEAR_INDEX', withContract('LLM:CLEAR_INDEX', handleClearIndex));
+  ipcMain.handle('LLM:LIST_MODELS', withContract('LLM:LIST_MODELS', handleListModels));
+  ipcMain.handle('LLM:SET_MODEL_CONFIG', withContract('LLM:SET_MODEL_CONFIG', handleSetModelConfig));
 
   configureKernelHooks({ indexMutationHook: handleKernelIndexMutation });
 
-  IPCLogger.info('LLM IPC handlers registered (7 handlers)');
+  IPCLogger.info(`LLM IPC handlers registered (${LLM_CHANNELS.length} handlers)`);
   return [...LLM_CHANNELS];
 }
 

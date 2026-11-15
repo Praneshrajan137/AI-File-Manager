@@ -29,12 +29,12 @@ export const FavoritesList: React.FC<FavoritesListProps> = ({
         {favorites.map((fav) => {
           const name = fav.split(/[\\/]/).filter(Boolean).pop() || fav;
           return (
-            <li key={fav} className="group flex items-center gap-1 rounded-lg hover:bg-primary-100 px-2 py-1">
+            <li key={fav} className="group flex items-center gap-1 rounded-lg hover:bg-primary-100 dark:hover:bg-slate-800 px-2 py-1">
               <button
                 type="button"
                 onClick={() => onNavigate(fav)}
                 title={fav}
-                className="flex-1 min-w-0 flex items-center gap-2 text-left text-xs text-primary-700 font-medium truncate"
+                className="flex-1 min-w-0 flex items-center gap-2 text-left text-xs text-primary-700 dark:text-slate-200 font-medium truncate"
               >
                 <Star className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
                 <span className="truncate">{name}</span>
@@ -45,7 +45,7 @@ export const FavoritesList: React.FC<FavoritesListProps> = ({
                   onClick={() => void onUnpin(fav)}
                   aria-label={`Unpin ${name}`}
                   title="Unpin Favorite"
-                  className="opacity-0 group-hover:opacity-100 p-0.5 text-primary-400 hover:text-primary-700 rounded transition-opacity"
+                  className="opacity-0 group-hover:opacity-100 p-0.5 text-primary-400 hover:text-primary-700 dark:hover:text-white rounded transition-opacity"
                 >
                   <X className="w-3 h-3" />
                 </button>

@@ -12,6 +12,7 @@ import { registerSearchHandlers, resetSearchService } from './searchHandlers';
 import { registerLLMHandlers } from './llmHandlers';
 import { registerShellHandlers } from './shellHandlers';
 import { registerVaultHandlers } from './vaultHandlers';
+import { registerGraphHandlers } from './graphHandlers';
 import { resetOperationJournal } from '../services/OperationJournal';
 import { withContract, resolveAllowedRoots } from './securityMiddleware';
 import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
@@ -55,6 +56,7 @@ export function registerAllHandlers(): void {
       registerShellHandlers(),
       registerRuntimeHandlers(),
       registerVaultHandlers(),
+      registerGraphHandlers(),
     ];
 
     for (const channels of groups) {

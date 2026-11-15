@@ -116,17 +116,17 @@ export const IndexingPanel: React.FC<IndexingPanelProps> = ({
     const progress = total > 0 ? Math.round((indexed / total) * 100) : 0;
 
     return (
-        <div className="bg-gradient-to-r from-indigo-50 to-purple-50 border-b border-indigo-100" data-testid="indexing-panel">
+        <div className="bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-slate-900 dark:to-slate-900 border-b border-indigo-100 dark:border-slate-800" data-testid="indexing-panel">
             {/* Collapsed header - always visible */}
             <button
                 onClick={() => setIsExpanded(!isExpanded)}
-                className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/50 transition-colors"
+                className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/50 dark:hover:bg-slate-800/50 transition-colors"
                 aria-expanded={isExpanded}
                 aria-controls="indexing-panel-content"
             >
                 <div className="flex items-center gap-2">
-                    <Database className="w-4 h-4 text-indigo-600" />
-                    <span className="text-sm font-medium text-indigo-900">File Indexing</span>
+                    <Database className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                    <span className="text-sm font-medium text-indigo-900 dark:text-slate-100">File Indexing</span>
 
                     {/* Status badge */}
                     {inProgress ? (
@@ -247,7 +247,7 @@ export const IndexingPanel: React.FC<IndexingPanelProps> = ({
 
                             {/* Custom path input */}
                             <div className="space-y-2">
-                                <label className="block text-xs font-medium text-gray-700">
+                                <label className="block text-xs font-medium text-gray-700 dark:text-slate-300">
                                     Or enter a custom path
                                 </label>
                                 <div className="flex gap-2">
@@ -256,7 +256,7 @@ export const IndexingPanel: React.FC<IndexingPanelProps> = ({
                                         value={customPath}
                                         onChange={(e) => setCustomPath(e.target.value)}
                                         placeholder="C:\Users\Documents"
-                                        className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
+                                        className="flex-1 px-3 py-2 text-sm border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-100 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
                                         onKeyDown={(e) => e.key === 'Enter' && handleIndexCustomPath()}
                                     />
                                     <button

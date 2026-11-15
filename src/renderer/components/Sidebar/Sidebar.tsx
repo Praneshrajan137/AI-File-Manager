@@ -4,7 +4,7 @@ import { DirectoryTree } from './DirectoryTree';
 import { FavoritesList } from './FavoritesList';
 import { VaultSection } from './VaultSection';
 import { UI_CONSTANTS } from '@renderer/utils/constants';
-import { OperationJournalState, VaultConfigSnapshot } from '@shared/contracts';
+import { OperationJournalState, VaultConfigSnapshot, FileEvent } from '@shared/contracts';
 import { Shield } from 'lucide-react';
 
 interface SidebarProps {
@@ -13,6 +13,7 @@ interface SidebarProps {
   onNavigate: (path: string) => void;
   vaultConfig?: VaultConfigSnapshot | null;
   journalState?: OperationJournalState | null;
+  lastWatcherEvent?: FileEvent | null;
   onAddVaultRoot?: () => Promise<void>;
   onRemoveVaultRoot?: (rootPath: string) => Promise<void>;
   onToggleIndexedRoot?: (rootPath: string, enabled: boolean) => Promise<void>;
@@ -26,6 +27,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onNavigate,
   vaultConfig = null,
   journalState = null,
+  lastWatcherEvent = null,
   onAddVaultRoot,
   onRemoveVaultRoot,
   onToggleIndexedRoot,
@@ -64,17 +66,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <div
-      className="bg-white border-r border-primary-200 flex flex-col h-full relative shadow-elite"
+      className="bg-white dark:bg-slate-900 border-r border-primary-200 dark:border-slate-800 flex flex-col h-full relative shadow-elite"
       style={{ width: `${width}px` }}
     >
       {/* Header - Elite branding */}
-      <div className="px-5 py-4 border-b border-primary-100 bg-gradient-to-b from-white to-primary-50/30">
-        <h1 className="text-lg font-semibold text-primary-900 tracking-tight">
+      <div className="px-5 py-4 border-b border-primary-100 dark:border-slate-800 bg-gradient-to-b from-white to-primary-50/30 dark:from-slate-900 dark:to-slate-900">
+        <h1 className="text-lg font-semibold text-primary-900 dark:text-slate-100 tracking-tight">
           File Manager
         </h1>
         <div className="flex items-center gap-1.5 mt-1">
-          <Shield className="w-3 h-3 text-primary-500" />
-          <span className="text-[11px] font-medium text-primary-500 tracking-wide uppercase">
+          <Shield className="w-3 h-3 text-primary-500 dark:text-indigo-400" />
+          <span className="text-[11px] font-medium text-primary-500 dark:text-slate-400 tracking-wide uppercase">
             PrivateVault AI
           </span>
         </div>
@@ -94,7 +96,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onEmptyTrashVault={onEmptyTrashVault}
           />
         )}
-        <DirectoryTree onNavigate={onNavigate} />
+        <DirectoryTree onNavigate={onNavigate} lastWatcherEvent={lastWatcherEvent} />
         <FavoritesList
           favorites={vaultConfig?.favorites ?? []}
           onNavigate={onNavigate}

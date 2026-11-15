@@ -76,13 +76,13 @@ export const VaultSection: React.FC<VaultSectionProps> = ({
             <div
               key={rootPath}
               data-testid={`vault-root-${baseName}`}
-              className="group flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-lg hover:bg-primary-100 transition-colors"
+              className="group flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-lg hover:bg-primary-100 dark:hover:bg-slate-800 transition-colors"
             >
               <button
                 type="button"
                 onClick={() => onNavigate(rootPath)}
                 title={rootPath}
-                className="flex-1 min-w-0 text-left truncate font-medium text-primary-700"
+                className="flex-1 min-w-0 text-left truncate font-medium text-primary-700 dark:text-slate-200"
               >
                 {baseName}
               </button>
@@ -100,8 +100,8 @@ export const VaultSection: React.FC<VaultSectionProps> = ({
                 data-testid={`vault-index-toggle-${baseName}`}
                 className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
                   isIndexed
-                    ? 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200'
-                    : 'bg-gray-100 text-gray-500 hover:bg-indigo-50 hover:text-indigo-600'
+                    ? 'bg-indigo-100 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-200 dark:hover:bg-indigo-900'
+                    : 'bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-slate-400 hover:bg-indigo-50 dark:hover:bg-slate-700 hover:text-indigo-600'
                 }`}
               >
                 <Sparkles className="w-2.5 h-2.5" />

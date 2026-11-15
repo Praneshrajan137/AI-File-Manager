@@ -24,7 +24,7 @@
  * 5. IPC handlers
  */
 
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, protocol } from 'electron';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { ConfigManager } from '@shared/config';
@@ -32,10 +32,18 @@ import { Logger, getLogger } from '@shared/logging';
 import { suppressSqliteExperimentalWarning } from '@shared/utils/processWarnings';
 import { ErrorHandler } from './middleware/ErrorHandler';
 import {
+  getPrivilegedSchemeConfig,
+  registerVaultAssetProtocol,
+} from './services/AssetProtocol';
+import {
   configureKernelHooks,
   getReactiveWorkspaceKernel,
   resetReactiveWorkspaceKernel,
 } from './services/ReactiveWorkspaceKernel';
+
+if (typeof protocol?.registerSchemesAsPrivileged === 'function') {
+  protocol.registerSchemesAsPrivileged([getPrivilegedSchemeConfig()]);
+}
 
 /**
  * Reference to main application window.
@@ -284,6 +292,8 @@ app.whenReady().then(async () => {
     // Don't create window if handlers failed to register
     throw error;
   }
+
+  registerVaultAssetProtocol();
 
   createWindow();
 

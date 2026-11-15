@@ -23,10 +23,12 @@ import { ChatInterface } from './components/ChatPanel/ChatInterface';
 import { FileContextMenu } from './components/ContextMenu/FileContextMenu';
 import { DiagnosticsModal } from './components/Diagnostics/DiagnosticsModal';
 import { FilePreviewDrawer } from './components/Preview/FilePreviewDrawer';
+import { CommandOmnibar } from './components/SearchBar/CommandOmnibar';
 import { Toast } from './components/common/Toast';
 import { RenameDialog } from './components/common/RenameDialog';
 import { CreateEntryDialog } from './components/common/CreateEntryDialog';
 import { DeleteConfirmDialog } from './components/common/DeleteConfirmDialog';
+import { ArrowUp, RefreshCw, X } from 'lucide-react';
 import { useFileSystem } from './hooks/useFileSystem';
 import { useNavigation } from './hooks/useNavigation';
 import { useToast } from './hooks/useToast';
@@ -34,15 +36,18 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useFileWatcher } from './hooks/useFileWatcher';
 import { useLLM } from './hooks/useLLM';
 import { UI_CONSTANTS } from './utils/constants';
+import { sortFileNodes, toggleMultiSelection } from './utils/explorerHelpers';
 import {
   extractBasename,
   extractParentDirectory,
   isPathInsideDirectory,
+  joinChildPath,
   normalizeComparablePath,
 } from './utils/pathHelpers';
 import {
   FileDeleteMode,
   FileEvent,
+  FileLineRangeResult,
   FileNode,
   FilePreviewResult,
   OperationJournalState,
@@ -110,7 +115,23 @@ const FileManagerApp: React.FC = () => {
   // UI state
   const [chatOpen, setChatOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [omnibarOpen, setOmnibarOpen] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem('fm_theme') === 'dark';
+    } catch {
+      return false;
+    }
+  });
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
+  const selectionAnchorRef = useRef<string | null>(null);
+  const [splitPaneOpen, setSplitPaneOpen] = useState(false);
+  const [secondaryPath, setSecondaryPath] = useState<string>('');
+  const [secondaryFiles, setSecondaryFiles] = useState<FileNode[]>([]);
+  const [secondaryLoading, setSecondaryLoading] = useState(false);
+  const [secondarySelectedFiles, setSecondarySelectedFiles] = useState<string[]>([]);
+  const secondaryAnchorRef = useRef<string | null>(null);
+  const [lastWatcherEvent, setLastWatcherEvent] = useState<FileEvent | null>(null);
   const [sortBy, setSortBy] = useState<'name' | 'size' | 'modified' | 'type'>('name');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
@@ -120,6 +141,11 @@ const FileManagerApp: React.FC = () => {
   const [createEntryMode, setCreateEntryMode] = useState<'file' | 'directory' | null>(null);
   const [previewFileNode, setPreviewFileNode] = useState<FileNode | null>(null);
   const [previewResult, setPreviewResult] = useState<FilePreviewResult | null>(null);
+  const [previewLineRange, setPreviewLineRange] = useState<FileLineRangeResult | null>(null);
+  const [previewHighlightRange, setPreviewHighlightRange] = useState<{
+    startLine: number;
+    endLine?: number;
+  } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const previewSeqRef = useRef(0);
@@ -127,6 +153,69 @@ const FileManagerApp: React.FC = () => {
   const [vaultConfig, setVaultConfig] = useState<VaultConfigSnapshot | null>(null);
   const [journalState, setJournalState] = useState<OperationJournalState | null>(null);
   const [pendingDeletePaths, setPendingDeletePaths] = useState<string[] | null>(null);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', isDarkMode);
+    try {
+      window.localStorage.setItem('fm_theme', isDarkMode ? 'dark' : 'light');
+    } catch {
+      // Ignore storage failures in restricted contexts
+    }
+  }, [isDarkMode]);
+
+  useEffect(() => {
+    const handleGlobalOmnibarShortcut = (event: KeyboardEvent): void => {
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setOmnibarOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalOmnibarShortcut);
+    return () => window.removeEventListener('keydown', handleGlobalOmnibarShortcut);
+  }, []);
+
+  const orderedFilePaths = useMemo(
+    () => sortFileNodes(files, sortBy, sortDirection).map((f) => f.path),
+    [files, sortBy, sortDirection]
+  );
+
+  const orderedSecondaryPaths = useMemo(
+    () => sortFileNodes(secondaryFiles, sortBy, sortDirection).map((f) => f.path),
+    [secondaryFiles, sortBy, sortDirection]
+  );
+
+  const loadSecondaryDirectory = useCallback(async (dirPath: string): Promise<boolean> => {
+    if (!dirPath) return false;
+    setSecondaryLoading(true);
+    try {
+      const entries = await window.electronAPI.fs.readDirectory(dirPath);
+      setSecondaryPath(dirPath);
+      setSecondaryFiles(entries);
+      return true;
+    } catch (err: unknown) {
+      showToast({
+        type: 'error',
+        message: getErrorMessage(err, 'Failed to read secondary pane directory'),
+      });
+      return false;
+    } finally {
+      setSecondaryLoading(false);
+    }
+  }, [showToast]);
+
+  const handleToggleTheme = useCallback((): void => {
+    setIsDarkMode((prev) => !prev);
+  }, []);
+
+  const handleToggleSplitPane = useCallback((): void => {
+    setSplitPaneOpen((prev) => {
+      const next = !prev;
+      if (next && !secondaryPath && currentPath) {
+        void loadSecondaryDirectory(currentPath);
+      }
+      return next;
+    });
+  }, [secondaryPath, currentPath, loadSecondaryDirectory]);
 
   const refreshWorkspaceMetadata = useCallback(async (): Promise<void> => {
     try {
@@ -151,24 +240,42 @@ const FileManagerApp: React.FC = () => {
     return match && !match.isDirectory ? match : null;
   }, [selectedFiles, files]);
 
-  const loadFilePreview = useCallback(async (file: FileNode): Promise<void> => {
+  const loadFilePreview = useCallback(async (
+    file: FileNode,
+    rangeFocus: { startLine: number; endLine?: number } | null = null
+  ): Promise<void> => {
     if (file.isDirectory) return;
     const seq = ++previewSeqRef.current;
     previewOpenRef.current = true;
     setPreviewFileNode(file);
     setPreviewLoading(true);
     setPreviewError(null);
+    if (!rangeFocus) {
+      setPreviewLineRange(null);
+      setPreviewHighlightRange(null);
+    } else {
+      setPreviewHighlightRange(rangeFocus);
+    }
+
     try {
-      const result = await window.electronAPI.fs.previewFile(file.path, 100);
+      const previewPromise = window.electronAPI.fs.previewFile(file.path, 100);
+      const rangePromise =
+        rangeFocus && typeof window.electronAPI.fs.readFileRange === 'function'
+          ? window.electronAPI.fs.readFileRange(file.path, rangeFocus.startLine, rangeFocus.endLine, 8)
+          : Promise.resolve<FileLineRangeResult | null>(null);
+
+      const [result, rangeResult] = await Promise.all([previewPromise, rangePromise]);
       if (!previewOpenRef.current || seq !== previewSeqRef.current) {
         return;
       }
       setPreviewResult(result);
+      setPreviewLineRange(rangeResult);
     } catch (err: unknown) {
       if (!previewOpenRef.current || seq !== previewSeqRef.current) {
         return;
       }
       setPreviewResult(null);
+      setPreviewLineRange(null);
       setPreviewError(getErrorMessage(err, 'Failed to preview file'));
     } finally {
       if (previewOpenRef.current && seq === previewSeqRef.current) {
@@ -176,6 +283,77 @@ const FileManagerApp: React.FC = () => {
       }
     }
   }, []);
+
+  const handleOpenCitation = useCallback(async (
+    filePathOrName: string,
+    startLine?: number,
+    endLine?: number
+  ): Promise<void> => {
+    try {
+      let resolvedPath = filePathOrName.trim();
+      const hasSeparator = resolvedPath.includes('/') || resolvedPath.includes('\\');
+      if (!hasSeparator) {
+        const localMatch = files.find(
+          (f) => !f.isDirectory && f.name.toLowerCase() === resolvedPath.toLowerCase()
+        );
+        if (localMatch) {
+          resolvedPath = localMatch.path;
+        } else if (currentPath) {
+          const matches = await window.electronAPI.search.query(resolvedPath, currentPath);
+          const exactMatch = matches.find(
+            (m) => m.name.toLowerCase() === resolvedPath.toLowerCase()
+          );
+          if (exactMatch) {
+            resolvedPath = exactMatch.path;
+          } else if (matches.length > 0) {
+            resolvedPath = matches[0].path;
+          }
+        } else {
+          const suggestions = await window.electronAPI.search.autocomplete(resolvedPath, 10);
+          const exactSuggestion = suggestions.find(
+            (s) => extractBasename(s).toLowerCase() === resolvedPath.toLowerCase()
+          );
+          if (exactSuggestion) {
+            resolvedPath = exactSuggestion;
+          } else if (suggestions.length > 0) {
+            resolvedPath = suggestions[0];
+          }
+        }
+      }
+
+      const stats = await window.electronAPI.fs.getStats(resolvedPath);
+      if (stats.isDirectory) {
+        await readDirectory(resolvedPath);
+        await navigateTo(resolvedPath);
+        return;
+      }
+
+      const name = extractBasename(resolvedPath);
+      const dotIdx = name.lastIndexOf('.');
+      const extension = dotIdx > 0 ? name.slice(dotIdx + 1).toLowerCase() : '';
+      const targetNode: FileNode = {
+        path: resolvedPath,
+        name,
+        isDirectory: false,
+        size: stats.size,
+        modified: stats.modified,
+        extension,
+        mimeType: extension ? `application/${extension}` : 'application/octet-stream',
+        isHidden: name.startsWith('.'),
+      };
+
+      const rangeFocus =
+        typeof startLine === 'number' && Number.isFinite(startLine) && startLine >= 1
+          ? { startLine, endLine }
+          : null;
+      await loadFilePreview(targetNode, rangeFocus);
+    } catch (err: unknown) {
+      showToast({
+        type: 'error',
+        message: getErrorMessage(err, `Failed to open citation "${filePathOrName}"`),
+      });
+    }
+  }, [files, currentPath, readDirectory, navigateTo, loadFilePreview, showToast]);
 
   // Event handlers - wrapped in useCallback to create stable references
   const handleUndo = useCallback(async (): Promise<void> => {
@@ -301,8 +479,52 @@ const FileManagerApp: React.FC = () => {
     }
   }, [selectedSingleFile, loadFilePreview]);
 
+  const handleSpaceQuickLook = useCallback((): void => {
+    if (
+      omnibarOpen ||
+      diagnosticsOpen ||
+      renameFile !== null ||
+      createEntryMode !== null ||
+      pendingDeletePaths !== null
+    ) {
+      return;
+    }
+
+    if (
+      previewFileNode !== null &&
+      (!selectedSingleFile ||
+        normalizeComparablePath(previewFileNode.path) ===
+          normalizeComparablePath(selectedSingleFile.path))
+    ) {
+      previewOpenRef.current = false;
+      previewSeqRef.current += 1;
+      setPreviewFileNode(null);
+      setPreviewResult(null);
+      setPreviewLineRange(null);
+      setPreviewHighlightRange(null);
+      setPreviewError(null);
+      setPreviewLoading(false);
+      return;
+    }
+
+    if (selectedSingleFile) {
+      void loadFilePreview(selectedSingleFile);
+    }
+  }, [
+    omnibarOpen,
+    diagnosticsOpen,
+    renameFile,
+    createEntryMode,
+    pendingDeletePaths,
+    previewFileNode,
+    selectedSingleFile,
+    loadFilePreview,
+  ]);
+
   // File watcher updates - memoized callback to prevent listener churn
   const handleFileWatcherEvent = useCallback((event: FileEvent): void => {
+    setLastWatcherEvent(event);
+
     if (currentPath && isPathInsideDirectory(event.path, currentPath)) {
       void readDirectory(currentPath); // Auto-refresh
       showToast({
@@ -312,6 +534,10 @@ const FileManagerApp: React.FC = () => {
       });
     }
 
+    if (splitPaneOpen && secondaryPath && isPathInsideDirectory(event.path, secondaryPath)) {
+      void loadSecondaryDirectory(secondaryPath);
+    }
+
     if (
       previewFileNode &&
       normalizeComparablePath(previewFileNode.path) === normalizeComparablePath(event.path)
@@ -319,13 +545,25 @@ const FileManagerApp: React.FC = () => {
       if (event.type === 'unlink') {
         previewSeqRef.current += 1;
         setPreviewResult(null);
+        setPreviewLineRange(null);
+        setPreviewHighlightRange(null);
         setPreviewLoading(false);
         setPreviewError('File was removed on disk');
       } else {
-        void loadFilePreview(previewFileNode);
+        void loadFilePreview(previewFileNode, previewHighlightRange);
       }
     }
-  }, [currentPath, readDirectory, showToast, previewFileNode, loadFilePreview]);
+  }, [
+    currentPath,
+    readDirectory,
+    splitPaneOpen,
+    secondaryPath,
+    loadSecondaryDirectory,
+    showToast,
+    previewFileNode,
+    loadFilePreview,
+    previewHighlightRange,
+  ]);
 
   useFileWatcher(handleFileWatcherEvent);
 
@@ -335,11 +573,23 @@ const FileManagerApp: React.FC = () => {
     'Alt+Left': handleBack,
     'Alt+Right': handleForward,
     'Alt+P': handlePreviewShortcut,
+    ' ': handleSpaceQuickLook,
+    'F6': handleToggleSplitPane,
     'Delete': handleDeleteShortcut,
     'Ctrl+Z': (): void => { void handleUndo(); },
     'Ctrl+Y': (): void => { void handleRedo(); },
     'Ctrl+Shift+Z': (): void => { void handleRedo(); },
-  }), [handleToggleChat, handleBack, handleForward, handlePreviewShortcut, handleDeleteShortcut, handleUndo, handleRedo]);
+  }), [
+    handleToggleChat,
+    handleBack,
+    handleForward,
+    handlePreviewShortcut,
+    handleSpaceQuickLook,
+    handleToggleSplitPane,
+    handleDeleteShortcut,
+    handleUndo,
+    handleRedo,
+  ]);
 
   useKeyboardShortcuts(shortcuts);
 
@@ -363,9 +613,100 @@ const FileManagerApp: React.FC = () => {
   }, []); // Empty deps - run only on mount
 
   // Additional event handlers (after keyboard shortcut handlers)
-  const handleFileClick = (file: FileNode): void => {
-    setSelectedFiles([file.path]);
-  };
+  const handleFileClick = useCallback((file: FileNode, e?: React.MouseEvent): void => {
+    const { selected, nextAnchor } = toggleMultiSelection(
+      selectedFiles,
+      orderedFilePaths,
+      file.path,
+      {
+        ctrlKey: e?.ctrlKey,
+        metaKey: e?.metaKey,
+        shiftKey: e?.shiftKey,
+      },
+      selectionAnchorRef.current
+    );
+    selectionAnchorRef.current = nextAnchor;
+    setSelectedFiles(selected);
+  }, [selectedFiles, orderedFilePaths]);
+
+  const handleSecondaryFileClick = useCallback((file: FileNode, e?: React.MouseEvent): void => {
+    const { selected, nextAnchor } = toggleMultiSelection(
+      secondarySelectedFiles,
+      orderedSecondaryPaths,
+      file.path,
+      {
+        ctrlKey: e?.ctrlKey,
+        metaKey: e?.metaKey,
+        shiftKey: e?.shiftKey,
+      },
+      secondaryAnchorRef.current
+    );
+    secondaryAnchorRef.current = nextAnchor;
+    setSecondarySelectedFiles(selected);
+  }, [secondarySelectedFiles, orderedSecondaryPaths]);
+
+  const handleSecondaryFileDoubleClick = useCallback(async (file: FileNode): Promise<void> => {
+    if (file.isDirectory) {
+      setSecondarySelectedFiles([]);
+      await loadSecondaryDirectory(file.path);
+    } else {
+      await loadFilePreview(file);
+    }
+  }, [loadSecondaryDirectory, loadFilePreview]);
+
+  const handleDropMove = useCallback(async (sourcePaths: string[], destinationDir: string): Promise<void> => {
+    if (!destinationDir || sourcePaths.length === 0) return;
+    const normalizedDest = normalizeComparablePath(destinationDir);
+    const eligibleSources = sourcePaths.filter((srcPath) => {
+      const normalizedSrc = normalizeComparablePath(srcPath);
+      if (!normalizedSrc || normalizedSrc === normalizedDest) return false;
+      if (isPathInsideDirectory(destinationDir, srcPath)) return false;
+      const parentNorm = normalizeComparablePath(extractParentDirectory(srcPath));
+      return parentNorm !== normalizedDest;
+    });
+
+    if (eligibleSources.length === 0) return;
+
+    let movedCount = 0;
+    try {
+      for (const srcPath of eligibleSources) {
+        const destTarget = joinChildPath(destinationDir, extractBasename(srcPath));
+        const res = await window.electronAPI.fs.move(srcPath, destTarget);
+        if (res.success) {
+          movedCount += 1;
+        }
+      }
+      if (movedCount > 0) {
+        if (currentPath) {
+          await readDirectory(currentPath);
+        }
+        if (splitPaneOpen && secondaryPath) {
+          await loadSecondaryDirectory(secondaryPath);
+        }
+        await refreshWorkspaceMetadata();
+        showToast({
+          type: 'success',
+          message: `Moved ${movedCount} item(s) to ${extractBasename(destinationDir) || destinationDir}`,
+          actionLabel: 'Undo',
+          onAction: (): void => { void handleUndo(); },
+        });
+      }
+    } catch (err: unknown) {
+      showToast({
+        type: 'error',
+        message: getErrorMessage(err, 'Failed to move item(s)'),
+      });
+    }
+  }, [
+    currentPath,
+    readDirectory,
+    splitPaneOpen,
+    secondaryPath,
+    loadSecondaryDirectory,
+    refreshWorkspaceMetadata,
+    showToast,
+    handleUndo,
+  ]);
 
   const handleFileDoubleClick = async (file: FileNode): Promise<void> => {
     if (file.isDirectory) {
@@ -501,7 +842,10 @@ const FileManagerApp: React.FC = () => {
   }, [showToast]);
 
   return (
-    <div className="flex h-screen bg-gray-50" data-testid="app-container">
+    <div
+      className="flex h-screen bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100"
+      data-testid="app-container"
+    >
       {/* Sidebar */}
       <Sidebar
         width={sidebarWidth}
@@ -509,6 +853,7 @@ const FileManagerApp: React.FC = () => {
         onNavigate={handleNavigate}
         vaultConfig={vaultConfig}
         journalState={journalState}
+        lastWatcherEvent={lastWatcherEvent}
         onAddVaultRoot={handleAddVaultRoot}
         onRemoveVaultRoot={handleRemoveVaultRoot}
         onToggleIndexedRoot={handleToggleIndexedRoot}
@@ -572,14 +917,19 @@ const FileManagerApp: React.FC = () => {
           onUndo={(): void => { void handleUndo(); }}
           onRedo={(): void => { void handleRedo(); }}
           onOpenDiagnostics={(): void => setDiagnosticsOpen(true)}
+          onOpenOmnibar={(): void => setOmnibarOpen(true)}
+          splitPaneOpen={splitPaneOpen}
+          onToggleSplitPane={handleToggleSplitPane}
+          isDarkMode={isDarkMode}
+          onToggleTheme={handleToggleTheme}
           chatOpen={chatOpen}
           onToggleChat={handleToggleChat}
         />
 
         {/* Explorer + Inspector Drawers Row */}
         <div className="flex-1 flex min-h-0 overflow-hidden">
-          {/* File Explorer */}
-          <div className="flex-1 min-w-0 overflow-hidden p-4" data-testid="file-explorer">
+          {/* Primary File Explorer */}
+          <div className="flex-1 min-w-0 overflow-hidden p-4 dark:bg-slate-950" data-testid="file-explorer">
             <FileGrid
               files={files}
               selectedFiles={selectedFiles}
@@ -591,14 +941,93 @@ const FileManagerApp: React.FC = () => {
               viewMode={viewMode}
               loading={loading}
               error={error}
+              currentDirectory={currentPath}
+              onDropMove={(sources, dest): void => {
+                void handleDropMove(sources, dest);
+              }}
             />
           </div>
 
-          {/* Quick Preview Drawer (RingBuffer + LRUCache) */}
+          {/* Secondary Split-Pane Explorer (F6) */}
+          {splitPaneOpen && (
+            <div
+              className="flex-1 min-w-0 flex flex-col border-l border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-950 overflow-hidden"
+              data-testid="split-pane-right"
+            >
+              <div className="px-3 py-1.5 border-b border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-900 flex items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <button
+                    type="button"
+                    onClick={(): void => {
+                      const parent = extractParentDirectory(secondaryPath);
+                      if (parent && parent !== secondaryPath) {
+                        void loadSecondaryDirectory(parent);
+                      }
+                    }}
+                    className="p-1 rounded hover:bg-gray-200 dark:hover:bg-slate-800 text-gray-600 dark:text-slate-300"
+                    title="Up one folder"
+                    data-testid="split-pane-up"
+                  >
+                    <ArrowUp className="w-3.5 h-3.5" />
+                  </button>
+                  <span
+                    className="font-mono text-[11px] text-gray-700 dark:text-slate-300 truncate"
+                    title={secondaryPath}
+                    data-testid="split-pane-path"
+                  >
+                    {secondaryPath || currentPath}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={(): void => {
+                      if (secondaryPath) void loadSecondaryDirectory(secondaryPath);
+                    }}
+                    className="p-1 rounded hover:bg-gray-200 dark:hover:bg-slate-800 text-gray-600 dark:text-slate-300"
+                    title="Refresh secondary pane"
+                    data-testid="split-pane-refresh"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleToggleSplitPane}
+                    className="p-1 rounded hover:bg-gray-200 dark:hover:bg-slate-800 text-gray-600 dark:text-slate-300"
+                    title="Close split pane (F6)"
+                    data-testid="split-pane-close"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1 min-h-0 overflow-hidden p-4">
+                <FileGrid
+                  files={secondaryFiles}
+                  selectedFiles={secondarySelectedFiles}
+                  onFileClick={handleSecondaryFileClick}
+                  onFileDoubleClick={handleSecondaryFileDoubleClick}
+                  onFileContextMenu={handleFileContextMenu}
+                  sortBy={sortBy}
+                  sortDirection={sortDirection}
+                  viewMode={viewMode}
+                  loading={secondaryLoading}
+                  currentDirectory={secondaryPath}
+                  onDropMove={(sources, dest): void => {
+                    void handleDropMove(sources, dest);
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Quick Preview Drawer (RingBuffer + LRUCache + vault-asset:// + #Lx-Ly Citations) */}
           <FilePreviewDrawer
             isOpen={previewFileNode !== null}
             file={previewFileNode}
             preview={previewResult}
+            lineRange={previewLineRange}
+            highlightRange={previewHighlightRange}
             loading={previewLoading}
             error={previewError}
             onClose={(): void => {
@@ -606,12 +1035,14 @@ const FileManagerApp: React.FC = () => {
               previewSeqRef.current += 1;
               setPreviewFileNode(null);
               setPreviewResult(null);
+              setPreviewLineRange(null);
+              setPreviewHighlightRange(null);
               setPreviewError(null);
               setPreviewLoading(false);
             }}
             onRefresh={(): void => {
               if (previewFileNode) {
-                void loadFilePreview(previewFileNode);
+                void loadFilePreview(previewFileNode, previewHighlightRange);
               }
             }}
             onOpenExternal={(): void => {
@@ -628,15 +1059,25 @@ const FileManagerApp: React.FC = () => {
                 showToast({ type: 'error', message: getErrorMessage(err, 'Failed to copy path') });
               }
             }}
+            onClearRangeFocus={(): void => {
+              setPreviewLineRange(null);
+              setPreviewHighlightRange(null);
+            }}
           />
 
           {/* Chat Panel */}
           {chatOpen && (
             <div
-              className="w-96 h-full flex-shrink-0 bg-white border-l border-gray-200 shadow-lg"
+              className="w-96 h-full flex-shrink-0 bg-white dark:bg-slate-900 border-l border-gray-200 dark:border-slate-800 shadow-lg"
               data-testid="chat-panel-container"
             >
-              <ChatInterface currentPath={currentPath} llm={llmState} />
+              <ChatInterface
+                currentPath={currentPath}
+                llm={llmState}
+                onOpenCitation={(filePath, startLine, endLine): void => {
+                  void handleOpenCitation(filePath, startLine, endLine);
+                }}
+              />
             </div>
           )}
         </div>
@@ -774,6 +1215,26 @@ const FileManagerApp: React.FC = () => {
       <DiagnosticsModal
         isOpen={diagnosticsOpen}
         onClose={(): void => setDiagnosticsOpen(false)}
+      />
+
+      {/* Unified Command & Search Omnibar (Ctrl+K) */}
+      <CommandOmnibar
+        isOpen={omnibarOpen}
+        onClose={(): void => setOmnibarOpen(false)}
+        currentPath={currentPath}
+        onNavigateFile={handleSearchSelect}
+        onOpenCitation={handleOpenCitation}
+        isDarkMode={isDarkMode}
+        onToggleTheme={handleToggleTheme}
+        splitPaneOpen={splitPaneOpen}
+        onToggleSplitPane={handleToggleSplitPane}
+        onToggleChat={handleToggleChat}
+        onIndexCurrentDir={(): void => {
+          if (currentPath) {
+            setChatOpen(true);
+            void llmState.startIndexing(currentPath);
+          }
+        }}
       />
     </div>
   );
