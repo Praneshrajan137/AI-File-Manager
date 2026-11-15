@@ -18,7 +18,12 @@ import { useSpatialLens } from './hooks/useSpatialLens';
 import { useWorkspaceShortcuts } from './hooks/useWorkspaceShortcuts';
 import { UI_CONSTANTS } from './utils/constants';
 import { toFileNodeStub } from './utils/explorerHelpers';
-import { extractParentDirectory, isPathInsideDirectory, normalizeComparablePath } from './utils/pathHelpers';
+import {
+  extractBasename,
+  extractParentDirectory,
+  isPathInsideDirectory,
+  normalizeComparablePath,
+} from './utils/pathHelpers';
 import { getErrorMessage } from './utils/formatters';
 import { FileEvent, FileNode, OrganizePlanResult, OrganizeStrategy } from '@shared/contracts';
 
@@ -120,6 +125,11 @@ export const App: React.FC = () => {
       if (currentPath && isPathInsideDirectory(event.path, currentPath)) {
         void readDirectory(currentPath);
         void vault.refreshWorkspaceMetadata();
+        showToast({
+          type: 'info',
+          message: `File ${event.type}: ${extractBasename(event.path)}`,
+          duration: 2000,
+        });
       }
       if (
         vault.splitPaneOpen &&
@@ -129,7 +139,7 @@ export const App: React.FC = () => {
         void explorer.loadSecondaryDirectory(explorer.secondaryPath);
       }
     },
-    [currentPath, explorer, preview, readDirectory, vault]
+    [currentPath, explorer, preview, readDirectory, showToast, vault]
   );
 
   useFileWatcher(handleFileWatcherEvent);

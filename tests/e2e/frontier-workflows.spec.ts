@@ -108,11 +108,14 @@ test.describe('Frontier Workflows E2E', () => {
       const getListOrderText = async (): Promise<string[]> =>
         page.locator('[data-testid="file-list"] [role="button"]').allInnerTexts();
 
-      const ascItems = await getListOrderText();
-      const ascAlphaIdx = ascItems.findIndex((t) => t.includes('alpha.txt'));
-      const ascZetaIdx = ascItems.findIndex((t) => t.includes('zeta.txt'));
-      expect(ascAlphaIdx).toBeGreaterThanOrEqual(0);
-      expect(ascZetaIdx).toBeGreaterThan(ascAlphaIdx);
+      await expect
+        .poll(async () => {
+          const items = await getListOrderText();
+          const a = items.findIndex((t) => t.includes('alpha.txt'));
+          const z = items.findIndex((t) => t.includes('zeta.txt'));
+          return a >= 0 && z > a;
+        })
+        .toBe(true);
 
       await page.locator('[data-testid="sort-direction-toggle"]').click();
       await expect
@@ -191,18 +194,11 @@ test.describe('Frontier Workflows E2E', () => {
       const toastLocator = page.locator('[role="alert"], .toast, [data-testid="toast"]', {
         hasText: 'external-signal.txt',
       });
-      if ((await toastLocator.count()) > 0) {
-        const toastText = await toastLocator.first().innerText();
-        expect(toastText).toContain('external-signal.txt');
-        expect(toastText).not.toContain('\\');
-        expect(toastText).not.toContain('/');
-      } else {
-        const exactToast = page.getByText(/File (create|change): external-signal\.txt/);
-        await expect(exactToast.first()).toBeVisible({ timeout: 5000 });
-        const toastText = await exactToast.first().innerText();
-        expect(toastText).not.toContain('\\');
-        expect(toastText).not.toContain('/');
-      }
+      await expect(toastLocator.first()).toBeVisible({ timeout: 5000 });
+      const toastText = await toastLocator.first().innerText();
+      expect(toastText).toMatch(/File (create|change): external-signal\.txt/);
+      expect(toastText).not.toContain('\\');
+      expect(toastText).not.toContain('/');
 
       // 7. DiagnosticsModal live telemetry check
       await page.locator('[data-testid="diagnostics-button"]').click();
