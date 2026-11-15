@@ -232,7 +232,8 @@ export class VectorStore implements IVectorStore {
             } else {
                 await this.createTable();
                 await this.writeMetaFile(dbPath);
-                this.knowledgeGraph?.clear();
+                // Preserve any existing SQLite lexical/knowledge-graph index when creating
+                // a missing LanceDB table so lexical-first/pre-populated stores are never wiped.
             }
 
             const kgStats = this.knowledgeGraph?.getStats() ?? {

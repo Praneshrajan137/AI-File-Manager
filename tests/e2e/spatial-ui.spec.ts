@@ -122,6 +122,8 @@ function seedKnowledgeGraphDatabase(
 
     db.prepare('INSERT INTO symbols (file_path, symbol_name, kind, line_number) VALUES (?, ?, ?, ?)')
       .run(filePath, 'SpatialVectorProtocolToken', 'symbol', startLine);
+
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
   } finally {
     db.close();
   }

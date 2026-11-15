@@ -17,6 +17,7 @@ import {
 import { PathValidator } from '@main/services/PathValidator';
 import { FileSystemService } from '@main/services/FileSystemService';
 import { WorkspaceKnowledgeGraph } from '@main/services/WorkspaceKnowledgeGraph';
+import { VectorStore } from '../../src/llm/services/VectorStore';
 import { registerAllHandlers, unregisterAllHandlers } from '@main/handlers/ipcHandlers';
 import { resetPathValidator } from '@main/handlers/securityMiddleware';
 import { ConfigManager } from '@shared/config';
@@ -320,6 +321,13 @@ describe('Stage 4 (M10): Spatial UI, vault-asset:// Protocol, Citation Reader & 
       } finally {
         kg.close();
       }
+
+      // Regression check: creating an empty LanceDB table for the first time must preserve
+      // any pre-existing SQLite knowledge graph data (as triggered on boot by LLM:INDEX_STATUS).
+      const bootStore = new VectorStore();
+      await bootStore.initialize(vectorDbDir);
+      expect(bootStore.getKnowledgeGraph()?.getStats().totalFiles).toBe(2);
+      await bootStore.close();
 
       global.fetch = jest.fn(async (input: string | URL | Request) => {
         const url = String(input);
