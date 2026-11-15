@@ -321,7 +321,7 @@ test.describe('Stage 4 Spatial UI & Security E2E', () => {
 
       await expect(omnibar).toBeHidden();
       await expect(previewDrawer).toBeVisible({ timeout: 10000 });
-      await expect(page.locator('[data-testid="preview-citation-badge"]')).toContainText('#L17-L20');
+      await expect(page.locator('[data-testid="preview-citation-badge"]')).toContainText('Citation L17-L20');
       const lineRangePane = page.locator('[data-testid="preview-line-range"]');
       await expect(lineRangePane).toBeVisible();
       await expect(lineRangePane.locator('[data-highlighted="true"]', { hasText: 'SpatialVectorProtocolToken' })).toBeVisible();
