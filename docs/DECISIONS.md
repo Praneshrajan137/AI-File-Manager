@@ -957,13 +957,63 @@ Follow **"Make it work, make it right, make it fast"** philosophy. Optimize only
 
 
 
+### **DECISION-018: Hybrid SQLite WAL + FTS5 + 2-Hop Personalized PageRank Alongside LanceDB**
+
+**Date:** November 15, 2026  
+**Status:** Accepted  
+**Owner:** Architecture Review  
+**Category:** Retrieval & Knowledge Graph
+
+#### **Context & Alternatives Considered**
+- Pure vector search (`LanceDB` alone) fails on exact symbol identifiers (`verifyAccessToken`, error codes, config keys) and ignores explicit document links.
+- Running a separate graph daemon (`Neo4j` / external DB) violates single-process desktop startup and RAM budgets.
+
+#### **Decision**
+Embed `WorkspaceKnowledgeGraph` using `better-sqlite3` (WAL mode + FTS5 BM25 + normalized symbols, links, and SHA-256 hashes), combined with 2-hop Personalized PageRank associative boosts and Cross-Encoder reranking on top of LanceDB vector retrieval.
+
+---
+
+### **DECISION-019: Dual-Provider Local Transport + Deterministic Offline Synthesis Fallback**
+
+**Date:** November 15, 2026  
+**Status:** Accepted  
+**Owner:** Intelligence Layer  
+**Category:** Resilience & Portability
+
+#### **Decision**
+Introduce `LocalModelTransport` supporting both `Ollama` and OpenAI-compatible local servers (`LM Studio`, `llama.cpp`), and automatically route Copilot queries to `OfflineSynthesisService` (extractive synthesis with clickable `#Lx-Ly` citations) whenever no local LLM endpoint is reachable.
+
+---
+
+### **DECISION-020: Atomic Markdown Link Repair + Full Batch Undo for AI Organizer**
+
+**Date:** November 15, 2026  
+**Status:** Accepted  
+**Owner:** Core File Operations  
+**Category:** Integrity & Safety
+
+#### **Decision**
+Require every `AIOrganizerService` plan to go through a previewable dry-run (`DryRunPlanModal`) with impact counts, pair file moves with rewritten relative Markdown links (`MarkdownLinkRepair`), and record both moves and link edits inside a single transactional `OperationJournal` batch so Undo restores everything atomically.
+
+---
+
+### **DECISION-021: Opt-In Read-Only MCP Stdio Server & Honest Cloud CI Verification**
+
+**Date:** November 15, 2026  
+**Status:** Accepted  
+**Owner:** Interoperability & Quality  
+**Category:** Ecosystem & CI
+
+#### **Decision**
+Package `WorkspaceMcpServer` (`dist/main/mcpServer.js`) as a pure-Node JSON-RPC 2.0 stdio binary with strict `stderr` logging isolation, exposing 6 read-only tools gated by `PathValidator` + `SecretGuard`, and remove CI `--coverageThreshold='{}'` bypasses so GitHub Actions enforces real unit, coverage, webpack, unpacked binary, and cross-platform Electron Playwright E2E checks (`ubuntu-24.04` and `windows-latest`).
+
+---
+
 **DOCUMENT MAINTENANCE**:
 - Add new decisions as they arise
 - Never delete, only deprecate with reason
 - Link to PRD/Architecture docs for context
 - Review quarterly for obsolete decisions
-
-
 
 ---
 
