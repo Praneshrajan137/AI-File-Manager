@@ -407,12 +407,22 @@ describe('Stage 3 (M9) Knowledge Graph, Chunker, Dual-Lane Pool & Retrieval', ()
     });
 
     it('enforces single-flight physical worker serialization on in-flight aborts and forwards allowRemoteModels=false', async () => {
+      const waitForCondition = async (pred: () => boolean, timeoutMs = 1500): Promise<void> => {
+        const deadline = Date.now() + timeoutMs;
+        while (!pred()) {
+          if (Date.now() > deadline) {
+            throw new Error('Timed out waiting for worker condition');
+          }
+          await new Promise((r) => setTimeout(r, 2));
+        }
+      };
+
       const pool = new EmbeddingWorkerPool({
         modelName: 'Xenova/bge-small-en-v1.5',
         dtype: 'q8',
         device: 'cpu',
         allowRemoteModels: false,
-        abortGraceMs: 25,
+        abortGraceMs: 5000,
       });
 
       await pool.initialize();
@@ -422,11 +432,11 @@ describe('Stage 3 (M9) Knowledge Graph, Chunker, Dual-Lane Pool & Retrieval', ()
         allowRemoteModels: false,
       });
 
-      worker.responseDelayMs = 40;
+      // Hold the physical worker busy on task 1 explicitly to eliminate CI timer races
+      worker.autoRespond = false;
       const ac = new AbortController();
       const abortedEmbed = pool.embed('slow in-flight query', { signal: ac.signal });
-      // Allow await this.initialize() microtasks inside embedBatch() to dispatch to worker
-      await new Promise((r) => setTimeout(r, 5));
+      await waitForCondition(() => worker.postedMessages.some((m) => m.type === 'embed'));
 
       // Task 1 was already posted to worker thread; abort it while still physically running
       ac.abort();
@@ -434,12 +444,19 @@ describe('Stage 3 (M9) Knowledge Graph, Chunker, Dual-Lane Pool & Retrieval', ()
 
       // Enqueue follow-up work while worker is still physically occupied with aborted task 1
       const followupEmbed = pool.embed('queued follow-up query');
-      await new Promise((r) => setTimeout(r, 5));
+      await new Promise((r) => setTimeout(r, 15));
       const dispatchedBeforeFinish = worker.postedMessages.filter((m) => m.type === 'embed');
       expect(dispatchedBeforeFinish).toHaveLength(1);
       expect(dispatchedBeforeFinish[0].texts).toEqual(['slow in-flight query']);
 
-      // Once the physical worker completes aborted task 1, task 2 dispatches and resolves
+      // Simulate physical worker finishing aborted task 1; queued task 2 then dispatches and resolves
+      worker.autoRespond = true;
+      worker.emit('message', {
+        type: 'result',
+        id: dispatchedBeforeFinish[0].id,
+        embeddings: [new Array(384).fill(0.1)],
+      });
+
       const vec = await followupEmbed;
       expect(vec).toHaveLength(384);
       const dispatchedAfterFinish = worker.postedMessages.filter((m) => m.type === 'embed');
@@ -457,22 +474,33 @@ describe('Stage 3 (M9) Knowledge Graph, Chunker, Dual-Lane Pool & Retrieval', ()
         type: 'rerank',
         allowRemoteModels: false,
       });
+      await pool.terminate();
 
       // Simulate physically wedged worker on an aborted in-flight task -> watchdog recycles worker
-      worker.autoRespond = false;
+      const poolCountBefore = mockWorkers.length;
+      const wedgedPool = new EmbeddingWorkerPool({
+        modelName: 'Xenova/bge-small-en-v1.5',
+        dtype: 'q8',
+        device: 'cpu',
+        allowRemoteModels: false,
+        abortGraceMs: 25,
+      });
+      await wedgedPool.initialize();
+      const wedgedWorker = mockWorkers[mockWorkers.length - 1];
+      wedgedWorker.autoRespond = false;
+
       const wedgedAc = new AbortController();
-      const wedgedReq = pool.embed('wedged request', { signal: wedgedAc.signal });
-      await new Promise((r) => setTimeout(r, 5));
+      const wedgedReq = wedgedPool.embed('wedged request', { signal: wedgedAc.signal });
+      await waitForCondition(() => wedgedWorker.postedMessages.some((m) => m.type === 'embed'));
       wedgedAc.abort();
       await expect(wedgedReq).rejects.toThrow(/cancelled/i);
 
-      const recoveredPromise = pool.embed('post-recycle request');
-      const recoveredVec = await recoveredPromise;
+      const recoveredVec = await wedgedPool.embed('post-recycle request');
       expect(recoveredVec).toHaveLength(384);
-      expect(mockWorkers.length).toBeGreaterThanOrEqual(2);
-      expect(worker.terminated).toBe(true);
+      expect(mockWorkers.length).toBeGreaterThanOrEqual(poolCountBefore + 2);
+      expect(wedgedWorker.terminated).toBe(true);
 
-      await pool.terminate();
+      await wedgedPool.terminate();
     });
   });
 
