@@ -124,7 +124,7 @@ export const defaultConfig: AppConfig = {
   },
 
   ui: {
-    theme: 'dark',
+    theme: 'light',
     explorerLens: 'files',
     viewMode: 'list',
     splitPaneOpen: false,

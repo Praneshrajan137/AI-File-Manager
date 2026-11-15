@@ -83,7 +83,7 @@ export function buildVaultSnapshot(): VaultConfigSnapshot {
     favorites,
     defaultDeleteMode: fsConfig.defaultDeleteMode === 'trash' ? 'trash' : 'vault',
     ui: config.ui ?? {
-      theme: 'dark',
+      theme: 'light',
       explorerLens: 'files',
       viewMode: 'list',
       splitPaneOpen: false,
@@ -251,7 +251,7 @@ async function handleSetUiPrefs(
 ): Promise<UIPreferencesSnapshot> {
   const cm = ConfigManager.getInstance();
   const currentUi = cm.getAll().ui ?? {
-    theme: 'dark',
+    theme: 'light',
     explorerLens: 'files',
     viewMode: 'list',
     splitPaneOpen: false,

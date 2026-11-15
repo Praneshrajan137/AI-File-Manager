@@ -72,7 +72,7 @@ export const IndexingPanelBody: React.FC<IndexingPanelBodyProps> = ({
             className="ml-auto px-1.5 text-red-700 dark:text-red-300 hover:underline"
             aria-label="Dismiss error"
           >
-            ×
+            <span aria-hidden="true">×</span>
           </button>
         </div>
       )}

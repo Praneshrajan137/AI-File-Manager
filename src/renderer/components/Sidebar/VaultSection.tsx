@@ -96,7 +96,11 @@ export const VaultSection: React.FC<VaultSectionProps> = ({
                     ? 'AI Semantic Indexing enabled (click to opt out)'
                     : 'Click to opt into AI Semantic Indexing'
                 }
-                aria-label={isIndexed ? `Disable AI index for ${baseName}` : `Enable AI index for ${baseName}`}
+                aria-label={
+                  isIndexed
+                    ? `AI On — disable AI index for ${baseName}`
+                    : `AI Off — enable AI index for ${baseName}`
+                }
                 aria-pressed={isIndexed}
                 data-testid={`vault-index-toggle-${baseName}`}
                 className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 ${

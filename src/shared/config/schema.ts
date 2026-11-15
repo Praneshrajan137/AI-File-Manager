@@ -88,12 +88,12 @@ export const appConfigSchema = z.object({
   }),
 
   ui: z.object({
-    theme: z.enum(['light', 'dark']).default('dark'),
+    theme: z.enum(['light', 'dark']).default('light'),
     explorerLens: z.enum(['files', 'graph', 'collections', 'duplicates']).default('files'),
     viewMode: z.enum(['grid', 'list']).default('list'),
     splitPaneOpen: z.boolean().default(false),
   }).default({
-    theme: 'dark',
+    theme: 'light',
     explorerLens: 'files',
     viewMode: 'list',
     splitPaneOpen: false,

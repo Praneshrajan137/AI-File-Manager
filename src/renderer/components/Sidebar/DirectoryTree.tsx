@@ -75,11 +75,13 @@ export const DirectoryTree: React.FC<DirectoryTreeProps> = ({
   if (!root) return null;
 
   return (
-    <div className="py-2 px-3" role="tree" aria-label="Directory tree">
+    <div className="py-2 px-3">
       <h3 className="text-[10px] font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wider px-2 mb-3">
         Folders
       </h3>
-      <DirectoryTreeNode node={root} onNavigate={onNavigate} lastWatcherEvent={lastWatcherEvent} />
+      <div role="tree" aria-label="Directory tree">
+        <DirectoryTreeNode node={root} onNavigate={onNavigate} lastWatcherEvent={lastWatcherEvent} />
+      </div>
     </div>
   );
 };
