@@ -8,6 +8,35 @@ import {
 } from '@shared/contracts';
 import { extractBasename, normalizeComparablePath } from '@renderer/utils/pathHelpers';
 
+/** Pure decision helper for Spacebar / Preview button QuickLook toggle. */
+export type QuickLookAction =
+  | { kind: 'load'; file: FileNode }
+  | { kind: 'close' }
+  | { kind: 'noop' };
+
+export function resolveQuickLookAction(
+  previewFileNode: FileNode | null,
+  selectedFiles: string[],
+  files: FileNode[]
+): QuickLookAction {
+  const target =
+    selectedFiles.length === 1
+      ? (files.find((f) => f.path === selectedFiles[0] && !f.isDirectory) ?? null)
+      : null;
+
+  if (previewFileNode) {
+    if (
+      target &&
+      normalizeComparablePath(target.path) !== normalizeComparablePath(previewFileNode.path)
+    ) {
+      return { kind: 'load', file: target };
+    }
+    return { kind: 'close' };
+  }
+
+  return target ? { kind: 'load', file: target } : { kind: 'noop' };
+}
+
 /** Maximum lines requested per FS:PREVIEW_FILE IPC call (matches IPC schema maxLines <= 100). */
 export const PREVIEW_LINE_LIMIT = RING_BUFFER_CAPACITY;
 
@@ -186,15 +215,11 @@ export function usePreviewDrawer(): UsePreviewDrawerReturn {
 
   const toggleQuickLook = useCallback(
     (selectedFiles: string[], files: FileNode[]): void => {
-      if (previewFileNode) {
+      const action = resolveQuickLookAction(previewFileNode, selectedFiles, files);
+      if (action.kind === 'load') {
+        void loadFilePreview(action.file);
+      } else if (action.kind === 'close') {
         closePreview();
-        return;
-      }
-      if (selectedFiles.length === 1) {
-        const target = files.find((f) => f.path === selectedFiles[0]);
-        if (target && !target.isDirectory) {
-          void loadFilePreview(target);
-        }
       }
     },
     [closePreview, loadFilePreview, previewFileNode]

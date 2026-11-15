@@ -600,9 +600,18 @@ export class AIOrganizerService {
       }
       seenDestinations.add(destKey);
 
-      const destDir = path.dirname(canonicalDest);
-      if (destDir !== canonicalRoot && !(await pathExistsOnDisk(destDir))) {
-        neededDirs.add(destDir);
+      let ancestorDir = path.dirname(canonicalDest);
+      const rootLower = canonicalRoot.toLowerCase();
+      const rootPrefix = rootLower.endsWith(path.sep) ? rootLower : `${rootLower}${path.sep}`;
+      while (
+        ancestorDir.toLowerCase() !== rootLower &&
+        ancestorDir.toLowerCase().startsWith(rootPrefix) &&
+        !(await pathExistsOnDisk(ancestorDir))
+      ) {
+        neededDirs.add(ancestorDir);
+        const parent = path.dirname(ancestorDir);
+        if (parent === ancestorDir) break;
+        ancestorDir = parent;
       }
 
       verifiedSteps.push({

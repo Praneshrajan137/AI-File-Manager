@@ -514,6 +514,39 @@ describe('Stage 5 (M11): Bounded ReAct Copilot, @folder/@selection Scope & Trans
       expect(fsSync.existsSync(dataOp.destinationPath)).toBe(true);
     });
 
+    it('creates multi-level Duplicates Archive/<sha> folders via deduplicate plan and removes all created dirs on Undo', async () => {
+      const dupOriginal = path.join(workspaceRoot, 'a.txt');
+      const dupRedundant = path.join(workspaceRoot, 'redundant-copy.txt');
+      const payload = 'Identical SHA-256 payload for nested archive creation\n'.repeat(4);
+      await fs.writeFile(dupOriginal, payload, 'utf-8');
+      await fs.writeFile(dupRedundant, payload, 'utf-8');
+
+      const { organizer, journal } = createOrganizer();
+      const plan = await organizer.proposeOrganizationPlan({
+        targetDir: workspaceRoot,
+        strategy: 'deduplicate',
+      });
+      expect(plan.summary).toContain('Duplicates Archive');
+      expect(plan.operations).toHaveLength(1);
+      expect(plan.operations[0].sourcePath).toBe(dupRedundant);
+
+      const applyRes = await organizer.applyOrganizationPlan({
+        planId: plan.planId,
+        targetDir: plan.targetDir,
+        operations: plan.operations,
+      });
+      expect(applyRes.success).toBe(true);
+      expect(fsSync.existsSync(dupOriginal)).toBe(true);
+      expect(fsSync.existsSync(dupRedundant)).toBe(false);
+      expect(fsSync.existsSync(plan.operations[0].destinationPath)).toBe(true);
+
+      const undoRes = await journal.undo();
+      expect(undoRes.success).toBe(true);
+      expect(fsSync.existsSync(dupOriginal)).toBe(true);
+      expect(fsSync.existsSync(dupRedundant)).toBe(true);
+      expect(fsSync.existsSync(path.join(workspaceRoot, 'Duplicates Archive'))).toBe(false);
+    });
+
     it('rejects entire batch with zero moves when a source file SHA-256 changes after dry-run preview', async () => {
       const f1 = path.join(workspaceRoot, 'alpha.txt');
       const f2 = path.join(workspaceRoot, 'beta.txt');

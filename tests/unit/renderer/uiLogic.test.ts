@@ -27,6 +27,8 @@ import { SplitPaneExplorer } from '@renderer/components/FileExplorer/SplitPaneEx
 import { ChatInput } from '@renderer/components/ChatPanel/ChatInput';
 import { MessageBubble } from '@renderer/components/ChatPanel/MessageBubble';
 import { DryRunPlanModal } from '@renderer/components/Organizer/DryRunPlanModal';
+import { resolveQuickLookAction, PREVIEW_LINE_LIMIT } from '@renderer/hooks/usePreviewDrawer';
+import { IPC_SCHEMAS } from '@shared/ipc/contracts';
 import type { FileNode, FilePreviewResult, OrganizePlanResult } from '@shared/contracts';
 
 const SAMPLE_FILES: FileNode[] = [
@@ -724,6 +726,29 @@ describe('Renderer UI & M5 Control Upgrades', () => {
       expect(planModalHtml).toContain('data-testid="plan-link-impact-banner"');
       expect(planModalHtml).toContain('value="deduplicate"');
       expect(planModalHtml).toContain('value="semantic_cluster"');
+
+      expect(
+        IPC_SCHEMAS['FS:PREVIEW_FILE'].safeParse({
+          path: SAMPLE_FILES[0].path,
+          maxLines: PREVIEW_LINE_LIMIT,
+        }).success
+      ).toBe(true);
+      expect(resolveQuickLookAction(null, [SAMPLE_FILES[0].path], SAMPLE_FILES)).toEqual({
+        kind: 'load',
+        file: SAMPLE_FILES[0],
+      });
+      expect(
+        resolveQuickLookAction(SAMPLE_FILES[0], [SAMPLE_FILES[1].path], SAMPLE_FILES)
+      ).toEqual({
+        kind: 'load',
+        file: SAMPLE_FILES[1],
+      });
+      expect(
+        resolveQuickLookAction(SAMPLE_FILES[0], [SAMPLE_FILES[0].path], SAMPLE_FILES)
+      ).toEqual({ kind: 'close' });
+      expect(resolveQuickLookAction(null, [SAMPLE_FILES[2].path], SAMPLE_FILES)).toEqual({
+        kind: 'noop',
+      });
     });
   });
 });
