@@ -72,7 +72,6 @@ export const FileListItem: React.FC<FileListItemProps> = React.memo(({
             ? 'bg-indigo-50 dark:bg-indigo-950/60 ring-1 ring-accent-500 dark:ring-indigo-400 ring-inset'
             : 'hover:bg-slate-100 dark:hover:bg-slate-800/70'
         }
-        ${file.isHidden === true ? 'opacity-60' : ''}
       `}
       draggable
       onDragStart={handleDragStart}
@@ -91,12 +90,17 @@ export const FileListItem: React.FC<FileListItemProps> = React.memo(({
       aria-setsize={setSize}
       aria-posinset={posInSet}
     >
-      <Icon className={`w-5 h-5 flex-shrink-0 ${colorClass}`} aria-hidden="true" />
+      <Icon
+        className={`w-5 h-5 flex-shrink-0 ${colorClass} ${file.isHidden === true ? 'opacity-75' : ''}`}
+        aria-hidden="true"
+      />
       <span
         className={`flex-1 truncate text-sm font-medium ${
           selected
             ? 'text-slate-900 dark:text-white'
-            : 'text-slate-800 dark:text-slate-100'
+            : file.isHidden === true
+              ? 'italic text-slate-600 dark:text-slate-300'
+              : 'text-slate-800 dark:text-slate-100'
         }`}
       >
         {file.name}

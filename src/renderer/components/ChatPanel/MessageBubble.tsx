@@ -241,7 +241,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
                   </div>
                 ))}
                 {(message.retrievalMs !== undefined || message.generationMs !== undefined) && (
-                  <div className="pt-1 border-t border-purple-200/70 dark:border-purple-800/70 text-[10px] opacity-80">
+                  <div className="pt-1 border-t border-purple-200/70 dark:border-purple-800/70 text-[10px] text-purple-800 dark:text-purple-200">
                     retrieval {message.retrievalMs ?? 0}ms · generation {message.generationMs ?? 0}ms
                     {message.traceId ? ` · trace ${message.traceId.slice(0, 8)}` : ''}
                   </div>
@@ -279,7 +279,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
         ) : (
           message.sources &&
           message.sources.length > 0 && (
-            <div className="mt-2 text-xs text-gray-500 dark:text-slate-400">
+            <div className="mt-2 text-xs text-slate-600 dark:text-slate-300">
               <span className="font-semibold">Sources:</span>{' '}
               {message.sources.map((source, idx) => (
                 <button

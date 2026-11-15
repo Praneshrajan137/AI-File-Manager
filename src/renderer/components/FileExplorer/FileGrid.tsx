@@ -123,11 +123,18 @@ const GridCell: React.FC<GridChildComponentProps<SharedVirtualItemData>> = React
             : selected
               ? 'bg-indigo-50 dark:bg-indigo-950/60 border-accent-600 dark:border-indigo-400 ring-1 ring-accent-600 dark:ring-indigo-400'
               : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
-        } ${file.isHidden === true ? 'opacity-60' : ''}`}
+        }`}
       >
-        <Icon className={`w-9 h-9 mb-2 ${colorClass}`} aria-hidden="true" />
+        <Icon
+          className={`w-9 h-9 mb-2 ${colorClass} ${file.isHidden === true ? 'opacity-75' : ''}`}
+          aria-hidden="true"
+        />
         <span
-          className="text-xs font-medium text-slate-900 dark:text-slate-100 w-full truncate"
+          className={`text-xs font-medium w-full truncate ${
+            file.isHidden === true
+              ? 'italic text-slate-600 dark:text-slate-300'
+              : 'text-slate-900 dark:text-slate-100'
+          }`}
           title={file.name}
         >
           {file.name}
