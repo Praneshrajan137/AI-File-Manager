@@ -288,6 +288,7 @@ test.describe('Frontier Workflows E2E', () => {
   });
 
   test('indexes files, retrieves via hybrid RAG into ephemeral mock Ollama, streams UI chat reply, and persists chat across close/reopen', async () => {
+    test.setTimeout(120000);
     const aiRoot = path.join(os.tmpdir(), `e2e-frontier-ai-${Date.now()}`);
     const docsDir = path.join(aiRoot, 'docs');
     const vectorDbDir = path.join(aiRoot, 'lancedb');
@@ -329,6 +330,24 @@ test.describe('Frontier Workflows E2E', () => {
           capturedChatPrompts.push(combinedMessages);
 
           res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+          if (combinedMessages.includes('Cite unverified reference')) {
+            res.write(
+              JSON.stringify({
+                model: parsed.model ?? 'llama3.2',
+                message: { role: 'assistant', content: 'Claim backed by ' },
+                done: false,
+              }) + '\n'
+            );
+            res.write(
+              JSON.stringify({
+                model: parsed.model ?? 'llama3.2',
+                message: { role: 'assistant', content: '[fake.md#L99].' },
+                done: true,
+              }) + '\n'
+            );
+            res.end();
+            return;
+          }
           res.write(
             JSON.stringify({
               model: parsed.model ?? 'llama3.2',
@@ -413,6 +432,47 @@ test.describe('Frontier Workflows E2E', () => {
       expect(finalSnapshot.vectorStore.initialized).toBe(true);
       expect(finalSnapshot.vectorStore.indexedFiles).toBeGreaterThanOrEqual(2);
       expect(finalSnapshot.llm.successfulQueries).toBeGreaterThanOrEqual(1);
+
+      // 7. Verify ungrounded bracket citation reconciliation on stream completion
+      await expect(chatInput).toBeEnabled({ timeout: 10000 });
+      await chatInput.fill('Cite unverified reference');
+      await page.locator('[data-testid="send-button"]').click();
+      await expect(chatMessages).toContainText('(unverified: fake.md#L99)', { timeout: 15000 });
+      expect(await chatMessages.innerText()).not.toContain('[fake.md#L99]');
+
+      // 8. Verify persisted LLM:INDEX_STATUS and Clear index UI without booting worker pool on restart
+      await closeElectronApp(electronApp);
+      electronApp = null;
+      electronApp = await launchElectronApp({
+        env: {
+          OLLAMA_URL: mockOllamaUrl,
+          FILE_MANAGER_VECTOR_DB_PATH: vectorDbDir,
+          FILE_MANAGER_ALLOWED_ROOTS: aiRoot,
+        },
+      });
+      const restartedPage = await getFirstWindow(electronApp);
+      await restartedPage.waitForLoadState('networkidle');
+
+      const persistedStatus = await restartedPage.evaluate(() =>
+        window.electronAPI.llm.getIndexingStatus()
+      );
+      expect(persistedStatus.indexed).toBeGreaterThanOrEqual(2);
+      expect(persistedStatus.inProgress).toBe(false);
+
+      const restartSnapshot = await restartedPage.evaluate(() =>
+        window.electronAPI.diagnostics.getSnapshot()
+      );
+      expect(restartSnapshot.vectorStore.initialized).toBe(false);
+
+      await restartedPage.locator('[data-testid="chat-toggle-button"]').click();
+      const indexingToggle = restartedPage.locator(
+        '[data-testid="indexing-panel"] button[aria-controls="indexing-panel-content"]'
+      );
+      await expect(indexingToggle).toBeVisible({ timeout: 10000 });
+      await indexingToggle.click();
+      await expect(restartedPage.locator('[data-testid="clear-index-button"]')).toBeVisible({
+        timeout: 10000,
+      });
     } finally {
       if (electronApp) {
         await closeElectronApp(electronApp);

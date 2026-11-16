@@ -27,10 +27,10 @@ module.exports = {
   ],
   coverageThreshold: {
     global: {
-      branches: 50,
-      functions: 60,
-      lines: 65,
-      statements: 65,
+      branches: 56,
+      functions: 66,
+      lines: 70,
+      statements: 70,
     },
     './src/shared/security/SecretGuard.ts': {
       branches: 75,

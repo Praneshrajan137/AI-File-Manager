@@ -152,5 +152,51 @@ test.describe('Security', () => {
     // But should have electronAPI (via preload)
     expect(nodeAPIs.hasElectronAPI).toBe(true);
   });
+
+  test('blocks SHELL:OPEN_PATH on dangerous executable/script extensions and vault-asset:// on .env SecretGuard files', async ({ page }) => {
+    await page.waitForLoadState('networkidle');
+
+    const exeFile = path.join(testDir, 'payload.exe');
+    const ps1File = path.join(testDir, 'script.ps1');
+    const envFile = path.join(testDir, '.env');
+    await fs.writeFile(exeFile, 'MZ', 'utf-8');
+    await fs.writeFile(ps1File, 'Write-Host 1', 'utf-8');
+    await fs.writeFile(envFile, 'OPENAI_API_KEY=sk-proj-secret1234567890123456\n', 'utf-8');
+
+    const results = await page.evaluate(
+      async ({ exePath, ps1Path, envPath }) => {
+        const openAttempt = async (target: string): Promise<{ blocked: boolean; code: string | null }> => {
+          try {
+            await window.electronAPI.shell.openPath(target);
+            return { blocked: false, code: null };
+          } catch (err: unknown) {
+            const e = err as { code?: string };
+            return {
+              blocked: true,
+              code: e?.code ?? null,
+            };
+          }
+        };
+
+        const exeRes = await openAttempt(exePath);
+        const ps1Res = await openAttempt(ps1Path);
+        const assetResp = await fetch(
+          `vault-asset://local/file?path=${encodeURIComponent(envPath)}`
+        );
+        return {
+          exeRes,
+          ps1Res,
+          vaultStatus: assetResp.status,
+        };
+      },
+      { exePath: exeFile, ps1Path: ps1File, envPath: envFile }
+    );
+
+    expect(results.exeRes.blocked).toBe(true);
+    expect(results.exeRes.code).toBe('UNAUTHORIZED_ACCESS');
+    expect(results.ps1Res.blocked).toBe(true);
+    expect(results.ps1Res.code).toBe('UNAUTHORIZED_ACCESS');
+    expect(results.vaultStatus).toBe(403);
+  });
 });
 
