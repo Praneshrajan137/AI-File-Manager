@@ -190,7 +190,7 @@ export const KnowledgeGraphCanvas: React.FC<KnowledgeGraphCanvasProps> = ({
             viewBox={`${viewMinX} ${viewMinY} ${viewWidth} ${viewHeight}`}
             className={`w-full h-full max-h-full ${dragOrigin ? 'cursor-grabbing' : 'cursor-grab'}`}
             data-testid="knowledge-graph-svg"
-            role="img"
+            role="group"
             aria-label={`Workspace knowledge graph with ${filteredNodes.length} files and ${filteredEdges.length} links`}
             onWheel={(e): void => {
               e.preventDefault();
@@ -259,7 +259,7 @@ export const KnowledgeGraphCanvas: React.FC<KnowledgeGraphCanvasProps> = ({
                       onSelectNode(node);
                     }
                   }}
-                  className="cursor-pointer focus:outline-none"
+                  className="cursor-pointer"
                   data-testid={`graph-node-${node.name}`}
                 >
                   <circle

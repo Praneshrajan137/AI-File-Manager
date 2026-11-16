@@ -73,7 +73,7 @@ export const WorkspaceStatusBar: React.FC<WorkspaceStatusBarProps> = ({
               type="button"
               onClick={onClearClipboard}
               aria-label="Clear clipboard"
-              className="p-0.5 rounded hover:bg-indigo-200/70 dark:hover:bg-indigo-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+              className="min-w-[24px] min-h-[24px] inline-flex items-center justify-center rounded hover:bg-indigo-200/70 dark:hover:bg-indigo-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
             >
               <X className="w-3 h-3" aria-hidden="true" />
             </button>

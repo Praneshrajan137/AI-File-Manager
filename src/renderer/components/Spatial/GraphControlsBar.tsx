@@ -71,7 +71,7 @@ export const GraphControlsBar: React.FC<GraphControlsBarProps> = ({
             type="button"
             onClick={onZoomOut}
             aria-label="Zoom out graph"
-            className="p-1 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+            className="min-w-[28px] min-h-[28px] p-1 inline-flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
           >
             <ZoomOut className="w-3.5 h-3.5" aria-hidden="true" />
           </button>
@@ -82,7 +82,7 @@ export const GraphControlsBar: React.FC<GraphControlsBarProps> = ({
             type="button"
             onClick={onZoomIn}
             aria-label="Zoom in graph"
-            className="p-1 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+            className="min-w-[28px] min-h-[28px] p-1 inline-flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
           >
             <ZoomIn className="w-3.5 h-3.5" aria-hidden="true" />
           </button>
@@ -90,7 +90,7 @@ export const GraphControlsBar: React.FC<GraphControlsBarProps> = ({
             type="button"
             onClick={onResetViewport}
             aria-label="Reset graph zoom and pan"
-            className="p-1 border-l border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+            className="min-w-[28px] min-h-[28px] p-1 inline-flex items-center justify-center border-l border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
           >
             <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
           </button>
