@@ -172,8 +172,21 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
   const executeDeletePaths = useCallback(
     async (pathsToDelete: string[], mode: FileDeleteMode): Promise<void> => {
       try {
-        for (const targetPath of pathsToDelete) {
-          await deleteFile(targetPath, true, true, mode);
+        const batchFn = window.electronAPI?.fs?.batchTransfer;
+        if (typeof batchFn === 'function' && pathsToDelete.length > 1 && mode === 'vault') {
+          await batchFn(
+            pathsToDelete.map((p) => ({
+              type: 'delete' as const,
+              path: p,
+              recursive: true,
+              mode,
+            })),
+            `Delete ${pathsToDelete.length} items to Trash Vault`
+          );
+        } else {
+          for (const targetPath of pathsToDelete) {
+            await deleteFile(targetPath, true, true, mode);
+          }
         }
         setSelectedFiles((prev) => prev.filter((p) => !pathsToDelete.includes(p)));
         await refreshActiveDirectories();

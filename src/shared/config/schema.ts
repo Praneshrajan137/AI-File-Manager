@@ -83,6 +83,7 @@ export const appConfigSchema = z.object({
     embeddingDevice: z.enum(['auto', 'cpu', 'dml', 'webgpu']).default('auto'),
     rerankerModel: z.string().default('Xenova/ms-marco-MiniLM-L-6-v2'),
     enableWebGPU: z.boolean().default(false),
+    /** Experimental / inactive placeholder (vision captioning pipeline not active in runtime). */
     enableVisionCaptioning: z.boolean().default(false),
     allowRemoteModels: z.boolean().default(true),
   }),

@@ -23,6 +23,7 @@ import type {
   AgentTokenUsage,
   AgentTraceStep,
   AgentVerificationReport,
+  BatchTransferStep,
   CopilotContextScope,
   CopilotQueryMode,
   FileDeleteMode,
@@ -134,6 +135,12 @@ const electronAPI = {
 
     watchSplitDir: (path: string | null): ContractResult<'FS:WATCH_SPLIT_DIR'> =>
       invokeContract('FS:WATCH_SPLIT_DIR', { path }),
+
+    batchTransfer: (
+      steps: BatchTransferStep[],
+      description?: string
+    ): ContractResult<'FS:BATCH_TRANSFER'> =>
+      invokeContract('FS:BATCH_TRANSFER', { steps, description }),
   },
 
   /**

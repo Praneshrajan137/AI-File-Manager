@@ -75,7 +75,7 @@ export function useLLM(hookOptions?: UseLLMOptions): UseLLMReturn {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [modelsSnapshot, setModelsSnapshot] = useState<LLMModelsSnapshot | null>(null);
-  const [warmupReady, setWarmupReady] = useState<boolean>(isActive || deferWarmupMs <= 0);
+  const [warmupReady, setWarmupReady] = useState<boolean>(isActive);
 
   const loadingRef = useRef<boolean>(false);
   const messagesRef = useRef<Message[]>([]);
@@ -91,12 +91,14 @@ export function useLLM(hookOptions?: UseLLMOptions): UseLLMReturn {
 
   useEffect(() => {
     if (warmupReady) return;
-    if (isActive || deferWarmupMs <= 0) {
+    if (isActive) {
       setWarmupReady(true);
       return;
     }
-    const timer = setTimeout(() => setWarmupReady(true), deferWarmupMs);
-    return (): void => clearTimeout(timer);
+    if (deferWarmupMs && deferWarmupMs > 0) {
+      const timer = setTimeout(() => setWarmupReady(true), deferWarmupMs);
+      return (): void => clearTimeout(timer);
+    }
   }, [deferWarmupMs, isActive, warmupReady]);
 
   const refreshModels = useCallback(async (): Promise<void> => {

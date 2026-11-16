@@ -21,6 +21,8 @@ import { getOperationJournal, resetOperationJournal, type BatchOperationStep } f
 import { buildBatchMarkdownLinkRepairSteps } from '../services/MarkdownLinkRepair';
 import { checkWorkspaceGraphImpact } from './llmHandlers';
 import {
+  BatchTransferResult,
+  BatchTransferStep,
   FileDeleteMode,
   FileLineRangeResult,
   FileNode,
@@ -405,6 +407,50 @@ async function handleWatchSplitDir(
   return { watching: true, path: canonicalPath };
 }
 
+async function handleBatchTransfer(
+  _event: IpcMainInvokeEvent,
+  input: { description?: string; steps: BatchTransferStep[] }
+): Promise<BatchTransferResult> {
+  const journalSteps: BatchOperationStep[] = input.steps.map((step) => {
+    if (step.type === 'delete') {
+      return {
+        type: 'delete',
+        path: step.path,
+        recursive: step.recursive ?? true,
+        mode: step.mode ?? 'vault',
+      };
+    }
+    return {
+      type: step.type,
+      source: step.source,
+      destination: step.destination,
+    };
+  });
+
+  const description =
+    input.description?.trim() || `Batch transfer (${input.steps.length} items)`;
+  const result = await getOperationJournal().executeBatch(description, journalSteps);
+  const kernel = getReactiveWorkspaceKernel();
+
+  for (const step of input.steps) {
+    if (step.type === 'move') {
+      kernel.notifyMutation('unlink', step.source);
+      kernel.notifyMutation('create', step.destination);
+    } else if (step.type === 'copy') {
+      kernel.notifyMutation('create', step.destination);
+    } else {
+      kernel.notifyMutation('unlink', step.path);
+    }
+  }
+
+  return {
+    success: result.success,
+    count: input.steps.length,
+    operationId: result.operation.id,
+    journalState: result.state,
+  };
+}
+
 const FILE_SYSTEM_CHANNELS: IPCChannel[] = [
   'FS:READ_DIR',
   'FS:READ_FILE',
@@ -424,6 +470,7 @@ const FILE_SYSTEM_CHANNELS: IPCChannel[] = [
   'FS:GET_JOURNAL_STATE',
   'FS:EMPTY_TRASH_VAULT',
   'FS:WATCH_SPLIT_DIR',
+  'FS:BATCH_TRANSFER',
 ];
 
 /**
@@ -456,6 +503,7 @@ export function registerFileSystemHandlers(): IPCChannel[] {
   ipcMain.handle('FS:GET_JOURNAL_STATE', withContract('FS:GET_JOURNAL_STATE', handleGetJournalState));
   ipcMain.handle('FS:EMPTY_TRASH_VAULT', withContract('FS:EMPTY_TRASH_VAULT', handleEmptyTrashVault));
   ipcMain.handle('FS:WATCH_SPLIT_DIR', withContract('FS:WATCH_SPLIT_DIR', handleWatchSplitDir));
+  ipcMain.handle('FS:BATCH_TRANSFER', withContract('FS:BATCH_TRANSFER', handleBatchTransfer));
 
   IPCLogger.info('File system IPC handlers registered successfully');
   return [...FILE_SYSTEM_CHANNELS];

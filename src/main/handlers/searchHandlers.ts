@@ -31,6 +31,7 @@ import {
 } from './securityMiddleware';
 import { searchWorkspaceContent } from './llmHandlers';
 import { ContentSearchMatch, FileNode, FileMetadata } from '@shared/contracts';
+import { DEFAULT_EXCLUDED_DIRS } from '@shared/config';
 import { IPCLogger, getLogger } from '@shared/logging';
 import { IPCChannel } from '@shared/ipc/contracts';
 import { isSensitiveSecretFile } from '@shared/security/SecretGuard';
@@ -113,87 +114,139 @@ class SearchService {
     const endTimer = logger.startTimer('search_query');
 
     try {
-      const queryLower = query.toLowerCase();
+      const queryLower = query.trim().toLowerCase();
+      if (queryLower.length === 0) {
+        const entries = await this.fileSystemService.readDirectory(searchRoot);
+        const visible = entries.filter((entry) => !isSensitiveSecretFile(entry.path).blocked);
+        endTimer({ query, resultCount: visible.length, source: 'dir_list' });
+        return visible;
+      }
+
       const fileNodes: FileNode[] = [];
+      const seenResultKeys = new Set<string>();
+      const normKey = (p: string): string =>
+        process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
 
-      // STRATEGY 1: Search current directory first (fast, no indexing required)
+      // STRATEGY 1: Bounded recursive subtree scan (depth <= 4, max 200 dirs, max 100 hits)
+      const excludedDirs = new Set(DEFAULT_EXCLUDED_DIRS.map((d) => d.toLowerCase()));
+      const visitedDirs = new Set<string>();
+      const dirQueue: Array<{ dir: string; depth: number }> = [{ dir: searchRoot, depth: 0 }];
+      let scannedDirs = 0;
+
       try {
-        const filesInCurrentDir = await this.fileSystemService.readDirectory(searchRoot);
-
-        for (const file of filesInCurrentDir) {
-          if (isSensitiveSecretFile(file.path).blocked) {
+        while (dirQueue.length > 0 && scannedDirs < 200 && fileNodes.length < 100) {
+          const current = dirQueue.shift()!;
+          const visitKey = normKey(current.dir);
+          if (visitedDirs.has(visitKey)) {
             continue;
           }
-          // Case-insensitive substring match
-          if (file.name.toLowerCase().includes(queryLower)) {
-            fileNodes.push(file);
+          visitedDirs.add(visitKey);
+          scannedDirs += 1;
+
+          let entries: FileNode[] = [];
+          try {
+            entries = await this.fileSystemService.readDirectory(current.dir, {
+              bypassCache: true,
+            });
+          } catch {
+            continue;
+          }
+
+          for (const file of entries) {
+            if (isSensitiveSecretFile(file.path).blocked) {
+              continue;
+            }
+            if (file.name.toLowerCase().includes(queryLower)) {
+              const key = normKey(file.path);
+              if (!seenResultKeys.has(key)) {
+                seenResultKeys.add(key);
+                fileNodes.push(file);
+                if (fileNodes.length >= 100) {
+                  break;
+                }
+              }
+            }
+            if (
+              file.isDirectory &&
+              !file.isSymbolicLink &&
+              current.depth < 4 &&
+              !excludedDirs.has(file.name.toLowerCase())
+            ) {
+              dirQueue.push({ dir: file.path, depth: current.depth + 1 });
+            }
           }
         }
-
-        // If we found results in current directory, return them
-        if (fileNodes.length > 0) {
-          endTimer({ query, resultCount: fileNodes.length, source: 'current_dir' });
-          return fileNodes;
-        }
       } catch (error) {
-        IPCLogger.warn('Failed to search current directory', {
+        IPCLogger.warn('Failed recursive directory search', {
           searchRoot,
           error: error instanceof Error ? error.message : String(error),
         });
       }
 
-      // STRATEGY 2: Fall back to PathTrie for deeper search (requires indexing)
-      // Use PathTrie to get candidate paths with case-insensitive matching
-      const candidatePaths = this.pathTrie.autocomplete(query, 100);
+      // STRATEGY 2: Merge PathTrie deep/warmed matches when under cap
+      if (fileNodes.length < 100) {
+        const candidatePaths = this.pathTrie.autocomplete(query.trim(), 100);
+        const lowerCandidates = this.pathTrie.autocomplete(queryLower, 100);
+        const substringCandidates = this.pathTrie.searchSubstring(queryLower, 100);
+        const allCandidates = [...new Set([...candidatePaths, ...lowerCandidates, ...substringCandidates])];
 
-      // Also try lowercase query for case-insensitive PathTrie search
-      const lowerCandidates = this.pathTrie.autocomplete(queryLower, 100);
-      const allCandidates = [...new Set([...candidatePaths, ...lowerCandidates])];
+        // Filter candidates that belong under searchRoot, aren't SecretGuard-blocked, and match query
+        const filteredPaths = allCandidates.filter((candidate) => {
+          if (seenResultKeys.has(normKey(candidate))) {
+            return false;
+          }
+          if (isSensitiveSecretFile(candidate).blocked) {
+            return false;
+          }
+          const fileName = candidate.split('/').pop() || candidate.split('\\').pop() || candidate;
+          return (
+            isWithinNormalizedRoot(candidate, searchRoot) &&
+            fileName.toLowerCase().includes(queryLower)
+          );
+        });
 
-      // Filter candidates that belong under searchRoot, aren't SecretGuard-blocked, and match query
-      const filteredPaths = allCandidates.filter(candidate => {
-        if (isSensitiveSecretFile(candidate).blocked) {
-          return false;
-        }
-        const fileName = candidate.split('/').pop() || candidate.split('\\').pop() || candidate;
-        return (
-          isWithinNormalizedRoot(candidate, searchRoot) &&
-          fileName.toLowerCase().includes(queryLower)
-        );
-      });
+        // Convert to FileNode objects
+        for (const filePath of filteredPaths) {
+          if (fileNodes.length >= 100) {
+            break;
+          }
+          try {
+            const stats = await this.fileSystemService.getStats(filePath);
 
-      // Convert to FileNode objects
-      for (const filePath of filteredPaths) {
-        try {
-          const stats = await this.fileSystemService.getStats(filePath);
+            const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || filePath;
+            const extension = fileName.includes('.')
+              ? fileName.split('.').pop() || ''
+              : '';
 
-          const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || filePath;
-          const extension = fileName.includes('.')
-            ? fileName.split('.').pop() || ''
-            : '';
+            const key = normKey(filePath);
+            if (seenResultKeys.has(key)) {
+              continue;
+            }
+            seenResultKeys.add(key);
 
-          const fileNode: FileNode = {
-            path: filePath,
-            name: fileName,
-            isDirectory: stats.isDirectory,
-            size: stats.size,
-            modified: stats.modified,
-            extension,
-            mimeType: this.getMimeType(extension),
-            isHidden: fileName.startsWith('.'),
-          };
+            const fileNode: FileNode = {
+              path: filePath,
+              name: fileName,
+              isDirectory: stats.isDirectory,
+              size: stats.size,
+              modified: stats.modified,
+              extension,
+              mimeType: this.getMimeType(extension),
+              isHidden: fileName.startsWith('.'),
+            };
 
-          fileNodes.push(fileNode);
-        } catch (error) {
-          // Skip files we can't stat
-          IPCLogger.debug('Failed to stat search result', {
-            path: filePath,
-            error: error instanceof Error ? error.message : String(error),
-          });
+            fileNodes.push(fileNode);
+          } catch (error) {
+            // Skip files we can't stat
+            IPCLogger.debug('Failed to stat search result', {
+              path: filePath,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
       }
 
-      endTimer({ query, resultCount: fileNodes.length, source: 'pathtrie' });
+      endTimer({ query, resultCount: fileNodes.length, source: 'recursive_and_pathtrie' });
 
       return fileNodes;
     } catch (error) {
@@ -362,81 +415,7 @@ async function handleQuery(
   _event: IpcMainInvokeEvent,
   input: { query: string; searchRoot: string }
 ): Promise<FileNode[]> {
-  const queryLower = input.query.toLowerCase().trim();
-  const kernel = getReactiveWorkspaceKernel();
-  const fsService = kernel.getFileSystemService();
-  const pathTrie = kernel.getPathTrie();
-  const entries = await fsService.readDirectory(input.searchRoot);
-  kernel.warmDirectory(entries);
-
-  const nonSensitiveEntries = entries.filter(
-    (entry) => !isSensitiveSecretFile(entry.path).blocked
-  );
-  const fileNodes =
-    queryLower.length === 0
-      ? [...nonSensitiveEntries]
-      : nonSensitiveEntries.filter((entry) => entry.name.toLowerCase().includes(queryLower));
-
-  if (queryLower.length > 0) {
-    const seen = new Set(
-      fileNodes.map((n) =>
-        process.platform === 'win32' ? path.resolve(n.path).toLowerCase() : path.resolve(n.path)
-      )
-    );
-    const normalizedRoot =
-      process.platform === 'win32'
-        ? path.resolve(input.searchRoot).toLowerCase()
-        : path.resolve(input.searchRoot);
-    const normalizedRootPrefix = normalizedRoot.endsWith(path.sep)
-      ? normalizedRoot
-      : `${normalizedRoot}${path.sep}`;
-
-    const trieCandidates = Array.from(
-      new Set([
-        ...pathTrie.autocomplete(queryLower, 50),
-        ...pathTrie.searchSubstring(queryLower, 50),
-      ])
-    );
-    for (const candidatePath of trieCandidates) {
-      if (isSensitiveSecretFile(candidatePath).blocked) {
-        continue;
-      }
-      const normalizedCandidate =
-        process.platform === 'win32'
-          ? path.resolve(candidatePath).toLowerCase()
-          : path.resolve(candidatePath);
-      if (seen.has(normalizedCandidate)) {
-        continue;
-      }
-      if (
-        normalizedCandidate !== normalizedRoot &&
-        !normalizedCandidate.startsWith(normalizedRootPrefix)
-      ) {
-        continue;
-      }
-      if (!path.basename(candidatePath).toLowerCase().includes(queryLower)) {
-        continue;
-      }
-      try {
-        const stats = await fsService.getStats(candidatePath);
-        const fileName = path.basename(candidatePath);
-        const extension = path.extname(fileName).replace(/^\./, '').toLowerCase();
-        seen.add(normalizedCandidate);
-        fileNodes.push({
-          path: candidatePath,
-          name: fileName,
-          isDirectory: stats.isDirectory,
-          size: stats.size,
-          modified: stats.modified,
-          extension,
-          mimeType: extension ? `application/${extension}` : 'application/octet-stream',
-          isHidden: fileName.startsWith('.'),
-        });
-      } catch {
-        // Ignore stale candidates
-      }
-    }
-  }
+  const fileNodes = await getSearchService().search(input.query, input.searchRoot);
 
   IPCLogger.info('Search query completed', {
     query: input.query,

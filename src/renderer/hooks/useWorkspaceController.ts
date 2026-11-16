@@ -49,7 +49,7 @@ export function useWorkspaceController() {
   const [pendingDeletePaths, setPendingDeletePaths] = useState<string[] | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
 
-  const llmState = useLLM({ isActive: chatOpen, deferWarmupMs: 350 });
+  const llmState = useLLM({ isActive: chatOpen });
   const preview = usePreviewDrawer();
 
   const handleNavigate = useCallback(
@@ -112,24 +112,38 @@ export function useWorkspaceController() {
 
   const handleBack = useCallback(async (): Promise<void> => {
     const prevPath = await goBack();
-    if (prevPath) await readDirectory(prevPath);
-  }, [goBack, readDirectory]);
+    if (prevPath) {
+      const ok = await readDirectory(prevPath);
+      if (!ok) {
+        await goForward();
+      }
+    }
+  }, [goBack, goForward, readDirectory]);
 
   const handleForward = useCallback(async (): Promise<void> => {
     const nextPath = await goForward();
-    if (nextPath) await readDirectory(nextPath);
-  }, [goForward, readDirectory]);
+    if (nextPath) {
+      const ok = await readDirectory(nextPath);
+      if (!ok) {
+        await goBack();
+      }
+    }
+  }, [goBack, goForward, readDirectory]);
 
   const handleSearch = useCallback(
     async (query: string): Promise<void> => {
-      if (!query.trim()) {
-        if (currentPath) await readDirectory(currentPath);
-        return;
+      try {
+        if (!query.trim()) {
+          if (currentPath) await readDirectory(currentPath);
+          return;
+        }
+        const results = await window.electronAPI.search.query(query, currentPath);
+        setSearchResults(results, query);
+      } catch (err: unknown) {
+        showToast({ type: 'error', message: getErrorMessage(err, 'Search failed') });
       }
-      const results = await window.electronAPI.search.query(query, currentPath);
-      setSearchResults(results, query);
     },
-    [currentPath, readDirectory, setSearchResults]
+    [currentPath, readDirectory, setSearchResults, showToast]
   );
 
   const handleSearchSelect = useCallback(

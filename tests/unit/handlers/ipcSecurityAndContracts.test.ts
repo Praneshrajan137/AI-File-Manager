@@ -343,5 +343,37 @@ describe('M2 Canonical Security Boundary & Declarative IPC Contracts', () => {
     if (!overlongPath.ok) {
       expect(overlongPath.error.code).toBe('INVALID_INPUT');
     }
+
+    // FS:BATCH_TRANSFER executes multiple moves in a single transactional Undo step
+    const batchDestDir = path.join(allowedRoot, 'batch-dest');
+    const srcOne = path.join(allowedRoot, 'batch-1.txt');
+    const srcTwo = path.join(allowedRoot, 'batch-2.txt');
+    const dstOne = path.join(batchDestDir, 'batch-1.txt');
+    const dstTwo = path.join(batchDestDir, 'batch-2.txt');
+    await fs.promises.mkdir(batchDestDir, { recursive: true });
+    await fs.promises.writeFile(srcOne, 'one', 'utf-8');
+    await fs.promises.writeFile(srcTwo, 'two', 'utf-8');
+
+    const batchTransfer = registeredHandlers.get('FS:BATCH_TRANSFER')!;
+    const batchRes = (await batchTransfer(mockEvent, {
+      description: 'Move 2 batch files',
+      steps: [
+        { type: 'move', source: srcOne, destination: dstOne },
+        { type: 'move', source: srcTwo, destination: dstTwo },
+      ],
+    })) as IPCEnvelope<{ success: boolean; count: number; journalState: { canUndo: boolean } }>;
+    expect(batchRes.ok).toBe(true);
+    if (batchRes.ok) {
+      expect(batchRes.data.success).toBe(true);
+      expect(batchRes.data.count).toBe(2);
+      expect(batchRes.data.journalState.canUndo).toBe(true);
+    }
+    expect(fs.existsSync(dstOne)).toBe(true);
+    expect(fs.existsSync(dstTwo)).toBe(true);
+
+    const undoHandler = registeredHandlers.get('FS:UNDO')!;
+    await undoHandler(mockEvent, {});
+    expect(fs.existsSync(srcOne)).toBe(true);
+    expect(fs.existsSync(srcTwo)).toBe(true);
   });
 });

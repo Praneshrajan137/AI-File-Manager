@@ -1,3 +1,5 @@
+import fs from 'fs/promises';
+import path from 'path';
 import { FileNode, FileSystemError } from '@shared/contracts';
 import { ConfigManager, DEFAULT_EXCLUDED_DIRS } from '@shared/config';
 import { FileSystemLogger } from '@shared/logging';
@@ -108,6 +110,7 @@ export class DirectoryScanner {
         } = options;
 
         const results: FileNode[] = [];
+        const visitedDirs = new Set<string>();
 
         await this.scanRecursive(
             dirPath,
@@ -125,7 +128,10 @@ export class DirectoryScanner {
                 followSymlinks,
                 skipSensitiveFiles,
             },
-            0 // current depth
+            0,
+            undefined,
+            undefined,
+            visitedDirs
         );
 
         return results;
@@ -157,6 +163,7 @@ export class DirectoryScanner {
         onProgress: (processed: number) => void
     ): Promise<FileNode[]> {
         const results: FileNode[] = [];
+        const visitedDirs = new Set<string>();
         let processed = 0;
 
         await this.scanRecursive(
@@ -167,7 +174,9 @@ export class DirectoryScanner {
             (_file) => {
                 processed++;
                 onProgress(processed);
-            }
+            },
+            undefined,
+            visitedDirs
         );
 
         return results;
@@ -188,7 +197,8 @@ export class DirectoryScanner {
         options: ScanOptions,
         currentDepth: number,
         onFile?: (file: FileNode) => void,
-        excludedDirsSet?: Set<string>
+        excludedDirsSet?: Set<string>,
+        visitedDirs: Set<string> = new Set<string>()
     ): Promise<void> {
         // Check for cancellation (BUG FIX: Proper error handling)
         if (options.signal?.aborted) {
@@ -204,6 +214,13 @@ export class DirectoryScanner {
         if (options.maxDepth !== undefined && currentDepth >= options.maxDepth) {
             return;
         }
+
+        const canonicalDir = await fs.realpath(dirPath).catch(() => path.resolve(dirPath));
+        const visitKey = process.platform === 'win32' ? canonicalDir.toLowerCase() : canonicalDir;
+        if (visitedDirs.has(visitKey)) {
+            return;
+        }
+        visitedDirs.add(visitKey);
 
         try {
             // Read directory contents
@@ -244,7 +261,8 @@ export class DirectoryScanner {
                             options,
                             currentDepth + 1,
                             onFile,
-                            effectiveExcludedDirs
+                            effectiveExcludedDirs,
+                            visitedDirs
                         );
                     } catch (error: unknown) {
                         // Skip errors if requested

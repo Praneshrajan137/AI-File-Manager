@@ -76,12 +76,15 @@ export class FileSystemService implements IFileSystemService {
      * @returns Array of FileNode objects
      * @throws FileSystemError if validation fails or directory inaccessible
      */
-    async readDirectory(dirPath: string): Promise<FileNode[]> {
+    async readDirectory(
+        dirPath: string,
+        options?: { bypassCache?: boolean }
+    ): Promise<FileNode[]> {
         // SECURITY: Validate path lexically and canonically first (guards symlinks & traversal)
         const canonicalDir = await this.validateCanonicalPathOrThrow(dirPath);
 
         const cacheKey = this.normalizeCacheKey(canonicalDir);
-        const cached = this.dirCache.get(cacheKey);
+        const cached = options?.bypassCache ? undefined : this.dirCache.get(cacheKey);
         if (cached) {
             this.syncCacheTelemetry();
             return cached.map((entry) => ({ ...entry }));
@@ -119,6 +122,10 @@ export class FileSystemService implements IFileSystemService {
                                 extension: this.getExtension(entry.name),
                                 mimeType: this.getMimeType(entry.name),
                                 isHidden: this.isHidden(entry.name),
+                                isSymbolicLink:
+                                    typeof entry.isSymbolicLink === 'function'
+                                        ? entry.isSymbolicLink()
+                                        : false,
                             };
                         } catch (statError: unknown) {
                             FileSystemLogger.warn('Failed to stat file', {

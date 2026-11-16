@@ -9,6 +9,7 @@
 
 import * as crypto from 'crypto';
 import { IpcMainInvokeEvent } from 'electron';
+import fsSync from 'fs';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -1088,13 +1089,41 @@ export async function getIndexingStatus(
   _input: Record<string, never>
 ): Promise<IndexingStatus> {
   try {
-    await ensureServicesInitialized();
-    await indexingService!.getStats();
+    if (indexingInProgress) {
+      return {
+        indexed: indexedCount,
+        total: totalToIndex,
+        inProgress: true,
+        currentFile: currentFile || undefined,
+      };
+    }
+
+    const activeKg = vectorStore?.getKnowledgeGraph();
+    if (activeKg) {
+      const stats = activeKg.getStats();
+      return {
+        indexed: stats.totalFiles > 0 ? stats.totalFiles : indexedCount,
+        total: Math.max(totalToIndex, stats.totalFiles),
+        inProgress: false,
+        currentFile: undefined,
+      };
+    }
+
+    const kgPath = path.join(resolveVectorDbPath(), 'knowledge-graph.sqlite');
+    if (fsSync.existsSync(kgPath)) {
+      const persistedFiles = withKnowledgeGraph((kg) => kg.getStats().totalFiles);
+      return {
+        indexed: persistedFiles,
+        total: Math.max(totalToIndex, persistedFiles),
+        inProgress: false,
+        currentFile: undefined,
+      };
+    }
 
     return {
       indexed: indexedCount,
       total: totalToIndex,
-      inProgress: indexingInProgress,
+      inProgress: false,
       currentFile: currentFile || undefined,
     };
   } catch {
@@ -1582,20 +1611,33 @@ export async function clearVectorIndex(
   _input: Record<string, never>
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await ensureServicesInitialized();
-
     if (indexingInProgress || activeIndexingPromise) {
       abortIndexing = true;
       await activeIndexingPromise?.catch(() => undefined);
     }
 
-    const result = await vectorStore!.clear();
+    let success = true;
+    if (vectorStore) {
+      const result = await vectorStore.clear();
+      success = result.success;
+    } else {
+      const dbDir = resolveVectorDbPath();
+      const kgPath = path.join(dbDir, 'knowledge-graph.sqlite');
+      if (fsSync.existsSync(kgPath)) {
+        withKnowledgeGraph((kg) => kg.clear());
+      }
+      const lanceTableDir = path.join(dbDir, 'file_chunks.lance');
+      if (fsSync.existsSync(lanceTableDir)) {
+        await fs.rm(lanceTableDir, { recursive: true, force: true });
+      }
+    }
+
     indexedCount = 0;
     totalToIndex = 0;
     currentFile = '';
     LLMLogger.info('Vector index cleared');
 
-    return { success: result.success };
+    return { success };
   } catch (error: unknown) {
     const rawMsg = error instanceof Error ? error.message : String(error);
     const msg = ErrorSerializer.sanitizeText(rawMsg);

@@ -47,9 +47,10 @@ export interface ReactiveWorkspaceKernelOptions {
  *     -> Renderer IPC broadcasts
  */
 const MAX_INDEXED_WATCHERS = 4;
+const MAX_KERNEL_QUEUE_SIZE = 5000;
 
 export class ReactiveWorkspaceKernel {
-  private readonly allowedRoots: string[];
+  private allowedRoots: string[];
   private readonly eventQueue: EventQueue;
   private readonly fileWatcher: FileWatcher;
   private readonly secondaryWatcher: FileWatcher;
@@ -77,7 +78,7 @@ export class ReactiveWorkspaceKernel {
         ? options.allowedRoots
         : resolveAllowedRoots();
 
-    this.eventQueue = new EventQueue();
+    this.eventQueue = new EventQueue({ maxSize: MAX_KERNEL_QUEUE_SIZE });
     this.fileWatcher = new FileWatcher(this.eventQueue);
     this.secondaryWatcher = new FileWatcher(this.eventQueue);
     this.pathTrie = new PathTrie();
@@ -160,6 +161,39 @@ export class ReactiveWorkspaceKernel {
 
   getFileWatcher(): FileWatcher {
     return this.fileWatcher;
+  }
+
+  /**
+   * Dynamically synchronize allowed workspace roots, pruning stale PathTrie entries
+   * and tearing down indexed watchers for removed roots.
+   */
+  updateAllowedRoots(nextRoots: string[]): void {
+    if (this.closed || nextRoots.length === 0) {
+      return;
+    }
+    this.allowedRoots = [...nextRoots];
+    this.fileSystemService.updateAllowedRoots(this.allowedRoots);
+    this.pathTrie.pruneOutsideRoots(this.allowedRoots);
+
+    const allowedKeys = this.allowedRoots.map((r) => ({
+      key: this.canonicalKey(r),
+      prefix: `${this.canonicalKey(r).replace(/[\\/]+$/, '')}${path.sep}`,
+    }));
+    for (const [watchKey] of Array.from(this.indexedWatchers.entries())) {
+      const stillAllowed = allowedKeys.some(
+        ({ key, prefix }) => watchKey === key || watchKey.startsWith(prefix)
+      );
+      if (!stillAllowed) {
+        void this.unwatchIndexedRoot(watchKey).catch(() => undefined);
+      }
+    }
+
+    const diagnostics = RuntimeDiagnostics.getInstance();
+    diagnostics.setAllowedRoots(this.allowedRoots);
+    diagnostics.setPathTrieStats({
+      entryCount: this.pathTrie.size(),
+      indexedRoots: this.allowedRoots,
+    });
   }
 
   /**

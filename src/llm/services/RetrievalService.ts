@@ -12,6 +12,7 @@ import * as path from 'path';
 import {
     AssociativeBoostResult,
     CopilotContextScope,
+    LexicalSearchMatch,
     RetrievalResult,
     RetrievalSource,
     SearchScopeFilter,
@@ -20,7 +21,6 @@ import {
     IEmbeddingModel,
 } from '../../shared/contracts';
 import { VectorStore } from './VectorStore';
-import { LexicalSearchMatch } from './HybridLexicalIndex';
 import { ContextManager, formatUntrustedWorkspaceData } from './ContextManager';
 import { LLMMetrics, MetricOperation } from './LLMMetrics';
 import { LLMLogger } from '../../shared/logging';

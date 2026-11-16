@@ -18,9 +18,9 @@ import {
     VectorRecord,
     Embedding,
     IndexStats,
+    LexicalSearchMatch,
     SearchScopeFilter,
 } from '../../shared/contracts';
-import { LexicalSearchMatch } from './HybridLexicalIndex';
 import {
     KnowledgeGraphChunkRecord,
     WorkspaceKnowledgeGraph,

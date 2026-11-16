@@ -638,6 +638,30 @@ export class PathTrie {
     }
 
     /**
+     * Remove any indexed entry that is no longer inside `allowedRoots`.
+     */
+    pruneOutsideRoots(allowedRoots: readonly string[]): number {
+        const cmp = (p: string): string =>
+            process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
+        const rootPrefixes = allowedRoots.map((r) => {
+            const k = cmp(r).replace(/[\\/]+$/, '');
+            return { key: k, prefix: `${k}${path.sep}` };
+        });
+
+        let removed = 0;
+        for (const entry of Array.from(this.indexedEntries.values())) {
+            const entryKey = cmp(entry.path);
+            const isInside = rootPrefixes.some(
+                ({ key, prefix }) => entryKey === key || entryKey.startsWith(prefix)
+            );
+            if (!isInside && this.remove(entry.path)) {
+                removed += 1;
+            }
+        }
+        return removed;
+    }
+
+    /**
      * Get the total number of paths stored in the trie in O(1) time.
      *
      * @returns Number of complete paths

@@ -13,6 +13,7 @@ import { getReactiveWorkspaceKernel } from '@main/services/ReactiveWorkspaceKern
 import { ALL_IPC_CHANNELS } from '@shared/ipc/contracts';
 import { resetPathValidator } from '@main/handlers/securityMiddleware';
 import { PathValidator } from '@main/services/PathValidator';
+import { WorkspaceKnowledgeGraph } from '@main/services/WorkspaceKnowledgeGraph';
 
 jest.mock('electron', () => ({
   ipcMain: {
@@ -300,6 +301,74 @@ describe('Stage 1 (M7): DirectoryScanner Exclusions & Vault IPC Kernel Reload', 
       process.env.NODE_ENV = prevNodeEnv;
       if (prevE2e === undefined) delete process.env.E2E_TEST;
       else process.env.E2E_TEST = prevE2e;
+    }
+
+    // 4. Recursive SEARCH:QUERY finds nested file without warm PathTrie & DirectoryScanner prevents symlink cycles
+    const deepSub = path.join(rootA, 'nested', 'level2');
+    await fs.mkdir(deepSub, { recursive: true });
+    const deepNeedle = path.join(deepSub, 'deep-stage-e-needle.txt');
+    await fs.writeFile(deepNeedle, 'nested payload', 'utf-8');
+    const deepSearch = (await searchQueryHandler(fakeEvent, {
+      query: 'stage-e-needle',
+      searchRoot: rootA,
+    })) as { ok: boolean; data: FileNode[] };
+    expect(deepSearch.ok).toBe(true);
+    expect(deepSearch.data.some((f) => f.path === deepNeedle)).toBe(true);
+
+    // Canonical cycle guard on DirectoryScanner even with followSymlinks: true
+    try {
+      const cycleLink = path.join(deepSub, 'loop-back');
+      await fs.symlink(rootA, cycleLink, process.platform === 'win32' ? 'junction' : 'dir');
+      const liveFs = new FileSystemService([rootA]);
+      const dirNodes = await liveFs.readDirectory(deepSub);
+      expect(dirNodes.find((n) => n.name === 'loop-back')?.isSymbolicLink).toBe(true);
+      const scanner = new DirectoryScanner(liveFs);
+      const scanned = await scanner.scan(rootA, { recursive: true, followSymlinks: true, maxDepth: 6 });
+      expect(scanned.some((n) => n.path === deepNeedle)).toBe(true);
+    } catch {
+      // Symlink creation may require Developer Mode on unprivileged Windows hosts
+    }
+
+    // 5. Persisted LLM:INDEX_STATUS reads SQLite totalFiles lazily & LLM:CLEAR_INDEX resets without worker pool
+    const prevVectorEnv = process.env.FILE_MANAGER_VECTOR_DB_PATH;
+    const lazyVecDir = path.join(sandboxDir, 'lazy-status-vec');
+    await fs.mkdir(lazyVecDir, { recursive: true });
+    process.env.FILE_MANAGER_VECTOR_DB_PATH = lazyVecDir;
+    try {
+      const kg = new WorkspaceKnowledgeGraph(path.join(lazyVecDir, 'knowledge-graph.sqlite'));
+      kg.upsertDocument({
+        filePath: deepNeedle,
+        fileType: 'txt',
+        chunks: [{ id: 'lazy-1', chunkIndex: 0, text: 'nested payload', startChar: 0, endChar: 14 }],
+      });
+      kg.close();
+
+      const indexStatusHandler = handlers.get('LLM:INDEX_STATUS')!;
+      const statusRes = (await indexStatusHandler(fakeEvent, {})) as {
+        ok: boolean;
+        data: { indexed: number; inProgress: boolean };
+      };
+      expect(statusRes.ok).toBe(true);
+      expect(statusRes.data.indexed).toBe(1);
+      expect(statusRes.data.inProgress).toBe(false);
+
+      const clearHandler = handlers.get('LLM:CLEAR_INDEX')!;
+      const clearRes = (await clearHandler(fakeEvent, {})) as {
+        ok: boolean;
+        data: { success: boolean };
+      };
+      expect(clearRes.ok).toBe(true);
+      expect(clearRes.data.success).toBe(true);
+
+      const afterClearRes = (await indexStatusHandler(fakeEvent, {})) as {
+        ok: boolean;
+        data: { indexed: number };
+      };
+      expect(afterClearRes.ok).toBe(true);
+      expect(afterClearRes.data.indexed).toBe(0);
+    } finally {
+      if (prevVectorEnv === undefined) delete process.env.FILE_MANAGER_VECTOR_DB_PATH;
+      else process.env.FILE_MANAGER_VECTOR_DB_PATH = prevVectorEnv;
     }
   });
 });

@@ -35,6 +35,18 @@ export function useWorkspaceLifecycle(options: UseWorkspaceLifecycleOptions): vo
   } = options;
 
   const initializedRef = useRef<boolean>(false);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPrimaryRefreshRef = useRef<boolean>(false);
+  const pendingSecondaryRefreshRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    return (): void => {
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (pathsLoading || initializedRef.current) return;
@@ -59,21 +71,42 @@ export function useWorkspaceLifecycle(options: UseWorkspaceLifecycleOptions): vo
       vault.setLastWatcherEvent(event);
       preview.syncPreviewWatcherEvent(event.path, event.type);
 
-      if (currentPath && isPathInsideDirectory(event.path, currentPath)) {
-        void readDirectory(currentPath);
-        void vault.refreshWorkspaceMetadata();
+      const primaryMatch = Boolean(currentPath && isPathInsideDirectory(event.path, currentPath));
+      const secondaryMatch = Boolean(
+        vault.splitPaneOpen &&
+          explorer.secondaryPath &&
+          isPathInsideDirectory(event.path, explorer.secondaryPath)
+      );
+
+      if (primaryMatch) {
+        pendingPrimaryRefreshRef.current = true;
         showToast({
           type: 'info',
           message: `File ${event.type}: ${extractBasename(event.path)}`,
           duration: 2000,
         });
       }
-      if (
-        vault.splitPaneOpen &&
-        explorer.secondaryPath &&
-        isPathInsideDirectory(event.path, explorer.secondaryPath)
-      ) {
-        void explorer.loadSecondaryDirectory(explorer.secondaryPath);
+      if (secondaryMatch) {
+        pendingSecondaryRefreshRef.current = true;
+      }
+
+      if ((primaryMatch || secondaryMatch) && !refreshTimerRef.current) {
+        refreshTimerRef.current = setTimeout(() => {
+          refreshTimerRef.current = null;
+          if (pendingPrimaryRefreshRef.current && currentPath) {
+            pendingPrimaryRefreshRef.current = false;
+            void readDirectory(currentPath);
+            void vault.refreshWorkspaceMetadata();
+          }
+          if (
+            pendingSecondaryRefreshRef.current &&
+            vault.splitPaneOpen &&
+            explorer.secondaryPath
+          ) {
+            pendingSecondaryRefreshRef.current = false;
+            void explorer.loadSecondaryDirectory(explorer.secondaryPath);
+          }
+        }, 180);
       }
     },
     [currentPath, explorer, preview, readDirectory, showToast, vault]

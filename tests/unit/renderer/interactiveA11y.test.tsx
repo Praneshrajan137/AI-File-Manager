@@ -25,6 +25,7 @@ import { WorkspaceStatusBar } from '@renderer/components/Toolbar/WorkspaceStatus
 import { FilePreviewDrawer } from '@renderer/components/Preview/FilePreviewDrawer';
 import { ChatInterface } from '@renderer/components/ChatPanel/ChatInterface';
 import { useLLM } from '@renderer/hooks/useLLM';
+import { useSpatialLens } from '@renderer/hooks/useSpatialLens';
 import { useWorkspaceShortcuts } from '@renderer/hooks/useWorkspaceShortcuts';
 import { computeGraphLayout } from '@renderer/utils/graphLayout';
 import type { FileNode, WorkspaceGraphMap } from '@shared/contracts';
@@ -818,5 +819,52 @@ describe('Interactive Accessibility, Resilience, and Keyboard Tests (JSDOM + jes
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onClearSelection).toHaveBeenCalledTimes(1);
     expect(stateEl).toHaveAttribute('data-selected', '0');
+  });
+
+  it('keeps useLLM idle until activated and skips queryInsights while in files explorer lens', async () => {
+    const getIndexingStatus = jest.fn().mockResolvedValue({ indexed: 7, total: 7, inProgress: false });
+    const listModels = jest.fn().mockResolvedValue({ available: true, models: ['llama3.2'], activeModel: 'llama3.2', embeddingModel: 'bge', rerankerModel: 'ms', temperature: 0.7, maxTokens: 2048 });
+    const queryInsights = jest.fn().mockResolvedValue({
+      stats: { totalFiles: 0, totalChunks: 0, totalTokens: 0, lastIndexed: 0, duplicateClusters: [], totalWastedBytes: 0, topHubs: [], recentFiles: [] },
+      symbolMatches: [],
+      backlinks: [],
+    });
+    const getWorkspaceMap = jest.fn().mockResolvedValue({ rootPrefix: '/v', nodes: [], edges: [], totalFilesIndexed: 0 });
+
+    (window as unknown as { electronAPI: unknown }).electronAPI = {
+      llm: { getIndexingStatus, listModels },
+      graph: { queryInsights, getWorkspaceMap },
+    };
+
+    const LazyHarness: React.FC = () => {
+      const [active, setActive] = useState(false);
+      const [lens, setLens] = useState<'files' | 'graph'>('files');
+      useLLM({ isActive: active });
+      useSpatialLens(lens, '/vault/sub');
+      return (
+        <div>
+          <button type="button" onClick={(): void => setActive(true)}>
+            Activate AI
+          </button>
+          <button type="button" onClick={(): void => setLens('graph')}>
+            Show Graph
+          </button>
+        </div>
+      );
+    };
+
+    render(<LazyHarness />);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(getIndexingStatus).not.toHaveBeenCalled();
+    expect(listModels).not.toHaveBeenCalled();
+    expect(queryInsights).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText('Activate AI'));
+    await waitFor(() => expect(getIndexingStatus).toHaveBeenCalledTimes(1));
+    expect(listModels).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByText('Show Graph'));
+    await waitFor(() => expect(queryInsights).toHaveBeenCalledTimes(1));
+    expect(getWorkspaceMap).toHaveBeenCalledTimes(1);
   });
 });

@@ -33,6 +33,11 @@ export function useSpatialLens(
 
   const refreshSpatialData = useCallback(
     async (lensOverride = explorerLens, scopeOverride = graphScopeToFolder): Promise<void> => {
+      if (lensOverride === 'files') {
+        setSpatialError(null);
+        setSpatialLoading(false);
+        return;
+      }
       setSpatialLoading(true);
       setSpatialError(null);
       try {

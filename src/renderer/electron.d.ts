@@ -7,6 +7,8 @@ import type {
   AgentTokenUsage,
   AgentTraceStep,
   AgentVerificationReport,
+  BatchTransferResult,
+  BatchTransferStep,
   ContentSearchMatch,
   CopilotContextScope,
   CopilotQueryMode,
@@ -72,6 +74,7 @@ interface ElectronAPI {
     getJournalState: () => Promise<OperationJournalState>;
     emptyTrashVault: () => Promise<OperationJournalState>;
     watchSplitDir?: (path: string | null) => Promise<{ watching: boolean; path: string | null }>;
+    batchTransfer?: (steps: BatchTransferStep[], description?: string) => Promise<BatchTransferResult>;
   };
 
   vault: {

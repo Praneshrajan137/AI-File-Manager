@@ -94,7 +94,7 @@ export function buildVaultSnapshot(): VaultConfigSnapshot {
 function syncKernelAllowedRoots(roots: string[]): void {
   resetPathValidator();
   const kernel = getReactiveWorkspaceKernel();
-  kernel.getFileSystemService().updateAllowedRoots(roots);
+  kernel.updateAllowedRoots(roots);
   RuntimeDiagnostics.getInstance().setAllowedRoots(roots);
   resetSearchService();
   resetOperationJournal();
@@ -232,6 +232,9 @@ async function handleSetVaultIndexed(
   const nextIndexed = input.enabled ? dedupePaths([...filtered, canonicalTarget]) : filtered;
 
   ConfigManager.getInstance().set('fileSystem.indexedRoots', nextIndexed, true);
+  if (!input.enabled) {
+    void getReactiveWorkspaceKernel().unwatchIndexedRoot(canonicalTarget).catch(() => undefined);
+  }
   IPCLogger.info('Updated AI opt-in indexed root', {
     path: canonicalTarget,
     enabled: input.enabled,

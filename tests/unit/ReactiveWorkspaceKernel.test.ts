@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { PathTrie } from '@main/dsa/PathTrie';
+import { EventQueue } from '@main/dsa/EventQueue';
 import { LRUCache } from '@main/dsa/LRUCache';
 import { FileSystemService } from '@main/services/FileSystemService';
 import { ReactiveWorkspaceKernel } from '@main/services/ReactiveWorkspaceKernel';
@@ -385,6 +386,37 @@ describe('M3 Closed-Loop ReactiveWorkspaceKernel & DSA Integration', () => {
         { channel: 'FILE_DELETED', payload: sameTsConflict },
         { channel: 'FILE_CREATED', payload: unsuppressedBg },
       ]);
+    } finally {
+      await kernel.shutdown();
+    }
+  });
+
+  it('prunes out-of-root PathTrie entries on updateAllowedRoots() and enforces bounded EventQueue capacity', async () => {
+    const keepRoot = path.join(workspaceDir, 'keep-root');
+    const dropRoot = path.join(workspaceDir, 'drop-root');
+    const kernel = new ReactiveWorkspaceKernel({
+      allowedRoots: [keepRoot, dropRoot],
+      coalesceMs: 25,
+    });
+
+    try {
+      const keepFile = path.join(keepRoot, 'kept.ts');
+      const dropFile = path.join(dropRoot, 'dropped.ts');
+      kernel.getPathTrie().insert(keepFile, { filePath: keepFile, totalChunks: 0, indexedAt: 1, fileSize: 10 });
+      kernel.getPathTrie().insert(dropFile, { filePath: dropFile, totalChunks: 0, indexedAt: 1, fileSize: 10 });
+      expect(kernel.getPathTrie().size()).toBe(2);
+
+      kernel.updateAllowedRoots([keepRoot]);
+      expect(kernel.getPathTrie().size()).toBe(1);
+      expect(kernel.getPathTrie().search(keepFile)).not.toBeNull();
+      expect(kernel.getPathTrie().search(dropFile)).toBeNull();
+
+      const smallQueue = new EventQueue({ maxSize: 2 });
+      smallQueue.enqueue({ type: 'create', path: keepFile, priority: EventPriority.FILE_WATCHER, timestamp: 1 });
+      smallQueue.enqueue({ type: 'change', path: keepFile, priority: EventPriority.FILE_WATCHER, timestamp: 2 });
+      expect(() =>
+        smallQueue.enqueue({ type: 'unlink', path: keepFile, priority: EventPriority.FILE_WATCHER, timestamp: 3 })
+      ).toThrow(/capacity exceeded/i);
     } finally {
       await kernel.shutdown();
     }

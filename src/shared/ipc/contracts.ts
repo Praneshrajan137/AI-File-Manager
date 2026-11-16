@@ -12,6 +12,7 @@ import type {
   AgentTokenUsage,
   AgentTraceStep,
   AgentVerificationReport,
+  BatchTransferResult,
   ContentSearchMatch,
   FileConnectionsSummary,
   FileLineRangeResult,
@@ -159,6 +160,27 @@ export const IPC_SCHEMAS = {
   'FS:EMPTY_TRASH_VAULT': optionalEmptyObjectSchema,
   'FS:WATCH_SPLIT_DIR': z.object({
     path: boundedPathSchema.nullable(),
+  }),
+  'FS:BATCH_TRANSFER': z.object({
+    description: z.string().min(1).max(256).optional(),
+    steps: z
+      .array(
+        z.union([
+          z.object({
+            type: z.enum(['move', 'copy']),
+            source: boundedPathSchema,
+            destination: boundedPathSchema,
+          }),
+          z.object({
+            type: z.literal('delete'),
+            path: boundedPathSchema,
+            recursive: z.boolean().optional(),
+            mode: z.enum(['vault', 'trash', 'permanent']).optional(),
+          }),
+        ])
+      )
+      .min(1)
+      .max(250),
   }),
   'VAULT:GET_CONFIG': optionalEmptyObjectSchema,
   'VAULT:ADD_ROOT': z.object({
@@ -362,6 +384,7 @@ export interface IPCResponseMap {
   'FS:GET_JOURNAL_STATE': OperationJournalState;
   'FS:EMPTY_TRASH_VAULT': OperationJournalState;
   'FS:WATCH_SPLIT_DIR': { watching: boolean; path: string | null };
+  'FS:BATCH_TRANSFER': BatchTransferResult;
   'VAULT:GET_CONFIG': VaultConfigSnapshot;
   'VAULT:ADD_ROOT': { cancelled: boolean; addedPath?: string; config: VaultConfigSnapshot };
   'VAULT:REMOVE_ROOT': VaultConfigSnapshot;
@@ -557,6 +580,13 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     schema: IPC_SCHEMAS['FS:WATCH_SPLIT_DIR'],
     pathFields: [],
     rateLimit: READ_RATE_LIMIT,
+  },
+  'FS:BATCH_TRANSFER': {
+    channel: 'FS:BATCH_TRANSFER',
+    group: 'fileSystem',
+    schema: IPC_SCHEMAS['FS:BATCH_TRANSFER'],
+    pathFields: [],
+    rateLimit: WRITE_RATE_LIMIT,
   },
   'VAULT:GET_CONFIG': {
     channel: 'VAULT:GET_CONFIG',

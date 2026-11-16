@@ -53,13 +53,29 @@ export function useExplorerTransfer(
 
       let movedCount = 0;
       let lastError: string | null = null;
-      for (const src of uniqueSources) {
-        const destPath = joinChildPath(destinationDir, extractBasename(src));
+      const batchFn = window.electronAPI?.fs?.batchTransfer;
+
+      if (typeof batchFn === 'function' && uniqueSources.length > 1) {
         try {
-          await window.electronAPI.fs.move(src, destPath);
-          movedCount += 1;
+          const steps = uniqueSources.map((src) => ({
+            type: 'move' as const,
+            source: src,
+            destination: joinChildPath(destinationDir, extractBasename(src)),
+          }));
+          const batchRes = await batchFn(steps, `Move ${uniqueSources.length} items`);
+          movedCount = batchRes.count;
         } catch (err: unknown) {
           lastError = err instanceof Error ? err.message : String(err);
+        }
+      } else {
+        for (const src of uniqueSources) {
+          const destPath = joinChildPath(destinationDir, extractBasename(src));
+          try {
+            await window.electronAPI.fs.move(src, destPath);
+            movedCount += 1;
+          } catch (err: unknown) {
+            lastError = err instanceof Error ? err.message : String(err);
+          }
         }
       }
       await refreshActiveDirectories();
@@ -103,13 +119,31 @@ export function useExplorerTransfer(
 
       let copiedCount = 0;
       let lastError: string | null = null;
+      const batchFn = window.electronAPI?.fs?.batchTransfer;
+      const plannedDestinations: Array<{ type: 'copy'; source: string; destination: string }> = [];
       for (const src of sourcePaths) {
         const destPath = await resolveDestinationPath(src, destinationDir, existingNamesLower);
+        plannedDestinations.push({ type: 'copy', source: src, destination: destPath });
+      }
+
+      if (typeof batchFn === 'function' && plannedDestinations.length > 1) {
         try {
-          await copyFn(src, destPath);
-          copiedCount += 1;
+          const batchRes = await batchFn(
+            plannedDestinations,
+            `Copy ${plannedDestinations.length} items`
+          );
+          copiedCount = batchRes.count;
         } catch (err: unknown) {
           lastError = err instanceof Error ? err.message : String(err);
+        }
+      } else {
+        for (const step of plannedDestinations) {
+          try {
+            await copyFn(step.source, step.destination);
+            copiedCount += 1;
+          } catch (err: unknown) {
+            lastError = err instanceof Error ? err.message : String(err);
+          }
         }
       }
 

@@ -49,6 +49,9 @@ export interface FileNode {
 
   /** Optional: Is this node hidden? (starts with . on Unix) */
   isHidden?: boolean;
+
+  /** Optional: Whether the underlying directory entry is a symbolic link or junction */
+  isSymbolicLink?: boolean;
 }
 
 /**
@@ -208,7 +211,25 @@ export interface LLMModelsSnapshot {
   openAiBaseUrl?: string;
   embeddingDevice?: 'auto' | 'cpu' | 'dml' | 'webgpu';
   activeExecutionProvider?: string;
+  /** Experimental / inactive flag (vision captioning pipeline is not enabled in current runtime). */
   enableVisionCaptioning?: boolean;
+}
+
+export interface LexicalSearchMatch {
+  record: VectorRecord;
+  bm25Score: number;
+}
+
+export type BatchTransferStep =
+  | { type: 'move'; source: string; destination: string }
+  | { type: 'copy'; source: string; destination: string }
+  | { type: 'delete'; path: string; recursive?: boolean; mode?: FileDeleteMode };
+
+export interface BatchTransferResult {
+  success: boolean;
+  count: number;
+  operationId?: string;
+  journalState: OperationJournalState;
 }
 
 export interface SystemPaths {

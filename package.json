@@ -30,7 +30,6 @@
     "@huggingface/transformers": "^4.3.2",
     "@lancedb/lancedb": "^0.41.0",
     "chokidar": "^3.5.3",
-    "dompurify": "^3.4.18",
     "dotenv": "^17.2.3",
     "lucide-react": "^0.263.1",
     "mammoth": "^1.13.0",

@@ -35,9 +35,14 @@ import { FileEvent } from '@shared/contracts';
  */
 export class EventQueue {
     private heap: FileEvent[];
+    private readonly maxSize: number;
 
-    constructor() {
+    constructor(options?: { maxSize?: number }) {
         this.heap = [];
+        this.maxSize =
+            typeof options?.maxSize === 'number' && options.maxSize > 0
+                ? Math.floor(options.maxSize)
+                : Number.POSITIVE_INFINITY;
     }
 
     /**
@@ -59,6 +64,9 @@ export class EventQueue {
      */
     enqueue(event: FileEvent): void {
         this.validateEvent(event);
+        if (this.heap.length >= this.maxSize) {
+            throw new Error(`EventQueue capacity exceeded (${this.maxSize})`);
+        }
 
         this.heap.push(event);
         this.heapifyUp(this.heap.length - 1);
