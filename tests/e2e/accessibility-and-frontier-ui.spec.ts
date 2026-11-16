@@ -49,8 +49,11 @@ test.describe('Frontier Frontend E2E: WCAG 2.2 AA Contrast, 800x600 Reflow, Keyb
         }
       });
 
-      await expect(page.getByRole('button', { name: 'a11y-vault', exact: true })).toBeVisible({ timeout: 15000 });
-      await page.getByRole('button', { name: 'a11y-vault', exact: true }).click();
+      const sidebarVaultButton = page
+        .getByRole('complementary', { name: 'Workspace sidebar' })
+        .getByRole('button', { name: 'a11y-vault', exact: true });
+      await expect(sidebarVaultButton).toBeVisible({ timeout: 15000 });
+      await sidebarVaultButton.click();
       await expect(page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'alpha.md' })).toBeVisible({
         timeout: 15000,
       });
@@ -203,7 +206,7 @@ test.describe('Frontier Frontend E2E: WCAG 2.2 AA Contrast, 800x600 Reflow, Keyb
       await page.locator('[data-testid="view-list-button"]').click();
 
       // 6. Explorer keyboard navigation + LIFO Escape stack (Delete dialog over Preview Drawer)
-      await page.getByRole('button', { name: 'a11y-vault', exact: true }).click();
+      await sidebarVaultButton.click();
       const alphaRow = page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'alpha.md' });
       await expect(alphaRow).toBeVisible({ timeout: 10000 });
       await alphaRow.click();
