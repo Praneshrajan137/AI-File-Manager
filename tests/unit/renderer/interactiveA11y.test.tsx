@@ -20,8 +20,12 @@ import { WorkspaceLensBar } from '@renderer/components/Spatial/WorkspaceLensBar'
 import { KnowledgeGraphCanvas } from '@renderer/components/Spatial/KnowledgeGraphCanvas';
 import { DuplicateReclaimLens } from '@renderer/components/Spatial/DuplicateReclaimLens';
 import { SmartCollectionsLens } from '@renderer/components/Spatial/SmartCollectionsLens';
+import { SelectionActionBar } from '@renderer/components/FileExplorer/SelectionActionBar';
+import { WorkspaceStatusBar } from '@renderer/components/Toolbar/WorkspaceStatusBar';
+import { FilePreviewDrawer } from '@renderer/components/Preview/FilePreviewDrawer';
 import { ChatInterface } from '@renderer/components/ChatPanel/ChatInterface';
 import { useLLM } from '@renderer/hooks/useLLM';
+import { useWorkspaceShortcuts } from '@renderer/hooks/useWorkspaceShortcuts';
 import { computeGraphLayout } from '@renderer/utils/graphLayout';
 import type { FileNode, WorkspaceGraphMap } from '@shared/contracts';
 
@@ -487,5 +491,332 @@ describe('Interactive Accessibility, Resilience, and Keyboard Tests (JSDOM + jes
       </SystemPathsProvider>
     );
     expect(await axe(uiAuditContainer)).toHaveNoViolations();
+  });
+
+  it('audits SelectionActionBar & WorkspaceStatusBar with jest-axe in Light and Dark mode and wires clipboard controls', async () => {
+    const onCopy = jest.fn();
+    const onCut = jest.fn();
+    const onDuplicate = jest.fn();
+    const onPaste = jest.fn();
+    const onOpenOmnibar = jest.fn();
+
+    const { container } = render(
+      <div>
+        <SelectionActionBar
+          selectedCount={2}
+          totalBytes={768}
+          canPreviewSingle={false}
+          canRenameSingle={false}
+          canCopyToSplitPane={true}
+          onPreview={jest.fn()}
+          onRename={jest.fn()}
+          onCopy={onCopy}
+          onCut={onCut}
+          onDuplicate={onDuplicate}
+          onCopyToSplitPane={jest.fn()}
+          onAskAi={jest.fn()}
+          onDelete={jest.fn()}
+          onClearSelection={jest.fn()}
+        />
+        <WorkspaceStatusBar
+          files={SAMPLE_NODES}
+          currentPath="/vault"
+          searchQuery={null}
+          clipboard={{ mode: 'copy', paths: ['/vault/alpha.ts'] }}
+          indexingStatus={{ indexed: 2, total: 3, inProgress: true }}
+          onPaste={onPaste}
+          onClearClipboard={jest.fn()}
+          onOpenChat={jest.fn()}
+          onOpenOmnibar={onOpenOmnibar}
+        />
+      </div>
+    );
+
+    expect(screen.getByTestId('selection-summary-badge')).toHaveTextContent('2 selected');
+    expect(screen.getByTestId('status-clipboard-badge')).toHaveTextContent('Copied 1 item');
+
+    fireEvent.click(screen.getByTestId('selection-copy-button'));
+    fireEvent.click(screen.getByTestId('selection-cut-button'));
+    fireEvent.click(screen.getByTestId('selection-duplicate-button'));
+    fireEvent.click(screen.getByTestId('status-paste-button'));
+    fireEvent.click(screen.getByTestId('status-omnibar-hint'));
+
+    expect(onCopy).toHaveBeenCalledTimes(1);
+    expect(onCut).toHaveBeenCalledTimes(1);
+    expect(onDuplicate).toHaveBeenCalledTimes(1);
+    expect(onPaste).toHaveBeenCalledTimes(1);
+    expect(onOpenOmnibar).toHaveBeenCalledTimes(1);
+
+    expect(await axe(container)).toHaveNoViolations();
+    try {
+      document.documentElement.classList.add('dark');
+      expect(await axe(container)).toHaveNoViolations();
+    } finally {
+      document.documentElement.classList.remove('dark');
+    }
+  });
+
+  it('implements DirectoryTree APG roving tabIndex with Home, End, ArrowDown, and ArrowLeft parent focus', async () => {
+    const readDirectory = jest.fn().mockResolvedValue([
+      {
+        path: '/vault/docs',
+        name: 'docs',
+        isDirectory: true,
+        size: 0,
+        modified: 1000,
+        extension: '',
+        mimeType: '',
+      },
+      {
+        path: '/vault/src',
+        name: 'src',
+        isDirectory: true,
+        size: 0,
+        modified: 1000,
+        extension: '',
+        mimeType: '',
+      },
+    ]);
+    (window as unknown as Record<string, unknown>).electronAPI = {
+      fs: {
+        getStats: jest.fn().mockResolvedValue({ size: 0, modified: 1000, isDirectory: true }),
+        readDirectory,
+        getSystemPaths: jest.fn().mockResolvedValue({
+          home: '/vault',
+          desktop: '/vault/desktop',
+          documents: '/vault/docs',
+          downloads: '/vault/downloads',
+          pictures: '/vault/pics',
+        }),
+      },
+    };
+
+    render(
+      <SystemPathsProvider>
+        <DirectoryTree rootPath="/vault" onNavigate={jest.fn()} />
+      </SystemPathsProvider>
+    );
+
+    const homeItem = await screen.findByRole('treeitem', { name: 'Home' });
+    expect(homeItem).toHaveAttribute('tabindex', '0');
+
+    fireEvent.keyDown(homeItem, { key: 'ArrowRight' });
+    const docsItem = await screen.findByRole('treeitem', { name: 'docs' });
+    const srcItem = await screen.findByRole('treeitem', { name: 'src' });
+
+    fireEvent.keyDown(homeItem, { key: 'End' });
+    expect(srcItem).toHaveFocus();
+    expect(srcItem).toHaveAttribute('tabindex', '0');
+    expect(homeItem).toHaveAttribute('tabindex', '-1');
+
+    fireEvent.keyDown(srcItem, { key: 'Home' });
+    expect(homeItem).toHaveFocus();
+    expect(homeItem).toHaveAttribute('tabindex', '0');
+
+    fireEvent.keyDown(homeItem, { key: 'ArrowDown' });
+    expect(docsItem).toHaveFocus();
+    fireEvent.keyDown(docsItem, { key: 'ArrowLeft' });
+    expect(homeItem).toHaveFocus();
+  });
+
+  it('filters KnowledgeGraphCanvas nodes, jumps to clickable neighbor chips, and sorts table columns', () => {
+    const graphMap: WorkspaceGraphMap = {
+      rootPrefix: '/v',
+      nodes: [
+        { path: '/v/alpha.ts', name: 'alpha.ts', folder: '/v', fileType: 'ts', inDegree: 1, outDegree: 2, chunkCount: 3, topSymbols: ['boot'] },
+        { path: '/v/beta.md', name: 'beta.md', folder: '/v', fileType: 'md', inDegree: 2, outDegree: 0, chunkCount: 2, topSymbols: ['guide'] },
+        { path: '/v/zeta.py', name: 'zeta.py', folder: '/v', fileType: 'py', inDegree: 0, outDegree: 1, chunkCount: 1, topSymbols: ['trainModel'] },
+      ],
+      edges: [
+        { source: '/v/alpha.ts', target: '/v/beta.md', targetRef: './beta.md', kind: 'markdown_link', lineNumber: 2 },
+        { source: '/v/zeta.py', target: '/v/alpha.ts', targetRef: './alpha.ts', kind: 'import', lineNumber: 1 },
+      ],
+      totalFilesIndexed: 3,
+    };
+
+    const GraphHarness: React.FC = () => {
+      const [selected, setSelected] = useState<string | null>('/v/alpha.ts');
+      return (
+        <KnowledgeGraphCanvas
+          graphMap={graphMap}
+          selectedNodePath={selected}
+          scopeToFolder={false}
+          onToggleScopeToFolder={jest.fn()}
+          onSelectNode={(n): void => setSelected(n.path)}
+          onOpenPreview={jest.fn()}
+        />
+      );
+    };
+
+    render(<GraphHarness />);
+    expect(screen.getByTestId('graph-neighbor-jumps')).toBeInTheDocument();
+    const betaChip = within(screen.getByTestId('graph-neighbor-jumps')).getByRole('button', { name: /beta\.md/i });
+    fireEvent.click(betaChip);
+    expect(screen.getByTestId('graph-node-inspector')).toHaveTextContent('beta.md');
+
+    const searchInput = screen.getByTestId('graph-node-search');
+    fireEvent.change(searchInput, { target: { value: 'trainModel' } });
+    expect(screen.getByTestId('knowledge-graph-canvas')).toHaveTextContent('1 nodes / 0 links');
+
+    fireEvent.change(searchInput, { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('graph-view-toggle'));
+    const table = screen.getByTestId('knowledge-graph-table');
+    const fileSortBtn = within(table).getByRole('button', { name: /^File/i });
+    fireEvent.click(fileSortBtn);
+    let rows = within(table).getAllByRole('row').slice(1);
+    expect(rows[0]).toHaveTextContent('alpha.ts');
+
+    fireEvent.click(fileSortBtn);
+    rows = within(table).getAllByRole('row').slice(1);
+    expect(rows[0]).toHaveTextContent('zeta.py');
+  });
+
+  it('wires FilePreviewDrawer sibling Prev/Next cycling and Copy Content clipboard button', () => {
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    (window as unknown as Record<string, unknown>).electronAPI = {
+      clipboard: { writeText },
+    };
+    const onPrev = jest.fn();
+    const onNext = jest.fn();
+    const onCopyContentSuccess = jest.fn();
+
+    render(
+      <OverlayStackProvider>
+        <FilePreviewDrawer
+          isOpen={true}
+          file={SAMPLE_NODES[0]}
+          preview={{
+            path: SAMPLE_NODES[0].path,
+            name: SAMPLE_NODES[0].name,
+            extension: 'ts',
+            size: 512,
+            modified: 1000,
+            lines: ['export const answer = 42;'],
+            totalLinesBuffered: 1,
+            truncated: false,
+            binary: false,
+            fromCache: false,
+          }}
+          loading={false}
+          error={null}
+          hasPrev={true}
+          hasNext={true}
+          onPrevFile={onPrev}
+          onNextFile={onNext}
+          onCopyContentSuccess={onCopyContentSuccess}
+          onClose={jest.fn()}
+          onRefresh={jest.fn()}
+          onOpenExternal={jest.fn()}
+          onCopyPath={jest.fn()}
+        />
+      </OverlayStackProvider>
+    );
+
+    fireEvent.click(screen.getByTestId('preview-copy-content'));
+    expect(writeText).toHaveBeenCalledWith('export const answer = 42;');
+    expect(onCopyContentSuccess).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('preview-prev-button'));
+    fireEvent.click(screen.getByTestId('preview-next-button'));
+    expect(onPrev).toHaveBeenCalledTimes(1);
+    expect(onNext).toHaveBeenCalledTimes(1);
+  });
+
+  it('executes layered non-modal Escape (Overlay -> Search -> Selection) and protects native text copy vs file Ctrl+C/V', async () => {
+    const onClearSearch = jest.fn().mockResolvedValue(undefined);
+    const onClearSelection = jest.fn();
+    const onCopySelection = jest.fn();
+    const onPasteSelection = jest.fn().mockResolvedValue(undefined);
+
+    const ShortcutHarness: React.FC = () => {
+      const [overlayOpen, setOverlayOpen] = useState(true);
+      const [hasActiveSearch, setHasActiveSearch] = useState(true);
+      const [selected, setSelected] = useState<string[]>(['/vault/alpha.ts']);
+
+      useRegisterOverlay('non-modal-preview', overlayOpen, () => setOverlayOpen(false), { blocking: false });
+      useWorkspaceShortcuts({
+        hasModalOpen: false,
+        currentPath: '/vault',
+        files: SAMPLE_NODES,
+        selectedFiles: selected,
+        hasActiveSearch,
+        canPaste: true,
+        onToggleOmnibar: jest.fn(),
+        onToggleChat: jest.fn(),
+        onBack: jest.fn().mockResolvedValue(undefined),
+        onForward: jest.fn().mockResolvedValue(undefined),
+        onToggleQuickLook: jest.fn(),
+        onToggleSplitPane: jest.fn(),
+        onRefresh: jest.fn(),
+        onRequestRename: jest.fn(),
+        onRequestDelete: jest.fn(),
+        onSelectAll: jest.fn(),
+        onClearSearch: async (): Promise<void> => {
+          await onClearSearch();
+          setHasActiveSearch(false);
+        },
+        onClearSelection: (): void => {
+          onClearSelection();
+          setSelected([]);
+        },
+        onCopySelection,
+        onCutSelection: jest.fn(),
+        onPasteSelection,
+        onDuplicateSelection: jest.fn().mockResolvedValue(undefined),
+        onCreateFile: jest.fn(),
+        onCreateDirectory: jest.fn(),
+        onUndo: jest.fn().mockResolvedValue(undefined),
+        onRedo: jest.fn().mockResolvedValue(undefined),
+      });
+
+      return (
+        <div
+          data-testid="shortcut-state"
+          data-overlay={String(overlayOpen)}
+          data-search={String(hasActiveSearch)}
+          data-selected={String(selected.length)}
+        />
+      );
+    };
+
+    render(
+      <OverlayStackProvider>
+        <ShortcutHarness />
+      </OverlayStackProvider>
+    );
+
+    const stateEl = screen.getByTestId('shortcut-state');
+    // 1st Escape dismisses non-modal overlay only
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(stateEl).toHaveAttribute('data-overlay', 'false');
+    expect(onClearSearch).not.toHaveBeenCalled();
+
+    // 2nd Escape clears active search filter
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(stateEl).toHaveAttribute('data-search', 'false'));
+    expect(onClearSearch).toHaveBeenCalledTimes(1);
+    expect(onClearSelection).not.toHaveBeenCalled();
+
+    // Native text selection protects highlighted prose on Ctrl+C
+    const originalGetSelection = window.getSelection;
+    window.getSelection = jest.fn(() => ({ toString: () => 'selected prose' }) as unknown as Selection);
+    try {
+      fireEvent.keyDown(document.body, { key: 'c', ctrlKey: true });
+      expect(onCopySelection).not.toHaveBeenCalled();
+
+      window.getSelection = jest.fn(() => ({ toString: () => '' }) as unknown as Selection);
+      fireEvent.keyDown(document.body, { key: 'c', ctrlKey: true });
+      expect(onCopySelection).toHaveBeenCalledWith(['/vault/alpha.ts']);
+
+      fireEvent.keyDown(document.body, { key: 'v', ctrlKey: true });
+      await waitFor(() => expect(onPasteSelection).toHaveBeenCalledWith('/vault'));
+    } finally {
+      window.getSelection = originalGetSelection;
+    }
+
+    // 3rd Escape clears file selection
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClearSelection).toHaveBeenCalledTimes(1);
+    expect(stateEl).toHaveAttribute('data-selected', '0');
   });
 });

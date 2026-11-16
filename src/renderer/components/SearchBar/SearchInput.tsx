@@ -18,7 +18,7 @@ export const SearchInput: React.FC<SearchInputProps> = ({
   onChange,
   onFocus,
   onKeyDown,
-  placeholder = 'Search files... (Ctrl+F)',
+  placeholder = 'Search files...',
   expanded = false,
   listboxId,
   activeDescendantId,
@@ -38,7 +38,7 @@ export const SearchInput: React.FC<SearchInputProps> = ({
     aria-controls={listboxId}
     aria-activedescendant={activeDescendantId}
     aria-autocomplete="list"
-    className="w-36 sm:w-44 lg:w-56"
+    className="w-40 sm:w-52 lg:w-64"
     data-testid="search-input"
   />
 );

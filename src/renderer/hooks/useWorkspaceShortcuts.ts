@@ -7,6 +7,8 @@ export interface UseWorkspaceShortcutsOptions {
   currentPath: string;
   files: FileNode[];
   selectedFiles: string[];
+  hasActiveSearch: boolean;
+  canPaste: boolean;
   onToggleOmnibar: () => void;
   onToggleChat: () => void;
   onBack: () => Promise<void>;
@@ -17,10 +19,24 @@ export interface UseWorkspaceShortcutsOptions {
   onRequestRename: (node: FileNode) => void;
   onRequestDelete: (paths: string[]) => void;
   onSelectAll: () => void;
+  onClearSearch: () => Promise<void>;
+  onClearSelection: () => void;
+  onCopySelection: (paths: string[]) => void;
+  onCutSelection: (paths: string[]) => void;
+  onPasteSelection: (destinationDir: string) => Promise<void>;
+  onDuplicateSelection: (paths: string[]) => Promise<void>;
   onCreateFile: () => void;
   onCreateDirectory: () => void;
   onUndo: () => Promise<void>;
   onRedo: () => Promise<void>;
+}
+
+function hasNativeTextSelection(): boolean {
+  if (typeof window === 'undefined' || typeof window.getSelection !== 'function') {
+    return false;
+  }
+  const text = window.getSelection()?.toString();
+  return Boolean(text && text.length > 0);
 }
 
 export function useWorkspaceShortcuts({
@@ -28,6 +44,8 @@ export function useWorkspaceShortcuts({
   currentPath,
   files,
   selectedFiles,
+  hasActiveSearch,
+  canPaste,
   onToggleOmnibar,
   onToggleChat,
   onBack,
@@ -38,6 +56,12 @@ export function useWorkspaceShortcuts({
   onRequestRename,
   onRequestDelete,
   onSelectAll,
+  onClearSearch,
+  onClearSelection,
+  onCopySelection,
+  onCutSelection,
+  onPasteSelection,
+  onDuplicateSelection,
   onCreateFile,
   onCreateDirectory,
   onUndo,
@@ -55,9 +79,8 @@ export function useWorkspaceShortcuts({
   }, [onToggleOmnibar]);
 
   const shortcuts = useMemo<Record<string, () => void>>(() => {
-    if (hasModalOpen) {
-      return {};
-    }
+    if (hasModalOpen) return {};
+
     const map: Record<string, () => void> = {
       'Ctrl+Shift+L': onToggleChat,
       'Alt+Left': (): void => {
@@ -79,8 +102,33 @@ export function useWorkspaceShortcuts({
         }
       },
       Delete: (): void => {
+        if (selectedFiles.length > 0) onRequestDelete([...selectedFiles]);
+      },
+      Escape: (): void => {
+        if (hasActiveSearch) {
+          void onClearSearch();
+        } else if (selectedFiles.length > 0) {
+          onClearSelection();
+        }
+      },
+      'Ctrl+C': (): void => {
+        if (!hasNativeTextSelection() && selectedFiles.length > 0) {
+          onCopySelection(selectedFiles);
+        }
+      },
+      'Ctrl+X': (): void => {
+        if (!hasNativeTextSelection() && selectedFiles.length > 0) {
+          onCutSelection(selectedFiles);
+        }
+      },
+      'Ctrl+V': (): void => {
+        if (canPaste && currentPath) {
+          void onPasteSelection(currentPath);
+        }
+      },
+      'Ctrl+D': (): void => {
         if (selectedFiles.length > 0) {
-          onRequestDelete([...selectedFiles]);
+          void onDuplicateSelection(selectedFiles);
         }
       },
       'Ctrl+A': onSelectAll,
@@ -98,23 +146,31 @@ export function useWorkspaceShortcuts({
     };
     return map;
   }, [
-    hasModalOpen,
+    canPaste,
     currentPath,
     files,
-    selectedFiles,
-    onToggleChat,
+    hasActiveSearch,
+    hasModalOpen,
     onBack,
+    onClearSearch,
+    onClearSelection,
+    onCopySelection,
+    onCreateDirectory,
+    onCreateFile,
+    onCutSelection,
+    onDuplicateSelection,
     onForward,
+    onPasteSelection,
+    onRedo,
+    onRefresh,
+    onRequestDelete,
+    onRequestRename,
+    onSelectAll,
+    onToggleChat,
     onToggleQuickLook,
     onToggleSplitPane,
-    onRefresh,
-    onRequestRename,
-    onRequestDelete,
-    onSelectAll,
-    onCreateFile,
-    onCreateDirectory,
     onUndo,
-    onRedo,
+    selectedFiles,
   ]);
 
   useKeyboardShortcuts(shortcuts);

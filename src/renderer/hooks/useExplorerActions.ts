@@ -6,12 +6,9 @@ import {
   SortDirection,
 } from '@shared/contracts';
 import { sortFileNodes, toggleMultiSelection } from '@renderer/utils/explorerHelpers';
-import {
-  extractBasename,
-  extractParentDirectory,
-  joinChildPath,
-  normalizeComparablePath,
-} from '@renderer/utils/pathHelpers';
+import { useSplitPaneState } from './useSplitPaneState';
+import { FileClipboardState, useFileClipboard } from './useFileClipboard';
+import { useExplorerTransfer } from './useExplorerTransfer';
 
 export interface SelectionModifiers {
   ctrlKey?: boolean;
@@ -50,6 +47,11 @@ export interface UseExplorerActionsReturn {
   secondaryFiles: FileNode[];
   secondaryLoading: boolean;
   secondarySelectedFiles: string[];
+  clipboard: FileClipboardState | null;
+  copyToClipboard: (paths: string[]) => void;
+  cutToClipboard: (paths: string[]) => void;
+  clearClipboard: () => void;
+  pasteFromClipboard: (destinationDir: string) => Promise<void>;
   handleFileClick: (file: FileNode, e?: SelectionModifiers) => void;
   handleSecondaryFileClick: (file: FileNode, e?: SelectionModifiers) => void;
   handleSelectAll: () => void;
@@ -62,6 +64,7 @@ export interface UseExplorerActionsReturn {
   handleDropMove: (sourcePaths: string[], destinationDir: string) => Promise<void>;
   handleCopyPathsToDirectory: (sourcePaths: string[], destinationDir: string) => Promise<void>;
   handleDuplicateFile: (file: FileNode) => Promise<void>;
+  handleDuplicatePaths: (sourcePaths: string[]) => Promise<void>;
 }
 
 export function useExplorerActions(options: UseExplorerActionsOptions): UseExplorerActionsReturn {
@@ -80,13 +83,6 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const selectionAnchorRef = useRef<string | null>(null);
 
-  const [secondaryPath, setSecondaryPath] = useState<string>('');
-  const [secondaryFiles, setSecondaryFiles] = useState<FileNode[]>([]);
-  const [secondaryLoading, setSecondaryLoading] = useState<boolean>(false);
-  const [secondarySelectedFiles, setSecondarySelectedFiles] = useState<string[]>([]);
-  const secondaryAnchorRef = useRef<string | null>(null);
-  const secondaryReadSeqRef = useRef<number>(0);
-
   const orderedFiles = useMemo(
     () => sortFileNodes(files, sortBy, sortDirection),
     [files, sortBy, sortDirection]
@@ -97,12 +93,6 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
     [orderedFiles]
   );
 
-  const orderedSecondaryPaths = useMemo(
-    () => sortFileNodes(secondaryFiles, sortBy, sortDirection).map((node) => node.path),
-    [secondaryFiles, sortBy, sortDirection]
-  );
-
-  // Prune stale selections from prior folders without clearing post-navigation selections
   useEffect(() => {
     const validPaths = new Set(orderedFilePaths);
     setSelectedFiles((prev) => {
@@ -114,59 +104,17 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
     }
   }, [orderedFilePaths]);
 
-  useEffect(() => {
-    const validSecondaryPaths = new Set(orderedSecondaryPaths);
-    setSecondarySelectedFiles((prev) => {
-      const next = prev.filter((p) => validSecondaryPaths.has(p));
-      return next.length === prev.length ? prev : next;
-    });
-    if (secondaryAnchorRef.current && !validSecondaryPaths.has(secondaryAnchorRef.current)) {
-      secondaryAnchorRef.current = null;
-    }
-  }, [orderedSecondaryPaths]);
-
-  const loadSecondaryDirectory = useCallback(async (targetPath: string): Promise<void> => {
-    const seq = ++secondaryReadSeqRef.current;
-    setSecondaryLoading(true);
-    try {
-      const nextFiles = await window.electronAPI.fs.readDirectory(targetPath);
-      if (seq !== secondaryReadSeqRef.current) {
-        return;
-      }
-      setSecondaryPath(targetPath);
-      setSecondaryFiles(nextFiles);
-      setSecondarySelectedFiles([]);
-      secondaryAnchorRef.current = null;
-      void window.electronAPI?.fs?.watchSplitDir?.(targetPath)?.catch?.(() => undefined);
-    } catch (err: unknown) {
-      if (seq === secondaryReadSeqRef.current) {
-        showToast({
-          type: 'error',
-          message: err instanceof Error ? err.message : 'Failed to load split pane directory',
-        });
-      }
-    } finally {
-      if (seq === secondaryReadSeqRef.current) {
-        setSecondaryLoading(false);
-      }
-    }
-  }, [showToast]);
-
-  const stopSecondaryWatch = useCallback((): void => {
-    void window.electronAPI?.fs?.watchSplitDir?.(null)?.catch?.(() => undefined);
-  }, []);
+  const splitPane = useSplitPaneState({ sortBy, sortDirection, showToast });
 
   const refreshActiveDirectories = useCallback(
     async (overridePrimaryPath?: string): Promise<void> => {
       const primary = overridePrimaryPath || currentPath;
-      if (primary) {
-        await readDirectory(primary);
-      }
-      if (splitPaneOpen && secondaryPath) {
-        await loadSecondaryDirectory(secondaryPath);
+      if (primary) await readDirectory(primary);
+      if (splitPaneOpen && splitPane.secondaryPath) {
+        await splitPane.loadSecondaryDirectory(splitPane.secondaryPath);
       }
     },
-    [currentPath, readDirectory, splitPaneOpen, secondaryPath, loadSecondaryDirectory]
+    [currentPath, readDirectory, splitPane, splitPaneOpen]
   );
 
   const handleFileClick = useCallback(
@@ -175,11 +123,7 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
         selectedFiles,
         orderedFilePaths,
         file.path,
-        {
-          ctrlKey: e?.ctrlKey,
-          metaKey: e?.metaKey,
-          shiftKey: e?.shiftKey,
-        },
+        { ctrlKey: e?.ctrlKey, metaKey: e?.metaKey, shiftKey: e?.shiftKey },
         selectionAnchorRef.current
       );
       setSelectedFiles(result.selected);
@@ -188,30 +132,9 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
     [orderedFilePaths, selectedFiles]
   );
 
-  const handleSecondaryFileClick = useCallback(
-    (file: FileNode, e?: SelectionModifiers): void => {
-      const result = toggleMultiSelection(
-        secondarySelectedFiles,
-        orderedSecondaryPaths,
-        file.path,
-        {
-          ctrlKey: e?.ctrlKey,
-          metaKey: e?.metaKey,
-          shiftKey: e?.shiftKey,
-        },
-        secondaryAnchorRef.current
-      );
-      setSecondarySelectedFiles(result.selected);
-      secondaryAnchorRef.current = result.nextAnchor;
-    },
-    [orderedSecondaryPaths, secondarySelectedFiles]
-  );
-
   const handleSelectAll = useCallback((): void => {
     setSelectedFiles(orderedFilePaths);
-    if (orderedFilePaths.length > 0) {
-      selectionAnchorRef.current = orderedFilePaths[0];
-    }
+    if (orderedFilePaths.length > 0) selectionAnchorRef.current = orderedFilePaths[0];
   }, [orderedFilePaths]);
 
   const handleUndo = useCallback(async (): Promise<void> => {
@@ -222,16 +145,11 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
       if (res.success) {
         showToast({
           type: 'info',
-          message: res.operation?.description
-            ? `Undid: ${res.operation.description}`
-            : 'Operation undone',
+          message: res.operation?.description ? `Undid: ${res.operation.description}` : 'Operation undone',
         });
       }
     } catch (err: unknown) {
-      showToast({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Nothing to undo',
-      });
+      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Nothing to undo' });
     }
   }, [refreshActiveDirectories, refreshWorkspaceMetadata, showToast]);
 
@@ -243,16 +161,11 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
       if (res.success) {
         showToast({
           type: 'info',
-          message: res.operation?.description
-            ? `Redid: ${res.operation.description}`
-            : 'Operation redone',
+          message: res.operation?.description ? `Redid: ${res.operation.description}` : 'Operation redone',
         });
       }
     } catch (err: unknown) {
-      showToast({
-        type: 'error',
-        message: err instanceof Error ? err.message : 'Nothing to redo',
-      });
+      showToast({ type: 'error', message: err instanceof Error ? err.message : 'Nothing to redo' });
     }
   }, [refreshActiveDirectories, refreshWorkspaceMetadata, showToast]);
 
@@ -265,7 +178,6 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
         setSelectedFiles((prev) => prev.filter((p) => !pathsToDelete.includes(p)));
         await refreshActiveDirectories();
         await refreshWorkspaceMetadata();
-
         showToast({
           type: 'success',
           message:
@@ -274,147 +186,54 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
               : mode === 'trash'
                 ? `Moved ${pathsToDelete.length} item(s) to OS Trash`
                 : `Permanently deleted ${pathsToDelete.length} item(s)`,
-          ...(mode === 'vault'
-            ? {
-                actionLabel: 'Undo',
-                onAction: (): void => {
-                  void handleUndo();
-                },
-              }
-            : {}),
+          ...(mode === 'vault' ? { actionLabel: 'Undo', onAction: (): void => { void handleUndo(); } } : {}),
         });
       } catch (err: unknown) {
-        showToast({
-          type: 'error',
-          message: err instanceof Error ? err.message : 'Delete failed',
-        });
+        showToast({ type: 'error', message: err instanceof Error ? err.message : 'Delete failed' });
       }
     },
     [deleteFile, handleUndo, refreshActiveDirectories, refreshWorkspaceMetadata, showToast]
   );
 
-  const handleDropMove = useCallback(
-    async (sourcePaths: string[], destinationDir: string): Promise<void> => {
-      const normalizedDest = normalizeComparablePath(destinationDir);
-      const uniqueSources = Array.from(new Set(sourcePaths)).filter((src) => {
-        if (!src) return false;
-        const normSrc = normalizeComparablePath(src);
-        if (normSrc === normalizedDest) return false;
-        const parentDir = normalizeComparablePath(extractParentDirectory(src));
-        return parentDir !== normalizedDest;
-      });
+  const {
+    handleDropMove,
+    handleCopyPathsToDirectory,
+    handleDuplicatePaths,
+    handleDuplicateFile,
+  } = useExplorerTransfer({
+    currentPath,
+    files,
+    handleUndo,
+    refreshActiveDirectories,
+    refreshWorkspaceMetadata,
+    showToast,
+  });
 
-      if (uniqueSources.length === 0) {
-        return;
-      }
-
-      let movedCount = 0;
-      let lastError: string | null = null;
-      for (const src of uniqueSources) {
-        const destPath = joinChildPath(destinationDir, extractBasename(src));
-        try {
-          await window.electronAPI.fs.move(src, destPath);
-          movedCount += 1;
-        } catch (err: unknown) {
-          lastError = err instanceof Error ? err.message : String(err);
-        }
-      }
-
-      await refreshActiveDirectories();
-      await refreshWorkspaceMetadata();
-
-      if (movedCount > 0) {
-        showToast({
-          type: 'success',
-          message: `Moved ${movedCount} item(s)`,
-          actionLabel: 'Undo',
-          onAction: () => {
-            void handleUndo();
-          },
-        });
-      } else if (lastError) {
-        showToast({ type: 'error', message: `Move failed: ${lastError}` });
-      }
-    },
-    [handleUndo, refreshActiveDirectories, refreshWorkspaceMetadata, showToast]
-  );
-
-  const handleCopyPathsToDirectory = useCallback(
-    async (sourcePaths: string[], destinationDir: string): Promise<void> => {
-      if (!destinationDir || sourcePaths.length === 0) {
-        return;
-      }
-      const copyFn = window.electronAPI?.fs?.copy;
-      if (typeof copyFn !== 'function') {
-        showToast({ type: 'error', message: 'Copy operation is unavailable' });
-        return;
-      }
-
-      let copiedCount = 0;
-      let lastError: string | null = null;
-      for (const src of sourcePaths) {
-        const baseName = extractBasename(src);
-        let destPath = joinChildPath(destinationDir, baseName);
-        if (normalizeComparablePath(src) === normalizeComparablePath(destPath)) {
-          const dotIdx = baseName.lastIndexOf('.');
-          const copyName =
-            dotIdx > 0
-              ? `${baseName.slice(0, dotIdx)} (copy)${baseName.slice(dotIdx)}`
-              : `${baseName} (copy)`;
-          destPath = joinChildPath(destinationDir, copyName);
-        }
-        try {
-          await copyFn(src, destPath);
-          copiedCount += 1;
-        } catch (err: unknown) {
-          lastError = err instanceof Error ? err.message : String(err);
-        }
-      }
-
-      await refreshActiveDirectories();
-      await refreshWorkspaceMetadata();
-
-      if (copiedCount > 0) {
-        showToast({
-          type: 'success',
-          message: `Copied ${copiedCount} item(s)`,
-          actionLabel: 'Undo',
-          onAction: () => {
-            void handleUndo();
-          },
-        });
-      } else if (lastError) {
-        showToast({ type: 'error', message: `Copy failed: ${lastError}` });
-      }
-    },
-    [handleUndo, refreshActiveDirectories, refreshWorkspaceMetadata, showToast]
-  );
-
-  const handleDuplicateFile = useCallback(
-    async (file: FileNode): Promise<void> => {
-      const parentDir = extractParentDirectory(file.path);
-      if (!parentDir) {
-        return;
-      }
-      await handleCopyPathsToDirectory([file.path], parentDir);
-    },
-    [handleCopyPathsToDirectory]
-  );
+  const clipboardApi = useFileClipboard({
+    handleCopyPathsToDirectory,
+    handleDropMove,
+    showToast,
+  });
 
   return {
     selectedFiles,
     setSelectedFiles,
     orderedFiles,
     orderedFilePaths,
-    secondaryPath,
-    secondaryFiles,
-    secondaryLoading,
-    secondarySelectedFiles,
+    secondaryPath: splitPane.secondaryPath,
+    secondaryFiles: splitPane.secondaryFiles,
+    secondaryLoading: splitPane.secondaryLoading,
+    secondarySelectedFiles: splitPane.secondarySelectedFiles,
+    clipboard: clipboardApi.clipboard,
+    copyToClipboard: clipboardApi.copyToClipboard,
+    cutToClipboard: clipboardApi.cutToClipboard,
+    clearClipboard: clipboardApi.clearClipboard,
+    pasteFromClipboard: clipboardApi.pasteFromClipboard,
     handleFileClick,
-    handleSecondaryFileClick,
+    handleSecondaryFileClick: splitPane.handleSecondaryFileClick,
     handleSelectAll,
-    loadSecondaryDirectory,
-    stopSecondaryWatch,
+    loadSecondaryDirectory: splitPane.loadSecondaryDirectory,
+    stopSecondaryWatch: splitPane.stopSecondaryWatch,
     refreshActiveDirectories,
     handleUndo,
     handleRedo,
@@ -422,5 +241,6 @@ export function useExplorerActions(options: UseExplorerActionsOptions): UseExplo
     handleDropMove,
     handleCopyPathsToDirectory,
     handleDuplicateFile,
+    handleDuplicatePaths,
   };
 }

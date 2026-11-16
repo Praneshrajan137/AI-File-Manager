@@ -175,3 +175,30 @@ export function extractDraggedPaths(dataTransfer: DataTransfer | null): string[]
     return [];
   }
 }
+
+/** Resolves a non-colliding copy name (`name (copy).ext`, `name (copy 2).ext`) against existing siblings. */
+export function resolveCopyCollisionName(
+  originalName: string,
+  existingNamesLower: Set<string>,
+  preferOriginal: boolean = true
+): string {
+  if (preferOriginal && !existingNamesLower.has(originalName.toLowerCase())) {
+    existingNamesLower.add(originalName.toLowerCase());
+    return originalName;
+  }
+  const dotIdx = originalName.lastIndexOf('.');
+  const stem = dotIdx > 0 ? originalName.slice(0, dotIdx) : originalName;
+  const ext = dotIdx > 0 ? originalName.slice(dotIdx) : '';
+
+  for (let counter = 1; counter < 1000; counter++) {
+    const suffix = counter === 1 ? ' (copy)' : ` (copy ${counter})`;
+    const candidate = `${stem}${suffix}${ext}`;
+    if (!existingNamesLower.has(candidate.toLowerCase())) {
+      existingNamesLower.add(candidate.toLowerCase());
+      return candidate;
+    }
+  }
+  const fallback = `${stem} (${Date.now()})${ext}`;
+  existingNamesLower.add(fallback.toLowerCase());
+  return fallback;
+}

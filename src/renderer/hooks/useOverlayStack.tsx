@@ -66,6 +66,7 @@ export const OverlayStackProvider: React.FC<{ children: React.ReactNode }> = ({ 
       if (stack.length === 0) return;
       e.preventDefault();
       e.stopPropagation();
+      e.stopImmediatePropagation();
       const top = stack[stack.length - 1];
       top.onDismiss();
     };

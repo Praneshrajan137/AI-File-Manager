@@ -15,9 +15,11 @@
     --bg-surface: #FFFFFF;
     --bg-elevated: #FFFFFF;
     --bg-subtle: #F1F5F9;
+    --bg-overlay: rgba(255, 255, 255, 0.94);
     --text-primary: #0F172A;
     --text-secondary: #475569;
     --border-subtle: #E2E8F0;
+    --border-hairline: rgba(15, 23, 42, 0.08);
     --accent-primary: #4F46E5;
     --accent-primary-hover: #4338CA;
     --focus-ring: #4F46E5;
@@ -28,9 +30,11 @@
     --bg-surface: #0F172A;
     --bg-elevated: #1E293B;
     --bg-subtle: #1E293B;
+    --bg-overlay: rgba(15, 23, 42, 0.94);
     --text-primary: #F1F5F9;
     --text-secondary: #CBD5E1;
     --border-subtle: #334155;
+    --border-hairline: rgba(255, 255, 255, 0.08);
     --accent-primary: #4F46E5;
     --accent-primary-hover: #4338CA;
     --focus-ring: #818CF8;

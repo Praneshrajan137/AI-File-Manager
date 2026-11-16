@@ -1,16 +1,20 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { X } from 'lucide-react';
 import { Sidebar } from './components/Sidebar/Sidebar';
 import { Toolbar } from './components/Toolbar/Toolbar';
-import { FilePreviewDrawer } from './components/Preview/FilePreviewDrawer';
-import { ChatInterface } from './components/ChatPanel/ChatInterface';
+import { WorkspaceStatusBar } from './components/Toolbar/WorkspaceStatusBar';
 import { WorkspaceLensBar } from './components/Spatial/WorkspaceLensBar';
 import { SpatialWorkspacePane } from './components/Spatial/SpatialWorkspacePane';
 import { WorkspaceDialogs } from './components/WorkspaceDialogs';
+import { PreviewDrawerSlot } from './components/PreviewDrawerSlot';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { useWorkspaceController } from './hooks/useWorkspaceController';
 import { toFileNodeStub } from './utils/explorerHelpers';
 import { normalizeComparablePath } from './utils/pathHelpers';
+
+const LazyChatInterface = React.lazy(() =>
+  import('./components/ChatPanel/ChatInterface').then((m) => ({ default: m.ChatInterface }))
+);
 
 export const WorkspaceShell: React.FC = () => {
   const c = useWorkspaceController();
@@ -23,7 +27,9 @@ export const WorkspaceShell: React.FC = () => {
       <Sidebar
         width={c.sidebarWidth}
         onResize={c.setSidebarWidth}
-        onNavigate={(target): void => { void c.handleNavigate(target); }}
+        onNavigate={(target): void => {
+          void c.handleNavigate(target);
+        }}
         vaultConfig={c.vault.vaultConfig}
         journalState={c.vault.journalState}
         lastWatcherEvent={c.vault.lastWatcherEvent}
@@ -38,12 +44,22 @@ export const WorkspaceShell: React.FC = () => {
         <Toolbar
           canGoBack={c.canGoBack}
           canGoForward={c.canGoForward}
-          onBack={(): void => { void c.handleBack(); }}
-          onForward={(): void => { void c.handleForward(); }}
+          onBack={(): void => {
+            void c.handleBack();
+          }}
+          onForward={(): void => {
+            void c.handleForward();
+          }}
           currentPath={c.currentPath}
-          onNavigate={(p): void => { void c.handleNavigate(p); }}
-          onSearchSelect={(selected): void => { void c.handleSearchSelect(selected); }}
-          onSearch={(query): void => { void c.handleSearch(query); }}
+          onNavigate={(p): void => {
+            void c.handleNavigate(p);
+          }}
+          onSearchSelect={(selected): void => {
+            void c.handleSearchSelect(selected);
+          }}
+          onSearch={(query): void => {
+            void c.handleSearch(query);
+          }}
           viewMode={c.vault.viewMode}
           onViewModeChange={c.vault.setViewMode}
           sortBy={c.vault.sortBy}
@@ -58,8 +74,12 @@ export const WorkspaceShell: React.FC = () => {
           canRedo={c.vault.journalState?.canRedo ?? false}
           undoDescription={c.vault.journalState?.lastUndoDescription}
           redoDescription={c.vault.journalState?.lastRedoDescription}
-          onUndo={(): void => { void c.explorer.handleUndo(); }}
-          onRedo={(): void => { void c.explorer.handleRedo(); }}
+          onUndo={(): void => {
+            void c.explorer.handleUndo();
+          }}
+          onRedo={(): void => {
+            void c.explorer.handleRedo();
+          }}
           isDarkMode={c.vault.isDarkMode}
           onToggleTheme={c.vault.toggleDarkMode}
           splitPaneOpen={c.vault.splitPaneOpen}
@@ -78,7 +98,9 @@ export const WorkspaceShell: React.FC = () => {
           onChangeLens={c.vault.setExplorerLens}
           totalFiles={c.files.length}
           duplicateClustersCount={c.spatial.graphInsights?.stats.duplicateClusters.length}
-          onRefresh={(): void => { void c.spatial.refreshSpatialData(); }}
+          onRefresh={(): void => {
+            void c.spatial.refreshSpatialData();
+          }}
         />
 
         {c.searchQuery && (
@@ -91,7 +113,9 @@ export const WorkspaceShell: React.FC = () => {
             </span>
             <button
               type="button"
-              onClick={(): void => { void c.clearSearch(); }}
+              onClick={(): void => {
+                void c.clearSearch();
+              }}
               data-testid="clear-search-banner-button"
               className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white dark:bg-slate-800 border border-indigo-200 dark:border-indigo-700 text-accent-700 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 flex-shrink-0"
             >
@@ -101,7 +125,7 @@ export const WorkspaceShell: React.FC = () => {
           </div>
         )}
 
-        <div className="flex-1 min-h-0 flex overflow-hidden">
+        <div className="flex-1 min-h-0 flex overflow-hidden relative">
           <ErrorBoundary title="Workspace View">
             <SpatialWorkspacePane
               explorerLens={c.vault.explorerLens}
@@ -110,7 +134,9 @@ export const WorkspaceShell: React.FC = () => {
               loading={c.loading}
               error={c.error}
               searchQuery={c.searchQuery ?? undefined}
-              onClearSearch={(): void => { void c.clearSearch(); }}
+              onClearSearch={(): void => {
+                void c.clearSearch();
+              }}
               onRetryDirectory={(): void => {
                 if (c.currentPath) void c.readDirectory(c.currentPath);
               }}
@@ -126,63 +152,68 @@ export const WorkspaceShell: React.FC = () => {
               onPreviewFilePath={(filePath): void => {
                 void c.preview.loadFilePreview(toFileNodeStub(filePath, c.files));
               }}
+              onOpenRename={c.setRenameFile}
+              onRequestDelete={c.setPendingDeletePaths}
               onOpenOrganize={(targetDir, strategy): void => c.handleOpenOrganizeModal(targetDir, strategy)}
               onFocusNodeInChat={(nodePath): void => {
                 c.explorer.setSelectedFiles([nodePath]);
                 c.setChatOpen(true);
               }}
+              onAskSelectionInChat={(): void => c.setChatOpen(true)}
             />
           </ErrorBoundary>
 
-          {c.preview.previewFileNode && (
-            <ErrorBoundary title="File Preview">
-              <FilePreviewDrawer
-                isOpen={true}
-                file={c.preview.previewFileNode}
-                preview={c.preview.previewResult}
-                lineRange={c.preview.previewLineRange}
-                highlightRange={c.preview.previewHighlightRange}
-                fileConnections={c.preview.fileConnections}
-                connectionsLoading={c.preview.connectionsLoading}
-                loading={c.preview.previewLoading}
-                error={c.preview.previewError}
-                onClose={c.preview.closePreview}
-                onRefresh={c.preview.refreshPreview}
-                onOpenExternal={(): void => {
-                  if (c.preview.previewFileNode) void c.handleFileDoubleClick(c.preview.previewFileNode);
-                }}
-                onCopyPath={(): void => {
-                  if (c.preview.previewFileNode) {
-                    void window.electronAPI.clipboard.writeText(c.preview.previewFileNode.path);
-                    c.showToast({ type: 'success', message: 'Path copied to clipboard' });
-                  }
-                }}
-                onClearRangeFocus={c.preview.clearRangeFocus}
-                onOpenCitation={c.handleOpenCitation}
-              />
-            </ErrorBoundary>
-          )}
+          <PreviewDrawerSlot
+            preview={c.preview}
+            orderedFiles={c.explorer.orderedFiles}
+            setSelectedFiles={c.explorer.setSelectedFiles}
+            onOpenExternal={c.handleFileDoubleClick}
+            onOpenCitation={c.handleOpenCitation}
+            showToast={c.showToast}
+          />
 
           {c.chatOpen && (
             <div
-              className="w-72 sm:w-80 lg:w-[384px] max-w-[90vw] border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex-shrink-0 overflow-hidden"
+              className="absolute inset-y-0 right-0 z-30 lg:static w-72 sm:w-80 lg:w-[384px] max-w-[92vw] border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex-shrink-0 overflow-hidden shadow-2xl lg:shadow-none"
               data-testid="chat-panel-container"
             >
               <ErrorBoundary title="AI Copilot">
-                <ChatInterface
-                  currentPath={c.currentPath}
-                  selectedPaths={c.explorer.selectedFiles}
-                  llm={c.llmState}
-                  onOpenCitation={c.handleOpenCitation}
-                  onOpenOrganize={(dir): void => c.handleOpenOrganizeModal(dir, 'auto')}
-                  onPreviewOrganizePlan={(plan): void =>
-                    c.handleOpenOrganizeModal(plan.targetDir, plan.strategy, plan)
+                <Suspense
+                  fallback={
+                    <div role="status" className="h-full flex items-center justify-center text-xs text-slate-600 dark:text-slate-300">
+                      Loading AI Copilot...
+                    </div>
                   }
-                />
+                >
+                  <LazyChatInterface
+                    currentPath={c.currentPath}
+                    selectedPaths={c.explorer.selectedFiles}
+                    llm={c.llmState}
+                    onOpenCitation={c.handleOpenCitation}
+                    onOpenOrganize={(dir): void => c.handleOpenOrganizeModal(dir, 'auto')}
+                    onPreviewOrganizePlan={(plan): void =>
+                      c.handleOpenOrganizeModal(plan.targetDir, plan.strategy, plan)
+                    }
+                  />
+                </Suspense>
               </ErrorBoundary>
             </div>
           )}
         </div>
+
+        <WorkspaceStatusBar
+          files={c.files}
+          currentPath={c.currentPath}
+          searchQuery={c.searchQuery}
+          clipboard={c.explorer.clipboard}
+          indexingStatus={c.llmState.indexingStatus}
+          onPaste={(): void => {
+            if (c.currentPath) void c.explorer.pasteFromClipboard(c.currentPath);
+          }}
+          onClearClipboard={c.explorer.clearClipboard}
+          onOpenChat={(): void => c.setChatOpen(true)}
+          onOpenOmnibar={(): void => c.setOmnibarOpen(true)}
+        />
       </main>
 
       <WorkspaceDialogs

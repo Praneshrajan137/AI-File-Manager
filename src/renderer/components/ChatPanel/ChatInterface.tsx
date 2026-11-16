@@ -5,6 +5,7 @@ import { IndexingPanel } from './IndexingPanel';
 import { useLLM, UseLLMReturn } from '@renderer/hooks/useLLM';
 import { getScrollBehavior } from '@renderer/utils/motion';
 import { Bot, FolderKanban, Sparkles } from 'lucide-react';
+import { ChatEmptySuggestions } from './ChatEmptySuggestions';
 import type { CopilotQueryMode, OrganizePlanResult } from '@shared/contracts';
 
 interface ChatInterfaceProps {
@@ -178,33 +179,7 @@ const ChatInterfaceBody: React.FC<{
         aria-atomic="false"
         data-testid="chat-messages"
       >
-        {messages.length === 0 && (
-          <div className="text-center py-8">
-            <div className="w-16 h-16 bg-accent-100 dark:bg-accent-950 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Bot className="w-8 h-8 text-accent-600 dark:text-accent-300" aria-hidden="true" />
-            </div>
-            <p className="text-lg font-medium text-slate-800 dark:text-slate-100">
-              Ask me anything about your files!
-            </p>
-            <p className="text-sm text-slate-600 dark:text-slate-300 mt-2">
-              Try: &quot;What TypeScript files do I have?&quot;
-            </p>
-            <div className="mt-4 flex flex-wrap justify-center gap-2">
-              {['List my recent documents', 'Find large files', 'Search for images'].map((suggestion) => (
-                <button
-                  key={suggestion}
-                  type="button"
-                  onClick={() => {
-                    setInput(suggestion);
-                  }}
-                  className="px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full text-xs text-slate-700 dark:text-slate-200 hover:bg-accent-50 dark:hover:bg-slate-700 hover:border-accent-200 hover:text-accent-700 dark:hover:text-accent-300 transition-colors"
-                >
-                  {suggestion}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
+        {messages.length === 0 && <ChatEmptySuggestions onSelectSuggestion={setInput} />}
         {messages.map((msg) => (
           <MessageBubble
             key={msg.id}

@@ -1,11 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import {
-  extractBasename,
-  extractParentDirectory,
-  isPathInsideDirectory,
-  normalizeComparablePath,
-} from '@renderer/utils/pathHelpers';
+import { extractBasename, extractParentDirectory, isPathInsideDirectory, normalizeComparablePath } from '@renderer/utils/pathHelpers';
+import { resolveCopyCollisionName } from '@renderer/utils/explorerHelpers';
 import { Breadcrumb } from '@renderer/components/Toolbar/Breadcrumb';
 import { wrapBridgeNamespace } from '@renderer/utils/installElectronAPI';
 import { wrapIPCError, wrapIPCSuccess } from '@shared/ipc/envelope';
@@ -749,6 +745,11 @@ describe('Renderer UI & M5 Control Upgrades', () => {
       expect(resolveQuickLookAction(null, [SAMPLE_FILES[2].path], SAMPLE_FILES)).toEqual({
         kind: 'noop',
       });
+
+      const existing = new Set(['notes.md', 'notes (copy).md', '.gitignore']);
+      expect(resolveCopyCollisionName('notes.md', existing, false)).toBe('notes (copy 2).md');
+      expect(resolveCopyCollisionName('fresh.md', existing, true)).toBe('fresh.md');
+      expect(resolveCopyCollisionName('.gitignore', existing, false)).toBe('.gitignore (copy)');
     });
   });
 });

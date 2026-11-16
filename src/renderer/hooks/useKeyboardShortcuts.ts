@@ -51,7 +51,7 @@ export function useKeyboardShortcuts(shortcuts: ShortcutMap): void {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent): void => {
-      if (isEditableElement(e.target)) {
+      if (e.defaultPrevented || isEditableElement(e.target)) {
         return;
       }
       if (

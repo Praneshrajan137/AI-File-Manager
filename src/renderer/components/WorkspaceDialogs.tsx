@@ -1,14 +1,11 @@
 import React, { Suspense } from 'react';
 import { FileContextMenu } from './ContextMenu/FileContextMenu';
-import { RenameDialog } from './common/RenameDialog';
-import { CreateEntryDialog } from './common/CreateEntryDialog';
-import { DeleteConfirmDialog } from './common/DeleteConfirmDialog';
+import { FileOperationDialogs } from './FileOperationDialogs';
 import { Toast } from './common/Toast';
 import type { ToastMessage } from '@renderer/hooks/useToast';
 import type { UseExplorerActionsReturn } from '@renderer/hooks/useExplorerActions';
 import type { UseWorkspaceVaultReturn } from '@renderer/hooks/useWorkspaceVault';
 import { extractBasename } from '@renderer/utils/pathHelpers';
-import { getErrorMessage } from '@renderer/utils/formatters';
 import type {
   FileNode,
   OrganizeApplyResult,
@@ -113,11 +110,24 @@ export const WorkspaceDialogs: React.FC<WorkspaceDialogsProps> = ({
     await onRefreshSpatialData();
   };
 
+  const activeTargets = contextMenu
+    ? contextMenu.fromSecondary
+      ? explorer.secondarySelectedFiles.includes(contextMenu.file.path)
+        ? explorer.secondarySelectedFiles
+        : [contextMenu.file.path]
+      : explorer.selectedFiles.includes(contextMenu.file.path)
+        ? explorer.selectedFiles
+        : [contextMenu.file.path]
+    : [];
+
+  const pasteDir = contextMenu?.fromSecondary ? explorer.secondaryPath : currentPath;
+
   return (
     <>
       {contextMenu && (
         <FileContextMenu
           file={contextMenu.file}
+          selectedCount={activeTargets.length}
           position={contextMenu.position}
           onClose={onCloseContextMenu}
           onOpen={(): void => {
@@ -135,20 +145,23 @@ export const WorkspaceDialogs: React.FC<WorkspaceDialogsProps> = ({
               : undefined
           }
           onRename={(): void => onOpenRename(contextMenu.file)}
-          onDuplicate={
-            !contextMenu.file.isDirectory
+          onCopyFiles={(): void => explorer.copyToClipboard(activeTargets)}
+          onCutFiles={(): void => explorer.cutToClipboard(activeTargets)}
+          canPaste={Boolean(explorer.clipboard && explorer.clipboard.paths.length > 0 && pasteDir)}
+          onPasteFiles={
+            pasteDir
               ? (): void => {
-                  void explorer.handleDuplicateFile(contextMenu.file);
+                  void explorer.pasteFromClipboard(pasteDir);
                 }
               : undefined
           }
+          onDuplicate={(): void => {
+            void explorer.handleDuplicatePaths(activeTargets);
+          }}
           onCopyToOtherPane={
             vault.splitPaneOpen && explorer.secondaryPath && !contextMenu.fromSecondary
               ? (): void => {
-                  void explorer.handleCopyPathsToDirectory(
-                    [contextMenu.file.path],
-                    explorer.secondaryPath
-                  );
+                  void explorer.handleCopyPathsToDirectory(activeTargets, explorer.secondaryPath);
                 }
               : undefined
           }
@@ -156,7 +169,7 @@ export const WorkspaceDialogs: React.FC<WorkspaceDialogsProps> = ({
             void vault.handleToggleFavorite(contextMenu.file.path);
           }}
           isFavorite={favoritesSet.has(normalizePathKey(contextMenu.file.path))}
-          onDelete={(): void => onRequestDelete([contextMenu.file.path])}
+          onDelete={(): void => onRequestDelete(activeTargets)}
           onCopyPath={(): void => {
             void window.electronAPI.clipboard.writeText(contextMenu.file.path);
             showToast({ type: 'success', message: 'Path copied to clipboard' });
@@ -164,64 +177,18 @@ export const WorkspaceDialogs: React.FC<WorkspaceDialogsProps> = ({
         />
       )}
 
-      <RenameDialog
-        isOpen={renameFile !== null}
-        currentName={renameFile?.name || ''}
-        onConfirm={async (newName): Promise<void> => {
-          if (!renameFile) return;
-          try {
-            const res = await window.electronAPI.fs.rename(renameFile.path, newName);
-            if (res.success) {
-              showToast({ type: 'success', message: `Renamed to ${newName}` });
-              await handleRefreshAll();
-            } else {
-              showToast({ type: 'error', message: 'Failed to rename file' });
-            }
-          } catch (err: unknown) {
-            showToast({ type: 'error', message: getErrorMessage(err, 'Failed to rename file') });
-          }
-          onCloseRename();
-        }}
-        onCancel={onCloseRename}
-      />
-
-      <CreateEntryDialog
-        isOpen={createEntryMode !== null}
-        mode={createEntryMode ?? 'file'}
-        onConfirm={async (name): Promise<void> => {
-          if (!createEntryMode || !currentPath) return;
-          try {
-            if (createEntryMode === 'file') {
-              await window.electronAPI.fs.createFile(currentPath, name, '');
-            } else {
-              await window.electronAPI.fs.createDirectory(currentPath, name);
-            }
-            showToast({
-              type: 'success',
-              message: `Created ${createEntryMode === 'directory' ? 'folder' : 'file'} ${name}`,
-            });
-            await handleRefreshAll();
-          } catch (err: unknown) {
-            showToast({
-              type: 'error',
-              message: getErrorMessage(err, `Failed to create ${createEntryMode}`),
-            });
-          }
-          onCloseCreateEntry();
-        }}
-        onCancel={onCloseCreateEntry}
-      />
-
-      <DeleteConfirmDialog
-        isOpen={pendingDeletePaths !== null}
-        targetPaths={pendingDeletePaths ?? []}
-        defaultMode={vault.vaultConfig?.defaultDeleteMode ?? 'vault'}
-        onConfirm={(mode): void => {
-          const targets = pendingDeletePaths ?? [];
-          onClosePendingDelete();
-          void explorer.executeDeletePaths(targets, mode);
-        }}
-        onCancel={onClosePendingDelete}
+      <FileOperationDialogs
+        currentPath={currentPath}
+        defaultDeleteMode={vault.vaultConfig?.defaultDeleteMode ?? 'vault'}
+        renameFile={renameFile}
+        onCloseRename={onCloseRename}
+        createEntryMode={createEntryMode}
+        onCloseCreateEntry={onCloseCreateEntry}
+        pendingDeletePaths={pendingDeletePaths}
+        onClosePendingDelete={onClosePendingDelete}
+        onExecuteDelete={explorer.executeDeletePaths}
+        onRefreshAll={handleRefreshAll}
+        showToast={showToast}
       />
 
       {diagnosticsOpen && (
@@ -286,7 +253,7 @@ export const WorkspaceDialogs: React.FC<WorkspaceDialogsProps> = ({
       )}
 
       <div
-        className="fixed bottom-4 right-4 z-50 space-y-2 pointer-events-none"
+        className="fixed bottom-9 right-4 z-50 space-y-2 pointer-events-none"
         aria-live="polite"
         aria-atomic="false"
       >

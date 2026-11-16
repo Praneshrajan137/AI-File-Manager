@@ -1,26 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useSystemPaths } from '@renderer/contexts/SystemPathsContext';
 import { useFileSystem } from '@renderer/hooks/useFileSystem';
 import { useNavigation } from '@renderer/hooks/useNavigation';
 import { useToast } from '@renderer/hooks/useToast';
-import { useFileWatcher } from '@renderer/hooks/useFileWatcher';
 import { useLLM } from '@renderer/hooks/useLLM';
 import { useWorkspaceVault } from '@renderer/hooks/useWorkspaceVault';
 import { usePreviewDrawer } from '@renderer/hooks/usePreviewDrawer';
 import { useExplorerActions } from '@renderer/hooks/useExplorerActions';
 import { useSpatialLens } from '@renderer/hooks/useSpatialLens';
 import { useWorkspaceShortcuts } from '@renderer/hooks/useWorkspaceShortcuts';
+import { useWorkspaceLifecycle } from '@renderer/hooks/useWorkspaceLifecycle';
 import { UI_CONSTANTS } from '@renderer/utils/constants';
 import { toFileNodeStub } from '@renderer/utils/explorerHelpers';
-import {
-  extractBasename,
-  extractParentDirectory,
-  isPathInsideDirectory,
-  normalizeComparablePath,
-} from '@renderer/utils/pathHelpers';
+import { extractParentDirectory, normalizeComparablePath } from '@renderer/utils/pathHelpers';
 import { getErrorMessage } from '@renderer/utils/formatters';
 import type { ContextMenuState } from '@renderer/components/WorkspaceDialogs';
-import type { FileEvent, FileNode, OrganizePlanResult, OrganizeStrategy } from '@shared/contracts';
+import type { FileNode, OrganizePlanResult, OrganizeStrategy } from '@shared/contracts';
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 export function useWorkspaceController() {
@@ -89,52 +84,18 @@ export function useWorkspaceController() {
   });
 
   const spatial = useSpatialLens(vault.explorerLens, currentPath);
-  const initializedRef = useRef<boolean>(false);
 
-  useEffect(() => {
-    if (pathsLoading || initializedRef.current) return;
-    initializedRef.current = true;
-
-    const initApp = async (): Promise<void> => {
-      try {
-        const initialVault = await vault.refreshWorkspaceMetadata();
-        const initialDir = initialVault?.allowedRoots?.[0] || paths?.home || paths?.documents;
-        if (initialDir) {
-          await handleNavigate(initialDir);
-        }
-      } catch (err: unknown) {
-        showToast({ type: 'error', message: getErrorMessage(err, 'Failed to initialize workspace') });
-      }
-    };
-    void initApp();
-  }, [handleNavigate, paths, pathsLoading, showToast, vault]);
-
-  const handleFileWatcherEvent = useCallback(
-    (event: FileEvent): void => {
-      vault.setLastWatcherEvent(event);
-      preview.syncPreviewWatcherEvent(event.path, event.type);
-
-      if (currentPath && isPathInsideDirectory(event.path, currentPath)) {
-        void readDirectory(currentPath);
-        void vault.refreshWorkspaceMetadata();
-        showToast({
-          type: 'info',
-          message: `File ${event.type}: ${extractBasename(event.path)}`,
-          duration: 2000,
-        });
-      }
-      if (
-        vault.splitPaneOpen &&
-        explorer.secondaryPath &&
-        isPathInsideDirectory(event.path, explorer.secondaryPath)
-      ) {
-        void explorer.loadSecondaryDirectory(explorer.secondaryPath);
-      }
-    },
-    [currentPath, explorer, preview, readDirectory, showToast, vault]
-  );
-
-  useFileWatcher(handleFileWatcherEvent);
+  useWorkspaceLifecycle({
+    paths,
+    pathsLoading,
+    currentPath,
+    handleNavigate,
+    readDirectory,
+    vault,
+    explorer,
+    preview,
+    showToast,
+  });
 
   const handleToggleSplitPane = useCallback((): void => {
     const next = !vault.splitPaneOpen;
@@ -235,6 +196,8 @@ export function useWorkspaceController() {
     currentPath,
     files,
     selectedFiles: explorer.selectedFiles,
+    hasActiveSearch: Boolean(searchQuery),
+    canPaste: Boolean(explorer.clipboard && explorer.clipboard.paths.length > 0),
     onToggleOmnibar: (): void => setOmnibarOpen((prev) => !prev),
     onToggleChat: (): void => setChatOpen((prev) => !prev),
     onBack: handleBack,
@@ -247,6 +210,12 @@ export function useWorkspaceController() {
     onRequestRename: setRenameFile,
     onRequestDelete: setPendingDeletePaths,
     onSelectAll: explorer.handleSelectAll,
+    onClearSearch: clearSearch,
+    onClearSelection: (): void => explorer.setSelectedFiles([]),
+    onCopySelection: explorer.copyToClipboard,
+    onCutSelection: explorer.cutToClipboard,
+    onPasteSelection: explorer.pasteFromClipboard,
+    onDuplicateSelection: explorer.handleDuplicatePaths,
     onCreateFile: (): void => setCreateEntryMode('file'),
     onCreateDirectory: (): void => setCreateEntryMode('directory'),
     onUndo: explorer.handleUndo,
