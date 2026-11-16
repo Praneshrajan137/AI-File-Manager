@@ -108,7 +108,7 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
 
   return (
     <aside
-      className="absolute inset-y-0 right-0 z-30 lg:static w-80 sm:w-96 lg:w-[440px] max-w-[92vw] flex-shrink-0 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 shadow-2xl lg:shadow-xl flex flex-col h-full"
+      className="max-[899px]:absolute max-[899px]:inset-y-0 max-[899px]:right-0 max-[899px]:z-40 w-80 lg:w-[400px] xl:w-[440px] max-w-[92vw] flex-shrink-0 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 max-[899px]:shadow-2xl shadow-xl flex flex-col h-full"
       data-testid="file-preview-drawer"
       aria-label={`Quick Preview: ${file.name}`}
     >

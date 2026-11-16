@@ -174,7 +174,7 @@ export const WorkspaceShell: React.FC = () => {
 
           {c.chatOpen && (
             <div
-              className="absolute inset-y-0 right-0 z-30 lg:static w-72 sm:w-80 lg:w-[384px] max-w-[92vw] border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex-shrink-0 overflow-hidden shadow-2xl lg:shadow-none"
+              className="max-[899px]:absolute max-[899px]:inset-y-0 max-[899px]:right-0 max-[899px]:z-30 w-72 xl:w-[384px] max-w-[92vw] border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex-shrink-0 overflow-hidden max-[899px]:shadow-2xl"
               data-testid="chat-panel-container"
             >
               <ErrorBoundary title="AI Copilot">

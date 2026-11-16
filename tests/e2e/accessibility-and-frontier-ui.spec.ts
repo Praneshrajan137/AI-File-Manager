@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { DatabaseSync } from 'node:sqlite';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import { closeElectronApp, getFirstWindow, launchElectronApp } from './electron-launcher';
@@ -10,19 +11,103 @@ async function analyzeElectronA11y(page: Page, tags: string[]) {
   return new AxeBuilder({ page }).setLegacyMode(true).withTags(tags).analyze();
 }
 
+function seedA11yKnowledgeGraph(
+  vectorDbDir: string,
+  alphaPath: string,
+  betaPath: string
+): void {
+  const db = new DatabaseSync(path.join(vectorDbDir, 'knowledge-graph.sqlite'));
+  try {
+    db.exec(`
+      PRAGMA journal_mode = WAL;
+      CREATE TABLE IF NOT EXISTS files (
+        path TEXT PRIMARY KEY,
+        sha256 TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        mtime_ms INTEGER NOT NULL,
+        file_type TEXT NOT NULL,
+        chunk_count INTEGER NOT NULL,
+        token_estimate INTEGER NOT NULL,
+        indexed_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_files_sha256 ON files(sha256);
+      CREATE TABLE IF NOT EXISTS chunks (
+        id TEXT PRIMARY KEY,
+        file_path TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        start_char INTEGER NOT NULL,
+        end_char INTEGER NOT NULL,
+        start_line INTEGER NOT NULL,
+        end_line INTEGER NOT NULL,
+        heading TEXT NOT NULL,
+        chunk_text TEXT NOT NULL,
+        indexed_at INTEGER NOT NULL
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+        chunk_id UNINDEXED,
+        file_path,
+        heading,
+        chunk_text,
+        tokenize = 'unicode61 tokenchars ''_'''
+      );
+      CREATE TABLE IF NOT EXISTS symbols (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_path TEXT NOT NULL,
+        symbol_name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        line_number INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_path TEXT NOT NULL,
+        target_ref TEXT NOT NULL,
+        target_path TEXT,
+        kind TEXT NOT NULL,
+        line_number INTEGER NOT NULL
+      );
+    `);
+
+    const now = Date.now();
+    const insertFile = db.prepare(
+      'INSERT OR REPLACE INTO files (path, sha256, size, mtime_ms, file_type, chunk_count, token_estimate, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    insertFile.run(alphaPath, 'sha-alpha', 64, now, 'md', 1, 16, now);
+    insertFile.run(betaPath, 'sha-beta', 64, now, 'txt', 1, 16, now);
+
+    db.prepare(
+      'INSERT INTO symbols (file_path, symbol_name, kind, line_number) VALUES (?, ?, ?, ?)'
+    ).run(alphaPath, 'alphaBoot', 'heading', 1);
+    db.prepare(
+      'INSERT INTO symbols (file_path, symbol_name, kind, line_number) VALUES (?, ?, ?, ?)'
+    ).run(betaPath, 'betaHelper', 'heading', 1);
+
+    db.prepare(
+      'INSERT INTO links (source_path, target_ref, target_path, kind, line_number) VALUES (?, ?, ?, ?, ?)'
+    ).run(alphaPath, 'beta.txt', betaPath, 'markdown_link', 2);
+
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+  } finally {
+    db.close();
+  }
+}
+
 test.describe('Frontier Frontend E2E: WCAG 2.2 AA Contrast, 800x600 Reflow, Keyboard & Overlay Stack', () => {
   test('passes Light & Dark axe-core AA contrast, 800x600 zero horizontal overflow, keyboard nav, and LIFO Escape', async () => {
     test.setTimeout(120_000);
-    const tempBase = await fs.mkdtemp(path.join(os.tmpdir(), 'e2e-frontier-a11y-'));
+    const rawTempBase = await fs.mkdtemp(path.join(os.tmpdir(), 'e2e-frontier-a11y-'));
+    const tempBase = await fs.realpath(rawTempBase);
     const workspaceRoot = path.join(tempBase, 'a11y-vault');
     const subFolder = path.join(workspaceRoot, 'docs-folder');
     await fs.mkdir(subFolder, { recursive: true });
-    await fs.writeFile(path.join(workspaceRoot, 'alpha.md'), '# Alpha Heading\nLine two content\n', 'utf-8');
-    await fs.writeFile(path.join(workspaceRoot, 'beta.txt'), 'Beta notes for quick preview\n', 'utf-8');
+    const alphaPath = path.join(workspaceRoot, 'alpha.md');
+    const betaPath = path.join(workspaceRoot, 'beta.txt');
+    await fs.writeFile(alphaPath, '# Alpha Heading\nSee [Beta](beta.txt)\n', 'utf-8');
+    await fs.writeFile(betaPath, 'Beta notes for quick preview\n', 'utf-8');
     await fs.writeFile(path.join(subFolder, 'nested.md'), '# Nested Note\nSee alpha\n', 'utf-8');
 
     const vectorDbDir = path.join(tempBase, 'vectordb');
     await fs.mkdir(vectorDbDir, { recursive: true });
+    seedA11yKnowledgeGraph(vectorDbDir, alphaPath, betaPath);
 
     let electronApp: Awaited<ReturnType<typeof launchElectronApp>> | null = null;
     try {
@@ -76,9 +161,12 @@ test.describe('Frontier Frontend E2E: WCAG 2.2 AA Contrast, 800x600 Reflow, Keyb
       expect(collectionsAudit.violations).toEqual([]);
 
       await page.locator('[data-testid="lens-tab-graph"]').click();
-      await expect(page.locator('[data-testid="knowledge-graph-canvas"]')).toBeVisible({ timeout: 5000 });
+      await expect(page.locator('[data-testid="knowledge-graph-svg"]')).toBeVisible({ timeout: 5000 });
+      const graphSvgAudit = await analyzeElectronA11y(page, ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']);
+      expect(graphSvgAudit.violations).toEqual([]);
       await page.locator('[data-testid="graph-node-search"]').fill('alpha');
-      await expect(page.locator('[data-testid="graph-node-search"]')).toHaveValue('alpha');
+      await expect(page.locator('[data-testid="knowledge-graph-canvas"]')).toContainText('1 nodes / 0 links');
+      await page.locator('[data-testid="graph-node-search"]').fill('');
       await page.locator('[data-testid="graph-view-toggle"]').click();
       await expect(page.locator('[data-testid="knowledge-graph-table"]')).toBeVisible({ timeout: 5000 });
       const graphDarkAudit = await analyzeElectronA11y(page, ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']);
