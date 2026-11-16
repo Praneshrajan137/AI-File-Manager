@@ -9,6 +9,7 @@
 import type { IpcMainInvokeEvent } from 'electron';
 import os from 'os';
 import path from 'path';
+import { pathToFileURL } from 'url';
 import { PathValidator } from '@main/services/PathValidator';
 import { ErrorSerializer, SerializedError } from '@main/middleware/ErrorSerializer';
 import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
@@ -295,6 +296,50 @@ async function sanitizeContractFields(
   }
 }
 
+export function isAllowedAppRendererUrl(
+  rawUrl: string,
+  options?: { isDevelopment?: boolean; rendererDir?: string }
+): boolean {
+  const isDev = options?.isDevelopment ?? process.env.NODE_ENV === 'development';
+  const defaultRendererDir =
+    path.basename(__dirname) === 'handlers'
+      ? path.resolve(__dirname, '../../../dist/renderer')
+      : path.resolve(__dirname, '../renderer');
+  const rendererDir = options?.rendererDir ?? defaultRendererDir;
+
+  try {
+    const parsedUrl = new URL(rawUrl);
+    if (isDev) {
+      return parsedUrl.origin === 'http://localhost:8080';
+    }
+    if (parsedUrl.protocol !== 'file:') {
+      return false;
+    }
+    const rendererDirUrl = pathToFileURL(rendererDir).href.toLowerCase();
+    const rendererDirPrefix = rendererDirUrl.endsWith('/') ? rendererDirUrl : `${rendererDirUrl}/`;
+    const lowerHref = parsedUrl.href.toLowerCase();
+    return lowerHref === rendererDirUrl || lowerHref.startsWith(rendererDirPrefix);
+  } catch {
+    return false;
+  }
+}
+
+function assertAuthorizedSenderFrame(event: IpcMainInvokeEvent, channel: IPCChannel): void {
+  const frameUrl = (event as { senderFrame?: { url?: unknown } } | undefined)?.senderFrame?.url;
+  if (typeof frameUrl !== 'string' || frameUrl.length === 0) {
+    return;
+  }
+  if (!isAllowedAppRendererUrl(frameUrl)) {
+    SecurityLogger.error('Blocked IPC call from unauthorized sender frame', {
+      channel,
+      frameUrl,
+    });
+    throw new IPCError('UNAUTHORIZED_REQUEST', 'IPC sender frame is not an authorized app window', {
+      channel,
+    });
+  }
+}
+
 export async function validateAndInvokeContract<C extends IPCChannel>(
   channel: C,
   event: IpcMainInvokeEvent,
@@ -306,6 +351,7 @@ export async function validateAndInvokeContract<C extends IPCChannel>(
 
   try {
     IPCLogger.debug(`IPC request received: ${channel}`, { channel });
+    assertAuthorizedSenderFrame(event, channel);
 
     const parsed = contract.schema.safeParse(rawRequest);
     if (!parsed.success) {

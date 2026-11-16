@@ -526,5 +526,18 @@ describe('FileSystemService', () => {
                 expect(error.originalError).toBe(originalError);
             }
         });
+
+        it('should reject oversized files before buffering into memory', async () => {
+            (fs.stat as jest.Mock).mockResolvedValueOnce({
+                size: 16 * 1024 * 1024,
+                isDirectory: () => false,
+                isFile: () => true,
+            });
+            const hugePath = path.join(testRoot, 'huge.bin');
+            await expect(service.readFile(hugePath)).rejects.toMatchObject({
+                code: 'FILE_TOO_LARGE',
+            });
+            expect(fs.readFile).not.toHaveBeenCalled();
+        });
     });
 });

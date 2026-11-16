@@ -437,5 +437,17 @@ describe('PathValidator', () => {
                 await fs.promises.rm(sandbox, { recursive: true, force: true });
             }
         });
+
+        it('rejects overlong paths exceeding configured maxPathLength', async () => {
+            const localValidator = new PathValidator([allowedRoot]);
+            const overlong = path.join(allowedRoot, 'seg'.repeat(1500));
+            const lexical = localValidator.validate(overlong);
+            expect(lexical.valid).toBe(false);
+            expect(lexical.error).toBe('INVALID_PATH');
+
+            const rootCheck = await localValidator.validateNewRoot(overlong);
+            expect(rootCheck.valid).toBe(false);
+            expect(rootCheck.error).toBe('INVALID_PATH');
+        });
     });
 });

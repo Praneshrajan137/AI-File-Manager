@@ -24,13 +24,13 @@
  * 5. IPC handlers
  */
 
-import { app, BrowserWindow, protocol } from 'electron';
+import { app, BrowserWindow, protocol, session } from 'electron';
 import * as path from 'path';
-import { pathToFileURL } from 'url';
 import { ConfigManager } from '@shared/config';
 import { Logger, getLogger } from '@shared/logging';
 import { suppressSqliteExperimentalWarning } from '@shared/utils/processWarnings';
 import { ErrorHandler } from './middleware/ErrorHandler';
+import { isAllowedAppRendererUrl } from './handlers/securityMiddleware';
 import {
   getPrivilegedSchemeConfig,
   registerVaultAssetProtocol,
@@ -206,46 +206,69 @@ function createWindow(): void {
     mainWindow = null;
   });
 
-  // Security: Prevent navigation to external URLs or arbitrary local files
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    const rendererDirUrl = pathToFileURL(path.resolve(__dirname, '../renderer')).href;
-    const rendererDirPrefix = rendererDirUrl.endsWith('/') ? rendererDirUrl : `${rendererDirUrl}/`;
-    const allowedOrigins = isDevelopment
-      ? ['http://localhost:8080']
-      : [rendererDirUrl];
-
-    let isAllowed = false;
-    try {
-      const parsedUrl = new URL(url);
-      if (isDevelopment) {
-        isAllowed = parsedUrl.origin === 'http://localhost:8080';
-      } else {
-        const lowerHref = parsedUrl.href.toLowerCase();
-        isAllowed =
-          parsedUrl.protocol === 'file:' &&
-          (lowerHref === rendererDirUrl.toLowerCase() ||
-            lowerHref.startsWith(rendererDirPrefix.toLowerCase()));
+  // Security: Enforce navigation & window-open restrictions via shared URL policy
+  const guardWebContentsNavigation = (contents: Electron.WebContents): void => {
+    const rendererDir = path.resolve(__dirname, '../renderer');
+    const blockIfDisallowed = (event: Electron.Event, url: string, kind: 'navigate' | 'redirect'): void => {
+      if (!isAllowedAppRendererUrl(url, { isDevelopment, rendererDir })) {
+        logger.warn(`Blocked ${kind} attempt`, { url });
+        event.preventDefault();
       }
-    } catch {
-      isAllowed = false;
-    }
+    };
 
-    if (!isAllowed) {
-      logger.warn('Blocked navigation attempt', { url, allowed: allowedOrigins });
-      event.preventDefault();
-    }
-  });
+    contents.on('will-navigate', (event, url) => blockIfDisallowed(event, url, 'navigate'));
+    contents.on('will-redirect', (event, url) => blockIfDisallowed(event, url, 'redirect'));
+    contents.setWindowOpenHandler(() => {
+      logger.warn('Blocked attempt to open new window');
+      return { action: 'deny' };
+    });
+  };
 
-  // Security: Prevent opening new windows
-  mainWindow.webContents.setWindowOpenHandler(() => {
-    logger.warn('Blocked attempt to open new window');
-    return { action: 'deny' };
-  });
+  guardWebContentsNavigation(mainWindow.webContents);
 
   logger.info('Main window created successfully');
 
   // Wire kernel broadcasts to active renderer windows
   startFileWatcher();
+}
+
+function configureSessionSecurity(): void {
+  const logger = getLogger();
+  const defaultSession = session?.defaultSession;
+  if (!defaultSession) {
+    return;
+  }
+
+  if (typeof defaultSession.setPermissionRequestHandler === 'function') {
+    defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+      logger.warn('Denied Chromium permission request', { permission });
+      callback(false);
+    });
+  }
+  if (typeof defaultSession.setPermissionCheckHandler === 'function') {
+    defaultSession.setPermissionCheckHandler(() => false);
+  }
+
+  const rendererCsp = isDevelopment
+    ? "default-src 'self' http://localhost:8080; script-src 'self' 'unsafe-eval' http://localhost:8080; style-src 'self' 'unsafe-inline' http://localhost:8080; img-src 'self' data: vault-asset: http://localhost:8080; media-src 'self' vault-asset:; frame-src 'self' vault-asset:; object-src 'self' vault-asset:; connect-src 'self' vault-asset: http://localhost:8080 ws://localhost:8080; base-uri 'self'; form-action 'none'; frame-ancestors 'none';"
+    : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: vault-asset:; media-src 'self' vault-asset:; frame-src 'self' vault-asset:; object-src 'self' vault-asset:; connect-src 'self' vault-asset:; base-uri 'self'; form-action 'none'; frame-ancestors 'none';";
+
+  if (typeof defaultSession.webRequest?.onHeadersReceived === 'function') {
+    defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      const url = details.url || '';
+      if (url.startsWith('vault-asset://')) {
+        callback({ responseHeaders: details.responseHeaders });
+        return;
+      }
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Content-Security-Policy': [rendererCsp],
+          'X-Content-Type-Options': ['nosniff'],
+        },
+      });
+    });
+  }
 }
 
 /**
@@ -301,6 +324,24 @@ app.whenReady().then(async () => {
   }
 
   registerVaultAssetProtocol();
+  configureSessionSecurity();
+
+  app.on('web-contents-created', (_event, contents) => {
+    const rendererDir = path.resolve(__dirname, '../renderer');
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    contents.on('will-navigate', (navEvent, url) => {
+      if (!isAllowedAppRendererUrl(url, { isDevelopment, rendererDir })) {
+        logger.warn('Blocked secondary webContents navigation', { url });
+        navEvent.preventDefault();
+      }
+    });
+    contents.on('will-redirect', (navEvent, url) => {
+      if (!isAllowedAppRendererUrl(url, { isDevelopment, rendererDir })) {
+        logger.warn('Blocked secondary webContents redirect', { url });
+        navEvent.preventDefault();
+      }
+    });
+  });
 
   createWindow();
 

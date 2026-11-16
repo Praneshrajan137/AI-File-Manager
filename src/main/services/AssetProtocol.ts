@@ -8,6 +8,7 @@ import {
   normalizeAssetExtension,
 } from '@shared/utils/vaultAssetUrl';
 import { SecurityLogger } from '@shared/logging';
+import { isSensitiveSecretFile } from '@shared/security/SecretGuard';
 
 export const VAULT_ASSET_SCHEME = 'vault-asset';
 
@@ -85,8 +86,31 @@ export async function resolveVaultAssetRequest(
   }
 
   const canonicalPath = validation.canonicalPath;
+  const secretCheck = isSensitiveSecretFile(canonicalPath);
+  if (secretCheck.blocked) {
+    SecurityLogger.warn('Blocked SecretGuard-protected vault-asset request', {
+      reason: secretCheck.reason ?? 'sensitive credential file',
+    });
+    return {
+      ok: false,
+      status: 403,
+      message: 'Access denied by SecretGuard policy',
+    };
+  }
+
+  let lstat: Awaited<ReturnType<typeof fs.lstat>>;
   let stats: Awaited<ReturnType<typeof fs.stat>>;
   try {
+    lstat = await fs.lstat(canonicalPath);
+    if (lstat.isSymbolicLink() || !lstat.isFile()) {
+      return {
+        ok: false,
+        status: lstat.isDirectory() ? 400 : 403,
+        message: lstat.isDirectory()
+          ? 'Cannot stream a directory via vault-asset'
+          : 'Refused non-regular or symlink asset target',
+      };
+    }
     stats = await fs.stat(canonicalPath);
   } catch {
     return {

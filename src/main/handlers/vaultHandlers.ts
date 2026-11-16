@@ -108,7 +108,20 @@ async function handleAddVaultRoot(
   _event: IpcMainInvokeEvent,
   input: { pickDialog?: boolean; path?: string }
 ): Promise<{ cancelled: boolean; addedPath?: string; config: VaultConfigSnapshot }> {
+  const allowProgrammaticRootAdd =
+    process.env.E2E_TEST === 'true' || process.env.NODE_ENV === 'test';
   let targetPath = input.path?.trim();
+
+  if (!allowProgrammaticRootAdd && (input.pickDialog === false || targetPath)) {
+    throw ErrorFactory.createFileSystemError(
+      'UNAUTHORIZED_ACCESS',
+      targetPath || '',
+      'addVaultRoot',
+      {
+        details: 'Adding workspace vault roots requires native OS folder picker confirmation',
+      }
+    );
+  }
 
   if (!targetPath && input.pickDialog !== false) {
     const parentWin =

@@ -106,44 +106,51 @@ const SEARCH_RATE_LIMIT: IPCRateLimitPolicy = { windowMs: 60_000, maxRequests: 3
 const LLM_RATE_LIMIT: IPCRateLimitPolicy = { windowMs: 60_000, maxRequests: 60 };
 const LLM_INDEX_RATE_LIMIT: IPCRateLimitPolicy = { windowMs: 60_000, maxRequests: 30 };
 
+const MAX_IPC_PATH_LENGTH = 4096;
+const MAX_IPC_WRITE_BYTES = 10 * 1024 * 1024;
+const boundedPathSchema = z.string().min(1).max(MAX_IPC_PATH_LENGTH, 'Path exceeds maximum allowed length');
+
 export const IPC_SCHEMAS = {
-  'FS:READ_DIR': z.object({ path: z.string().min(1) }),
-  'FS:READ_FILE': z.object({ path: z.string().min(1) }),
+  'FS:READ_DIR': z.object({ path: boundedPathSchema }),
+  'FS:READ_FILE': z.object({ path: boundedPathSchema }),
   'FS:PREVIEW_FILE': z.object({
-    path: z.string().min(1),
+    path: boundedPathSchema,
     maxLines: z.number().int().min(1).max(100).optional(),
   }),
   'FS:READ_FILE_RANGE': z.object({
-    path: z.string().min(1),
+    path: boundedPathSchema,
     startLine: z.number().int().min(1),
     endLine: z.number().int().min(1).optional(),
     contextLines: z.number().int().min(0).max(50).optional(),
   }),
-  'FS:WRITE_FILE': z.object({ path: z.string().min(1), content: z.string() }),
+  'FS:WRITE_FILE': z.object({
+    path: boundedPathSchema,
+    content: z.string().max(MAX_IPC_WRITE_BYTES, 'File content exceeds maximum write limit'),
+  }),
   'FS:DELETE': z.object({
-    path: z.string().min(1),
+    path: boundedPathSchema,
     recursive: z.boolean().optional(),
     mode: z.enum(['vault', 'trash', 'permanent']).optional(),
   }),
   'FS:MOVE': z.object({
-    source: z.string().min(1),
-    destination: z.string().min(1),
+    source: boundedPathSchema,
+    destination: boundedPathSchema,
     repairMarkdownLinks: z.boolean().optional(),
   }),
-  'FS:COPY': z.object({ source: z.string().min(1), destination: z.string().min(1) }),
+  'FS:COPY': z.object({ source: boundedPathSchema, destination: boundedPathSchema }),
   'FS:CREATE_FILE': z.object({
-    path: z.string().min(1),
+    path: boundedPathSchema,
     name: safeEntryNameSchema,
-    content: z.string().optional(),
+    content: z.string().max(MAX_IPC_WRITE_BYTES, 'Initial file content exceeds limit').optional(),
   }),
   'FS:CREATE_DIR': z.object({
-    path: z.string().min(1),
+    path: boundedPathSchema,
     name: safeEntryNameSchema,
   }),
-  'FS:GET_STATS': z.object({ path: z.string().min(1) }),
+  'FS:GET_STATS': z.object({ path: boundedPathSchema }),
   'FS:GET_SYSTEM_PATHS': optionalEmptyObjectSchema,
   'FS:RENAME': z.object({
-    oldPath: z.string().min(1),
+    oldPath: boundedPathSchema,
     newName: safeEntryNameSchema,
   }),
   'FS:UNDO': optionalEmptyObjectSchema,
@@ -151,16 +158,16 @@ export const IPC_SCHEMAS = {
   'FS:GET_JOURNAL_STATE': optionalEmptyObjectSchema,
   'FS:EMPTY_TRASH_VAULT': optionalEmptyObjectSchema,
   'FS:WATCH_SPLIT_DIR': z.object({
-    path: z.string().min(1).nullable(),
+    path: boundedPathSchema.nullable(),
   }),
   'VAULT:GET_CONFIG': optionalEmptyObjectSchema,
   'VAULT:ADD_ROOT': z.object({
-    path: z.string().min(1).optional(),
+    path: boundedPathSchema.optional(),
     pickDialog: z.boolean().optional(),
   }),
-  'VAULT:REMOVE_ROOT': z.object({ path: z.string().min(1) }),
-  'VAULT:SET_INDEXED': z.object({ path: z.string().min(1), enabled: z.boolean() }),
-  'VAULT:TOGGLE_FAVORITE': z.object({ path: z.string().min(1) }),
+  'VAULT:REMOVE_ROOT': z.object({ path: boundedPathSchema }),
+  'VAULT:SET_INDEXED': z.object({ path: boundedPathSchema, enabled: z.boolean() }),
+  'VAULT:TOGGLE_FAVORITE': z.object({ path: boundedPathSchema }),
   'VAULT:SET_UI_PREFS': z.object({
     theme: z.enum(['light', 'dark']).optional(),
     explorerLens: z.enum(['files', 'graph', 'collections', 'duplicates']).optional(),
@@ -170,22 +177,22 @@ export const IPC_SCHEMAS = {
   'NAV:BACK': optionalEmptyObjectSchema,
   'NAV:FORWARD': optionalEmptyObjectSchema,
   'NAV:PUSH': z.union([
-    z.string().min(1).transform((p) => ({ path: p })),
-    z.object({ path: z.string().min(1) }),
+    boundedPathSchema.transform((p) => ({ path: p })),
+    z.object({ path: boundedPathSchema }),
   ]),
   'NAV:GET_STATE': optionalEmptyObjectSchema,
   'SEARCH:AUTOCOMPLETE': z.object({
-    prefix: z.string(),
+    prefix: z.string().max(512, 'Search prefix exceeds limit'),
     maxResults: z.number().int().min(1).max(200).optional(),
   }),
   'SEARCH:QUERY': z.object({
-    query: z.string(),
-    searchRoot: z.string().min(1),
+    query: z.string().max(512, 'Search query exceeds limit'),
+    searchRoot: boundedPathSchema,
   }),
   'SEARCH:CONTENT': z.object({
     query: z.string().min(1).max(500),
     topK: z.number().int().min(1).max(50).optional(),
-    searchRoot: z.string().min(1).optional(),
+    searchRoot: boundedPathSchema.optional(),
   }),
   'GRAPH:QUERY_INSIGHTS': z
     .union([
@@ -220,7 +227,7 @@ export const IPC_SCHEMAS = {
     ])
     .transform((v) => v ?? {}),
   'GRAPH:FILE_CONNECTIONS': z.object({
-    filePath: z.string().min(1),
+    filePath: boundedPathSchema,
   }),
   'LLM:QUERY': z.object({
     query: z.string().min(1).max(8000),
@@ -231,8 +238,8 @@ export const IPC_SCHEMAS = {
     mode: z.enum(['rag', 'agent']).optional(),
     contextScope: z
       .object({
-        currentPath: z.string().min(1).max(1000).optional(),
-        selectedPaths: z.array(z.string().min(1).max(1000)).max(25).optional(),
+        currentPath: boundedPathSchema.optional(),
+        selectedPaths: z.array(boundedPathSchema).max(25).optional(),
         useFolder: z.boolean().optional(),
         useSelection: z.boolean().optional(),
       })
@@ -254,7 +261,7 @@ export const IPC_SCHEMAS = {
       .regex(/^LLM:QUERY:[A-Za-z0-9:_-]+$/, 'Invalid stream channel name'),
   }),
   'AI:ORGANIZE_PLAN': z.object({
-    targetDir: z.string().min(1),
+    targetDir: boundedPathSchema,
     strategy: z
       .enum([
         'auto',
@@ -271,14 +278,14 @@ export const IPC_SCHEMAS = {
   }),
   'AI:ORGANIZE_APPLY': z.object({
     planId: z.string().min(1).max(120),
-    targetDir: z.string().min(1),
+    targetDir: boundedPathSchema,
     operations: z
       .array(
         z.object({
           id: z.string().min(1).max(120),
           action: z.enum(['move', 'rename']),
-          sourcePath: z.string().min(1),
-          destinationPath: z.string().min(1),
+          sourcePath: boundedPathSchema,
+          destinationPath: boundedPathSchema,
           sourceSha256: z.string().regex(/^[a-f0-9]{64}$/i, 'Invalid SHA-256 hex digest'),
           size: z.number().int().nonnegative(),
           category: z.string().min(1).max(120),
@@ -292,11 +299,11 @@ export const IPC_SCHEMAS = {
     repairMarkdownLinks: z.boolean().optional(),
   }),
   'LLM:INDEX_STATUS': optionalEmptyObjectSchema,
-  'LLM:START_INDEXING': z.object({ path: z.string().min(1) }),
+  'LLM:START_INDEXING': z.object({ path: boundedPathSchema }),
   'LLM:STOP_INDEXING': optionalEmptyObjectSchema,
   'LLM:INDEX_FILE': z.union([
-    z.object({ filePath: z.string().min(1) }),
-    z.object({ path: z.string().min(1) }).transform((v) => ({ filePath: v.path })),
+    z.object({ filePath: boundedPathSchema }),
+    z.object({ path: boundedPathSchema }).transform((v) => ({ filePath: v.path })),
   ]),
   'LLM:CHECK_OLLAMA': optionalEmptyObjectSchema,
   'LLM:CLEAR_INDEX': optionalEmptyObjectSchema,
@@ -323,8 +330,12 @@ export const IPC_SCHEMAS = {
     z.object({ text: z.string().max(1024 * 1024) }),
   ]),
   'SHELL:OPEN_PATH': z.union([
-    z.string().min(1).transform((p) => ({ path: p })),
-    z.object({ path: z.string().min(1) }),
+    boundedPathSchema.transform((p) => ({ path: p })),
+    z.object({ path: boundedPathSchema }),
+  ]),
+  'SHELL:REVEAL_IN_FOLDER': z.union([
+    boundedPathSchema.transform((p) => ({ path: p })),
+    z.object({ path: boundedPathSchema }),
   ]),
   'RUNTIME:GET_DIAGNOSTICS': optionalEmptyObjectSchema,
   ping: optionalEmptyObjectSchema,
@@ -398,6 +409,7 @@ export interface IPCResponseMap {
   'LLM:SET_MODEL_CONFIG': { success: boolean; config: LLMModelsSnapshot };
   'CLIPBOARD:WRITE_TEXT': { success: boolean };
   'SHELL:OPEN_PATH': { success: boolean; error?: string };
+  'SHELL:REVEAL_IN_FOLDER': { success: boolean };
   'RUNTIME:GET_DIAGNOSTICS': RuntimeDiagnosticsSnapshot;
   ping: 'pong';
 }
@@ -500,6 +512,7 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     group: 'fileSystem',
     schema: IPC_SCHEMAS['FS:GET_SYSTEM_PATHS'],
     pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
   },
   'FS:RENAME': {
     channel: 'FS:RENAME',
@@ -682,6 +695,7 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     group: 'llm',
     schema: IPC_SCHEMAS['LLM:INDEX_STATUS'],
     pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
   },
   'LLM:START_INDEXING': {
     channel: 'LLM:START_INDEXING',
@@ -695,6 +709,7 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     group: 'llm',
     schema: IPC_SCHEMAS['LLM:STOP_INDEXING'],
     pathFields: [],
+    rateLimit: LLM_INDEX_RATE_LIMIT,
   },
   'LLM:INDEX_FILE': {
     channel: 'LLM:INDEX_FILE',
@@ -708,6 +723,7 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     group: 'llm',
     schema: IPC_SCHEMAS['LLM:CHECK_OLLAMA'],
     pathFields: [],
+    rateLimit: LLM_RATE_LIMIT,
   },
   'LLM:CLEAR_INDEX': {
     channel: 'LLM:CLEAR_INDEX',
@@ -735,17 +751,19 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     group: 'llm',
     schema: IPC_SCHEMAS['LLM:LIST_MODELS'],
     pathFields: [],
-  },
-  'LLM:ABORT_QUERY': {
-    channel: 'LLM:ABORT_QUERY',
-    group: 'llm',
-    schema: IPC_SCHEMAS['LLM:ABORT_QUERY'],
-    pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
   },
   'LLM:SET_MODEL_CONFIG': {
     channel: 'LLM:SET_MODEL_CONFIG',
     group: 'llm',
     schema: IPC_SCHEMAS['LLM:SET_MODEL_CONFIG'],
+    pathFields: [],
+    rateLimit: LLM_RATE_LIMIT,
+  },
+  'LLM:ABORT_QUERY': {
+    channel: 'LLM:ABORT_QUERY',
+    group: 'llm',
+    schema: IPC_SCHEMAS['LLM:ABORT_QUERY'],
     pathFields: [],
     rateLimit: LLM_RATE_LIMIT,
   },
@@ -768,6 +786,7 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     group: 'shell',
     schema: IPC_SCHEMAS['CLIPBOARD:WRITE_TEXT'],
     pathFields: [],
+    rateLimit: WRITE_RATE_LIMIT,
   },
   'SHELL:OPEN_PATH': {
     channel: 'SHELL:OPEN_PATH',
@@ -776,17 +795,27 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     pathFields: ['path'],
     rateLimit: WRITE_RATE_LIMIT,
   },
+  'SHELL:REVEAL_IN_FOLDER': {
+    channel: 'SHELL:REVEAL_IN_FOLDER',
+    group: 'shell',
+    schema: IPC_SCHEMAS['SHELL:REVEAL_IN_FOLDER'],
+    pathFields: [],
+    linkSafePathFields: ['path'],
+    rateLimit: READ_RATE_LIMIT,
+  },
   'RUNTIME:GET_DIAGNOSTICS': {
     channel: 'RUNTIME:GET_DIAGNOSTICS',
     group: 'runtime',
     schema: IPC_SCHEMAS['RUNTIME:GET_DIAGNOSTICS'],
     pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
   },
   ping: {
     channel: 'ping',
     group: 'runtime',
     schema: IPC_SCHEMAS['ping'],
     pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
   },
 };
 

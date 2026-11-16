@@ -241,6 +241,15 @@ describe('Stage 4 (M10): Spatial UI, vault-asset:// Protocol, Citation Reader & 
       expect(svgRes.headers.get('Content-Security-Policy')).toBe(
         "default-src 'none'; style-src 'unsafe-inline'; sandbox"
       );
+
+      // SecretGuard-protected filename is blocked even when matching media extension (.svg/.pdf)
+      const secretSvg = path.join(rootDir, 'service-account-prod.svg');
+      await fs.writeFile(secretSvg, '<svg></svg>', 'utf-8');
+      const secretAssetRes = await handleVaultAssetRequest(
+        new Request(buildVaultAssetUrl(secretSvg)),
+        () => validator
+      );
+      expect(secretAssetRes.status).toBe(403);
     });
   });
 

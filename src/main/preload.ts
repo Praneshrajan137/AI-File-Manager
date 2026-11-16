@@ -516,6 +516,8 @@ const electronAPI = {
   shell: {
     openPath: (path: string): ContractResult<'SHELL:OPEN_PATH'> =>
       invokeContract('SHELL:OPEN_PATH', { path }),
+    revealInFolder: (path: string): ContractResult<'SHELL:REVEAL_IN_FOLDER'> =>
+      invokeContract('SHELL:REVEAL_IN_FOLDER', { path }),
   },
 
   /**

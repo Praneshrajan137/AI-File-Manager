@@ -283,5 +283,23 @@ describe('Stage 1 (M7): DirectoryScanner Exclusions & Vault IPC Kernel Reload', 
 
     const agentSearchHits = await searchWorkspacePaths('env', rootA);
     expect(agentSearchHits.some((p) => p.endsWith('.env'))).toBe(false);
+
+    // 3. Outside test mode, programmatic pickDialog:false VAULT:ADD_ROOT is rejected cleanly
+    const prevNodeEnv = process.env.NODE_ENV;
+    const prevE2e = process.env.E2E_TEST;
+    try {
+      process.env.NODE_ENV = 'production';
+      delete process.env.E2E_TEST;
+      const prodBypassAttempt = (await addRootHandler(fakeEvent, {
+        pickDialog: false,
+        path: rootB,
+      })) as { ok: boolean; error?: { code: string } };
+      expect(prodBypassAttempt.ok).toBe(false);
+      expect(prodBypassAttempt.error?.code).toBe('UNAUTHORIZED_ACCESS');
+    } finally {
+      process.env.NODE_ENV = prevNodeEnv;
+      if (prevE2e === undefined) delete process.env.E2E_TEST;
+      else process.env.E2E_TEST = prevE2e;
+    }
   });
 });

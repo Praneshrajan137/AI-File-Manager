@@ -24,6 +24,7 @@ import {
     renameWithWindowsRetry,
 } from '@shared/utils/atomicFs';
 
+const MAX_READ_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_PREVIEW_BYTES = 256 * 1024;
 const MAX_RANGE_READ_BYTES = 2 * 1024 * 1024;
 const MAX_RANGE_RETURN_LINES = 400;
@@ -153,6 +154,18 @@ export class FileSystemService implements IFileSystemService {
         const canonicalPath = await this.validateCanonicalPathOrThrow(filePath);
 
         try {
+            const stats = await fs.stat(canonicalPath);
+            if (typeof stats?.size === 'number' && stats.size > MAX_READ_FILE_BYTES) {
+                throw new FileSystemError(
+                    'FILE_TOO_LARGE',
+                    `File exceeds maximum read size of ${Math.round(MAX_READ_FILE_BYTES / (1024 * 1024))}MB`,
+                    {
+                        path: canonicalPath,
+                        operation: 'readFile',
+                        details: { size: stats.size, maxBytes: MAX_READ_FILE_BYTES },
+                    }
+                );
+            }
             const content = await fs.readFile(canonicalPath, encoding);
             return content;
         } catch (error: unknown) {
@@ -748,6 +761,9 @@ export class FileSystemService implements IFileSystemService {
      * @returns Structured FileSystemError
      */
     private wrapError(error: unknown, filePath: string): FileSystemError {
+        if (error instanceof FileSystemError) {
+            return error;
+        }
         // Use ErrorFactory to create FileSystemError from fs error
         const fsError = ErrorFactory.fromFsError(error, filePath);
 

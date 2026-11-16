@@ -121,6 +121,7 @@ export const PreviewBody: React.FC<PreviewBodyProps> = ({
                 <iframe
                   src={assetUrl}
                   title={file.name}
+                  referrerPolicy="no-referrer"
                   data-testid="preview-asset-pdf"
                   className="w-full h-full min-h-[480px] rounded-lg border border-slate-700 bg-white"
                 />

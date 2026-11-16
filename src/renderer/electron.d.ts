@@ -191,6 +191,7 @@ interface ElectronAPI {
 
   shell: {
     openPath: (path: string) => Promise<{ success: boolean; error?: string }>;
+    revealInFolder?: (path: string) => Promise<{ success: boolean }>;
   };
 
   diagnostics: {

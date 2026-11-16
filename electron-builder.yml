@@ -5,6 +5,13 @@ appId: com.project2.filemanager
 productName: Project-2 File Manager
 copyright: Copyright © 2025-2026 Praneshrajan
 asar: true
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  onlyLoadAppFromAsar: true
+  grantFileProtocolExtraPrivileges: false
 asarUnpack:
   - "node_modules/**/*.node"
   - "node_modules/@lancedb/**"

@@ -1,9 +1,14 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { pathToFileURL } from 'url';
 import type { IpcMainInvokeEvent } from 'electron';
 
 const registeredHandlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+const mockShell = {
+  openPath: jest.fn().mockResolvedValue(''),
+  showItemInFolder: jest.fn(),
+};
 const mockIpcMain = {
   handle: jest.fn((channel: string, handler: (...args: unknown[]) => Promise<unknown>) => {
     registeredHandlers.set(channel, handler);
@@ -15,7 +20,7 @@ const mockIpcMain = {
 
 jest.mock('electron', () => ({
   ipcMain: mockIpcMain,
-  shell: { openPath: jest.fn().mockResolvedValue('') },
+  shell: mockShell,
   clipboard: { writeText: jest.fn() },
   app: { getPath: jest.fn(() => os.tmpdir()) },
   BrowserWindow: { getAllWindows: jest.fn(() => []) },
@@ -38,7 +43,7 @@ import {
   getRegisteredChannels,
 } from '@main/handlers/ipcHandlers';
 import { ConfigManager } from '@shared/config/ConfigManager';
-import { ALL_IPC_CHANNELS, IPCEnvelope } from '@shared/ipc/contracts';
+import { ALL_IPC_CHANNELS, IPC_CONTRACTS, IPCEnvelope } from '@shared/ipc/contracts';
 
 const mockEvent = {
   sender: {
@@ -273,5 +278,70 @@ describe('M2 Canonical Security Boundary & Declarative IPC Contracts', () => {
     const envelope = await validateAndInvokeContract('ping', mockEvent, undefined, async () => 'pong');
     expect(envelope).toEqual({ ok: true, data: 'pong' });
     expect(RuntimeDiagnostics.getInstance().getSnapshot().ipc.totalCalls).toBe(1);
+  });
+
+  it('blocks executable SHELL:OPEN_PATH targets, validates senderFrame origins, and enforces rateLimit & bounds on all channels', async () => {
+    registerAllHandlers();
+    mockShell.openPath.mockClear();
+    mockShell.showItemInFolder.mockClear();
+
+    for (const channel of ALL_IPC_CHANNELS) {
+      expect(IPC_CONTRACTS[channel].rateLimit).toBeDefined();
+    }
+
+    const exeFile = path.join(allowedRoot, 'installer.exe');
+    const ps1File = path.join(allowedRoot, 'script.ps1');
+    await fs.promises.writeFile(exeFile, 'MZ', 'utf-8');
+    await fs.promises.writeFile(ps1File, 'Write-Host 1', 'utf-8');
+
+    const shellOpen = registeredHandlers.get('SHELL:OPEN_PATH')!;
+    const blockedExe = (await shellOpen(mockEvent, { path: exeFile })) as IPCEnvelope<unknown>;
+    expect(blockedExe.ok).toBe(false);
+    if (!blockedExe.ok) {
+      expect(blockedExe.error.code).toBe('UNAUTHORIZED_ACCESS');
+    }
+
+    const blockedPs1 = (await shellOpen(mockEvent, { path: ps1File })) as IPCEnvelope<unknown>;
+    expect(blockedPs1.ok).toBe(false);
+    expect(mockShell.openPath).not.toHaveBeenCalled();
+
+    const shellReveal = registeredHandlers.get('SHELL:REVEAL_IN_FOLDER')!;
+    const revealRes = (await shellReveal(mockEvent, { path: exeFile })) as IPCEnvelope<{ success: boolean }>;
+    expect(revealRes.ok).toBe(true);
+    expect(mockShell.showItemInFolder).toHaveBeenCalledWith(await fs.promises.realpath(exeFile));
+
+    const badSenderEvent = {
+      ...mockEvent,
+      senderFrame: { url: 'https://evil.example/hijack.html' },
+    } as unknown as IpcMainInvokeEvent;
+    const senderBlocked = (await validateAndInvokeContract(
+      'ping',
+      badSenderEvent,
+      undefined,
+      async () => 'pong'
+    )) as IPCEnvelope<unknown>;
+    expect(senderBlocked.ok).toBe(false);
+    if (!senderBlocked.ok) {
+      expect(senderBlocked.error.code).toBe('UNAUTHORIZED_REQUEST');
+    }
+
+    const goodRendererUrl = pathToFileURL(
+      path.resolve(process.cwd(), 'dist', 'renderer', 'index.html')
+    ).href;
+    const goodSenderEvent = {
+      ...mockEvent,
+      senderFrame: { url: goodRendererUrl },
+    } as unknown as IpcMainInvokeEvent;
+    const senderAllowed = await validateAndInvokeContract('ping', goodSenderEvent, undefined, async () => 'pong');
+    expect(senderAllowed).toEqual({ ok: true, data: 'pong' });
+
+    const readDir = registeredHandlers.get('FS:READ_DIR')!;
+    const overlongPath = await readDir(mockEvent, {
+      path: path.join(allowedRoot, 'a'.repeat(4200)),
+    }) as IPCEnvelope<unknown>;
+    expect(overlongPath.ok).toBe(false);
+    if (!overlongPath.ok) {
+      expect(overlongPath.error.code).toBe('INVALID_INPUT');
+    }
   });
 });

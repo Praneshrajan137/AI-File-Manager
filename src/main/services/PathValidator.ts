@@ -23,6 +23,7 @@ export class PathValidator {
     private allowedRoots: string[];
     private lexicalAllowedRoots: string[];
     private forbiddenPaths: string[];
+    private maxPathLength: number;
 
     constructor(allowedRoots: string | string[]) {
         const candidates = Array.isArray(allowedRoots) ? allowedRoots : [allowedRoots];
@@ -36,6 +37,7 @@ export class PathValidator {
             : [this.stripTrailingSep(path.resolve(os.homedir()))];
         this.allowedRoot = this.allowedRoots[0];
         this.lexicalAllowedRoots = this.expandCanonicalAliases(this.allowedRoots);
+        this.maxPathLength = this.resolveMaxPathLength();
 
         // Initialize OS-specific forbidden paths (including canonical aliases for OS 8.3/symlink equivalence)
         const baseForbidden = this.getForbiddenPaths().map((entry) =>
@@ -156,17 +158,40 @@ export class PathValidator {
         }
     }
 
+    private resolveMaxPathLength(): number {
+        try {
+            const configured = ConfigManager.getInstance().get('security')?.maxPathLength;
+            if (typeof configured === 'number' && Number.isFinite(configured) && configured >= 260) {
+                return Math.floor(configured);
+            }
+        } catch {
+            // Optional if ConfigManager is uninitialized in isolated unit tests
+        }
+        return 4096;
+    }
+
     /**
      * Validate path for security (lexical validation).
      */
     validate(requestedPath: string): ValidationResult {
-        // Step 1: Check for empty path
+        // Step 1: Check for empty path or oversized path strings
         if (!requestedPath || requestedPath.trim() === '') {
             SecurityLogger.warn('Empty path validation attempt');
             return {
                 valid: false,
                 error: 'INVALID_PATH',
                 details: 'Path cannot be empty',
+            };
+        }
+        if (requestedPath.length > this.maxPathLength) {
+            SecurityLogger.warn('Path exceeds maximum configured length', {
+                length: requestedPath.length,
+                maxPathLength: this.maxPathLength,
+            });
+            return {
+                valid: false,
+                error: 'INVALID_PATH',
+                details: `Path length exceeds maximum limit of ${this.maxPathLength} characters`,
             };
         }
 
@@ -557,6 +582,13 @@ export class PathValidator {
     async validateNewRoot(requestedPath: string): Promise<ValidationResult> {
         if (!requestedPath || requestedPath.trim() === '') {
             return { valid: false, error: 'INVALID_PATH', details: 'Workspace path cannot be empty' };
+        }
+        if (requestedPath.length > this.maxPathLength) {
+            return {
+                valid: false,
+                error: 'INVALID_PATH',
+                details: `Workspace path length exceeds maximum limit of ${this.maxPathLength} characters`,
+            };
         }
         if (requestedPath.includes('\0')) {
             return { valid: false, error: 'INVALID_PATH', details: 'Workspace path contains null byte' };
