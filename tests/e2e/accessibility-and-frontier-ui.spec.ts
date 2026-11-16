@@ -1,7 +1,6 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { DatabaseSync } from 'node:sqlite';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import { closeElectronApp, getFirstWindow, launchElectronApp } from './electron-launcher';
@@ -9,86 +8,6 @@ import { closeElectronApp, getFirstWindow, launchElectronApp } from './electron-
 async function analyzeElectronA11y(page: Page, tags: string[]) {
   // Electron CDP does not support Target.createTarget used by axe.runPartial/finishRun.
   return new AxeBuilder({ page }).setLegacyMode(true).withTags(tags).analyze();
-}
-
-function seedA11yKnowledgeGraph(
-  vectorDbDir: string,
-  alphaPath: string,
-  betaPath: string
-): void {
-  const db = new DatabaseSync(path.join(vectorDbDir, 'knowledge-graph.sqlite'));
-  try {
-    db.exec(`
-      PRAGMA journal_mode = WAL;
-      CREATE TABLE IF NOT EXISTS files (
-        path TEXT PRIMARY KEY,
-        sha256 TEXT NOT NULL,
-        size INTEGER NOT NULL,
-        mtime_ms INTEGER NOT NULL,
-        file_type TEXT NOT NULL,
-        chunk_count INTEGER NOT NULL,
-        token_estimate INTEGER NOT NULL,
-        indexed_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_files_sha256 ON files(sha256);
-      CREATE TABLE IF NOT EXISTS chunks (
-        id TEXT PRIMARY KEY,
-        file_path TEXT NOT NULL,
-        chunk_index INTEGER NOT NULL,
-        start_char INTEGER NOT NULL,
-        end_char INTEGER NOT NULL,
-        start_line INTEGER NOT NULL,
-        end_line INTEGER NOT NULL,
-        heading TEXT NOT NULL,
-        chunk_text TEXT NOT NULL,
-        indexed_at INTEGER NOT NULL
-      );
-      CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-        chunk_id UNINDEXED,
-        file_path,
-        heading,
-        chunk_text,
-        tokenize = 'unicode61 tokenchars ''_'''
-      );
-      CREATE TABLE IF NOT EXISTS symbols (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        file_path TEXT NOT NULL,
-        symbol_name TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        line_number INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS links (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_path TEXT NOT NULL,
-        target_ref TEXT NOT NULL,
-        target_path TEXT,
-        kind TEXT NOT NULL,
-        line_number INTEGER NOT NULL
-      );
-    `);
-
-    const now = Date.now();
-    const insertFile = db.prepare(
-      'INSERT OR REPLACE INTO files (path, sha256, size, mtime_ms, file_type, chunk_count, token_estimate, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    );
-    insertFile.run(alphaPath, 'sha-alpha', 64, now, 'md', 1, 16, now);
-    insertFile.run(betaPath, 'sha-beta', 64, now, 'txt', 1, 16, now);
-
-    db.prepare(
-      'INSERT INTO symbols (file_path, symbol_name, kind, line_number) VALUES (?, ?, ?, ?)'
-    ).run(alphaPath, 'alphaBoot', 'heading', 1);
-    db.prepare(
-      'INSERT INTO symbols (file_path, symbol_name, kind, line_number) VALUES (?, ?, ?, ?)'
-    ).run(betaPath, 'betaHelper', 'heading', 1);
-
-    db.prepare(
-      'INSERT INTO links (source_path, target_ref, target_path, kind, line_number) VALUES (?, ?, ?, ?, ?)'
-    ).run(alphaPath, 'beta.txt', betaPath, 'markdown_link', 2);
-
-    db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
-  } finally {
-    db.close();
-  }
 }
 
 test.describe('Frontier Frontend E2E: WCAG 2.2 AA Contrast, 800x600 Reflow, Keyboard & Overlay Stack', () => {
@@ -101,13 +20,12 @@ test.describe('Frontier Frontend E2E: WCAG 2.2 AA Contrast, 800x600 Reflow, Keyb
     await fs.mkdir(subFolder, { recursive: true });
     const alphaPath = path.join(workspaceRoot, 'alpha.md');
     const betaPath = path.join(workspaceRoot, 'beta.txt');
-    await fs.writeFile(alphaPath, '# Alpha Heading\nSee [Beta](beta.txt)\n', 'utf-8');
+    await fs.writeFile(alphaPath, '# Alpha Heading\nSee [Beta](./beta.txt) for details.\n', 'utf-8');
     await fs.writeFile(betaPath, 'Beta notes for quick preview\n', 'utf-8');
     await fs.writeFile(path.join(subFolder, 'nested.md'), '# Nested Note\nSee alpha\n', 'utf-8');
 
     const vectorDbDir = path.join(tempBase, 'vectordb');
     await fs.mkdir(vectorDbDir, { recursive: true });
-    seedA11yKnowledgeGraph(vectorDbDir, alphaPath, betaPath);
 
     let electronApp: Awaited<ReturnType<typeof launchElectronApp>> | null = null;
     try {
@@ -131,8 +49,16 @@ test.describe('Frontier Frontend E2E: WCAG 2.2 AA Contrast, 800x600 Reflow, Keyb
         }
       });
 
-      const firstItem = page.locator('[data-testid="file-list"] [role="option"]').first();
-      await expect(firstItem).toBeVisible({ timeout: 15000 });
+      await expect(page.getByRole('button', { name: 'a11y-vault', exact: true })).toBeVisible({ timeout: 15000 });
+      await page.getByRole('button', { name: 'a11y-vault', exact: true }).click();
+      await expect(page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'alpha.md' })).toBeVisible({
+        timeout: 15000,
+      });
+
+      for (const filePath of [alphaPath, betaPath]) {
+        const res = await page.evaluate((p: string) => window.electronAPI.llm.indexFile(p), filePath);
+        expect(res.success).toBe(true);
+      }
 
       // 1. Light Mode WCAG AA audit on main explorer view
       const lightAudit = await analyzeElectronA11y(page, ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']);

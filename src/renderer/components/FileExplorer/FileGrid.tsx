@@ -243,6 +243,10 @@ export const FileGrid: React.FC<FileGridProps> = ({
           rowHeight={gridGeom.rowHeight}
           width={gridGeom.width}
           itemData={itemData}
+          itemKey={({ columnIndex, rowIndex, data }): string => {
+            const idx = rowIndex * data.columnCount + columnIndex;
+            return data.sortedFiles[idx]?.path ?? `empty-${rowIndex}-${columnIndex}`;
+          }}
           className="scrollbar-thin"
         >
           {FileGridCell}
@@ -269,6 +273,7 @@ export const FileGrid: React.FC<FileGridProps> = ({
         itemSize={50}
         width="100%"
         itemData={itemData}
+        itemKey={(index, data): string => data.sortedFiles[index]?.path ?? `row-${index}`}
         className="scrollbar-thin"
       >
         {FileListRow}

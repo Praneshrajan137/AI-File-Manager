@@ -122,6 +122,15 @@
     background: #CBD5E1;
   }
 
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
   @keyframes slideIn {
     from {
       transform: translateX(100%);
