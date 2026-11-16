@@ -637,6 +637,137 @@ describe('Stage 5 (M11): Bounded ReAct Copilot, @folder/@selection Scope & Trans
       ).rejects.toThrow(/strictly inside the approved target directory/i);
       expect(fsSync.existsSync(subFile)).toBe(true);
     });
+
+    it('avoids _1 self-collision on already-organized files, scopes recursive LLM paths, repairs outgoing MD links & skips code spans, and emits notifyMutation', async () => {
+      const docsDir = path.join(workspaceRoot, 'Documents');
+      const alphaDir = path.join(workspaceRoot, 'team-a');
+      const betaDir = path.join(workspaceRoot, 'team-b');
+      await fs.mkdir(docsDir, { recursive: true });
+      await fs.mkdir(alphaDir, { recursive: true });
+      await fs.mkdir(betaDir, { recursive: true });
+
+      // Already inside Documents/ -> recursive propose must NOT suffix with _1!
+      const alreadyPlaced = path.join(docsDir, 'already-sorted.md');
+      await fs.writeFile(alreadyPlaced, '# Already Sorted\n', 'utf-8');
+
+      // Two identically named files in team-a/ and team-b/ disambiguated via relPath in LLM prompt
+      const teamANote = path.join(alphaDir, 'notes.md');
+      const teamBNote = path.join(betaDir, 'notes.md');
+      const unmovedRef = path.join(workspaceRoot, 'guide.md');
+      await fs.writeFile(
+        teamANote,
+        [
+          'Read [Guide](../guide.md#intro).',
+          'Code example inline: `[DontTouch](../guide.md)`',
+          '```markdown',
+          '[FencedLink](../guide.md)',
+          '```',
+        ].join('\n'),
+        'utf-8'
+      );
+      await fs.writeFile(teamBNote, 'Team B body\n', 'utf-8');
+      await fs.writeFile(unmovedRef, '# Guide\n', 'utf-8');
+
+      const events: Array<{ type: string; path: string }> = [];
+      const validator = new PathValidator([workspaceRoot]);
+      const fsService = new FileSystemService([workspaceRoot]);
+      const journal = new OperationJournal({
+        vaultDir,
+        maxHistory: 20,
+        maxVaultBytes: 10 * 1024 * 1024,
+        validator,
+        fileSystemService: fsService,
+      });
+
+      const relLlmFetch = (async () =>
+        ({
+          ok: true,
+          json: async () => ({
+            message: {
+              content: JSON.stringify({
+                items: [
+                  { file: 'Documents/already-sorted.md', category: 'Documents', reason: 'Keep' },
+                  { file: 'team-a/notes.md', category: 'AlphaDocs', reason: 'Alpha cluster' },
+                  { file: 'team-b/notes.md', category: 'BetaDocs', reason: 'Beta cluster' },
+                ],
+              }),
+            },
+          }),
+        }) as Response) as typeof fetch;
+
+      const organizer = new AIOrganizerService({
+        validator,
+        operationJournal: journal,
+        ollamaUrl: 'http://127.0.0.1:11434',
+        model: 'llama3.2',
+        fetchFn: relLlmFetch,
+        notifyMutation: (type, filePath) => events.push({ type, path: filePath }),
+      });
+
+      const plan = await organizer.proposeOrganizationPlan({
+        targetDir: workspaceRoot,
+        strategy: 'ai_suggested',
+        useLLM: true,
+        recursive: true,
+      });
+
+      expect(plan.operations.some((o) => o.sourcePath === alreadyPlaced)).toBe(false);
+      const opA = plan.operations.find((o) => o.sourcePath === teamANote)!;
+      const opB = plan.operations.find((o) => o.sourcePath === teamBNote)!;
+      expect(opA.destinationPath).toBe(path.join(workspaceRoot, 'AlphaDocs', 'notes.md'));
+      expect(opB.destinationPath).toBe(path.join(workspaceRoot, 'BetaDocs', 'notes.md'));
+
+      const applyRes = await organizer.applyOrganizationPlan({
+        planId: plan.planId,
+        targetDir: workspaceRoot,
+        operations: [opA, opB],
+        repairMarkdownLinks: true,
+      });
+      expect(applyRes.success).toBe(true);
+
+      // Move from root into nested Docs/Deep/ to assert depth-change outgoing link repair + code-span preservation
+      const deepDest = path.join(workspaceRoot, 'Docs', 'Deep', 'guide-child.md');
+      const deepSrc = path.join(workspaceRoot, 'flat.md');
+      await fs.writeFile(
+        deepSrc,
+        [
+          'See [Guide](./guide.md#sec)',
+          'Inline: `[Code](./guide.md)`',
+          '```markdown',
+          '[FencedLink](./guide.md)',
+          '```',
+        ].join('\n'),
+        'utf-8'
+      );
+      const deepApplyRes = await organizer.applyOrganizationPlan({
+        planId: 'deep-plan',
+        targetDir: workspaceRoot,
+        operations: [
+          {
+            id: 'deep-op-1',
+            action: 'move',
+            sourcePath: deepSrc,
+            destinationPath: deepDest,
+            sourceSha256: await computeFileSha256(deepSrc),
+            size: (await fs.stat(deepSrc)).size,
+            category: 'Docs/Deep',
+            reason: 'Deep test',
+            confidence: 1,
+            classificationSource: 'deterministic',
+          },
+        ],
+        repairMarkdownLinks: true,
+      });
+      expect(deepApplyRes.repairedLinksCount).toBe(1);
+
+      const deepContent = await fs.readFile(deepDest, 'utf-8');
+      expect(deepContent).toContain('See [Guide](../../guide.md#sec)');
+      expect(deepContent).toContain('`[Code](./guide.md)`');
+      expect(deepContent).toContain('[FencedLink](./guide.md)');
+      expect(events).toContainEqual({ type: 'unlink', path: deepSrc });
+      expect(events).toContainEqual({ type: 'create', path: deepDest });
+      expect(events).toContainEqual({ type: 'change', path: deepDest });
+    });
   });
 
   describe('IPC Contract Integration (AI:ORGANIZE_PLAN, AI:ORGANIZE_APPLY, FS:UNDO & LLM:QUERY mode=agent)', () => {

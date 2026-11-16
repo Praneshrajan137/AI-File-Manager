@@ -17,6 +17,7 @@ import { ContextManager } from '../../src/llm/services/ContextManager';
 import { RetrievalService } from '../../src/llm/services/RetrievalService';
 import { LLMInterface } from '../../src/llm/services/LLMInterface';
 import { VectorStore } from '../../src/llm/services/VectorStore';
+import { replayPendingVectorOutbox } from '../../src/main/services/LlmWorkspaceService';
 import { IEmbeddingModel, VectorRecord } from '../../src/shared/contracts';
 
 const mockWorkers: FakeWorker[] = [];
@@ -585,6 +586,90 @@ describe('Stage 3 (M9) Knowledge Graph, Chunker, Dual-Lane Pool & Retrieval', ()
       expect(llm.buildSystemPrompt()).toContain('<untrusted_workspace_data>');
       expect(llm.buildSystemPrompt()).toContain('[filename#Lx-Ly]');
       expect(llm.buildUserPrompt('API quota?', res)).toContain('<workspace_context>');
+    });
+
+    it('groups rootless getSemanticCollections by parent directory and replays SQLite pending vector outbox safely', async () => {
+      const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'stage3-stagec-'));
+      try {
+        const docsDir = path.join(tmpRoot, 'docs');
+        const engineDir = path.join(tmpRoot, 'engine');
+        await fs.mkdir(docsDir, { recursive: true });
+        await fs.mkdir(engineDir, { recursive: true });
+
+        const docFile = path.join(docsDir, 'architecture.md');
+        const engineFile = path.join(engineDir, 'planner.ts');
+        const missingPending = path.join(tmpRoot, 'deleted-before-restart.md');
+        const blockedEnv = path.join(tmpRoot, '.env');
+        await fs.writeFile(docFile, '# Architecture notes', 'utf-8');
+        await fs.writeFile(engineFile, 'export function runPlanner() { return 1; }', 'utf-8');
+
+        const kg = new WorkspaceKnowledgeGraph(path.join(tmpRoot, 'kg.sqlite'));
+        kg.upsertDocument({
+          filePath: docFile,
+          fileType: 'md',
+          vectorSyncStatus: 'synced',
+          chunks: [{ id: 'd1', chunkIndex: 0, text: '# Architecture notes', startChar: 0, endChar: 20 }],
+        });
+        kg.upsertDocument({
+          filePath: engineFile,
+          fileType: 'ts',
+          vectorSyncStatus: 'pending',
+          chunks: [{ id: 'e1', chunkIndex: 0, text: 'runPlanner', startChar: 0, endChar: 10 }],
+        });
+        kg.upsertDocument({
+          filePath: missingPending,
+          fileType: 'md',
+          vectorSyncStatus: 'pending',
+          chunks: [{ id: 'm1', chunkIndex: 0, text: 'stale missing', startChar: 0, endChar: 13 }],
+        });
+        kg.upsertDocument({
+          filePath: blockedEnv,
+          fileType: 'env',
+          vectorSyncStatus: 'pending',
+          chunks: [{ id: 's1', chunkIndex: 0, text: 'API_KEY=1234', startChar: 0, endChar: 12 }],
+        });
+
+        const collections = kg.getSemanticCollections();
+        const labels = collections.map((c) => c.label);
+        expect(labels).toContain('Docs');
+        expect(labels).toContain('Engine');
+        expect(labels).not.toEqual(['Workspace Root']);
+
+        const deletedPaths: string[] = [];
+        const replayedPaths: string[] = [];
+        let flushed = 0;
+
+        const outboxRes = await replayPendingVectorOutbox({
+          vectorStore: {
+            getKnowledgeGraph: () => kg,
+            deleteFile: async (fp: string) => {
+              deletedPaths.push(fp);
+              kg.removeFile(fp);
+              return 1;
+            },
+            flushPendingRecords: async () => {
+              flushed += 1;
+            },
+          },
+          indexingService: {
+            indexFile: async (fp: string) => {
+              replayedPaths.push(fp);
+              kg.markFilesVectorSynced([fp]);
+              return { filePath: fp, chunksCreated: 1, totalTokens: 5, indexedAt: Date.now(), success: true };
+            },
+          },
+          validatePath: async () => true,
+        });
+
+        expect(outboxRes).toEqual({ replayed: 1, purged: 2 });
+        expect(replayedPaths).toEqual([engineFile]);
+        expect(deletedPaths).toEqual(expect.arrayContaining([missingPending, blockedEnv]));
+        expect(flushed).toBe(1);
+        expect(kg.getPendingSyncCount()).toBe(0);
+        kg.close();
+      } finally {
+        await fs.rm(tmpRoot, { recursive: true, force: true });
+      }
     });
   });
 });

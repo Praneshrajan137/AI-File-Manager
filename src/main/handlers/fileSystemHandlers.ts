@@ -18,7 +18,7 @@ import {
   resetReactiveWorkspaceKernelSync,
 } from '../services/ReactiveWorkspaceKernel';
 import { getOperationJournal, resetOperationJournal, type BatchOperationStep } from '../services/OperationJournal';
-import { buildMarkdownLinkRepairSteps } from '../services/MarkdownLinkRepair';
+import { buildBatchMarkdownLinkRepairSteps } from '../services/MarkdownLinkRepair';
 import { checkWorkspaceGraphImpact } from './llmHandlers';
 import {
   FileDeleteMode,
@@ -174,13 +174,14 @@ async function handleMove(
   const journal = getOperationJournal();
 
   if (input.repairMarkdownLinks) {
-    let linkSteps: Awaited<ReturnType<typeof buildMarkdownLinkRepairSteps>> = [];
+    let linkSteps: Awaited<ReturnType<typeof buildBatchMarkdownLinkRepairSteps>> = [];
     try {
       const impact = checkWorkspaceGraphImpact([input.source]);
-      const mdSources = impact.references
-        .filter((r) => r.isMarkdownLink)
-        .map((r) => r.sourcePath);
-      linkSteps = await buildMarkdownLinkRepairSteps(mdSources, input.source, input.destination);
+      const mdRefs = impact.references.filter((r) => r.isMarkdownLink);
+      linkSteps = await buildBatchMarkdownLinkRepairSteps(
+        [{ source: input.source, destination: input.destination }],
+        mdRefs
+      );
     } catch (repairErr: unknown) {
       FileSystemLogger.warn('Markdown link repair planning skipped; proceeding with standard move', {
         error: repairErr instanceof Error ? repairErr.message : String(repairErr),

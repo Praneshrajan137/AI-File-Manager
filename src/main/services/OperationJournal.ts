@@ -747,6 +747,7 @@ export class OperationJournal {
   ): Promise<{ success: boolean; copiedPath: string; operationId: string }> {
     return this.serialize(async () => {
       await this.ensureInitialized();
+      this.suppressWatchPathsForStep([source, destination]);
       const outcome = await this.performSingleCopyUnlocked(source, destination);
       await this.pushUndoRecord(outcome.record);
       return {
@@ -764,6 +765,7 @@ export class OperationJournal {
   ): Promise<{ success: boolean; mode: FileDeleteMode; operationId?: string }> {
     return this.serialize(async () => {
       await this.ensureInitialized();
+      this.suppressWatchPathsForStep([requestedPath]);
       const outcome = await this.performSingleDeleteUnlocked(requestedPath, recursive, mode);
       if (outcome.record) {
         await this.pushUndoRecord(outcome.record);
@@ -783,6 +785,7 @@ export class OperationJournal {
   ): Promise<{ success: boolean; newPath: string; operationId: string }> {
     return this.serialize(async () => {
       await this.ensureInitialized();
+      this.suppressWatchPathsForStep([source, destination]);
       const outcome = await this.performSingleMoveUnlocked(source, destination, opType);
       await this.pushUndoRecord(outcome.record);
       return {
@@ -997,6 +1000,8 @@ export class OperationJournal {
       };
     }
 
+    this.suppressWatchPathsForStep([record.sourcePath, record.destinationPath, record.vaultPayloadPath]);
+
     if (record.type === 'delete') {
       if (record.isSymlink && record.symlinkTarget) {
         const parentCheck = await this.validator.validateParentCanonicalForLink(record.sourcePath);
@@ -1151,6 +1156,8 @@ export class OperationJournal {
         restoredPath: updatedChildren[updatedChildren.length - 1]?.destinationPath ?? record.sourcePath,
       };
     }
+
+    this.suppressWatchPathsForStep([record.sourcePath, record.destinationPath, record.vaultPayloadPath]);
 
     if (record.type === 'delete') {
       if (record.isSymlink) {

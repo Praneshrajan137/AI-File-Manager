@@ -121,6 +121,13 @@ export class IndexingService implements IIndexingService {
             const extraction = await this.contentExtractor.extract(filePath);
 
             if (!extraction.success && !extraction.content) {
+                const isPermanentExclusion =
+                    Boolean(extraction.metadata?.securityBlocked) ||
+                    (typeof extraction.error === 'string' &&
+                        (extraction.error.startsWith('File too large') || extraction.error.includes('ENOENT')));
+                if (isPermanentExclusion) {
+                    await this.vectorStore.deleteFile(filePath).catch(() => 0);
+                }
                 return {
                     filePath,
                     chunksCreated: 0,
@@ -165,6 +172,7 @@ export class IndexingService implements IIndexingService {
             const chunks = this.structuralChunker.chunk(content, filePath);
 
             if (chunks.length === 0) {
+                await this.vectorStore.deleteFile(filePath).catch(() => 0);
                 return {
                     filePath,
                     chunksCreated: 0,

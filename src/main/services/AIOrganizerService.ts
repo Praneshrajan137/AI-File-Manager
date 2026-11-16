@@ -16,6 +16,7 @@ import { FileSystemLogger } from '@shared/logging';
 import { BatchOperationStep, OperationJournal } from './OperationJournal';
 import { PathValidator } from './PathValidator';
 import { buildBatchMarkdownLinkRepairSteps } from './MarkdownLinkRepair';
+import { getReactiveWorkspaceKernel, hasActiveReactiveWorkspaceKernel } from './ReactiveWorkspaceKernel';
 import { formatUntrustedWorkspaceData } from '../../llm/services/ContextManager';
 import { LocalLLMProvider, LocalModelTransport } from '../../llm/services/LocalModelTransport';
 
@@ -78,6 +79,12 @@ export interface AIOrganizerServiceDeps {
   model?: string;
   fetchFn?: typeof fetch;
   findImpactForPaths?: (targetPaths: string[]) => GraphImpactReference[];
+  notifyMutation?: (type: 'create' | 'change' | 'unlink', filePath: string) => void;
+}
+
+function normalizeOrganizerKey(targetPath: string): string {
+  const resolved = path.resolve(targetPath);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
 interface CandidateFileEntry {
@@ -436,7 +443,8 @@ export class AIOrganizerService {
       degradedReason = llmOutcome.degradedReason;
 
       for (const file of fileCandidates) {
-        const llmHint = llmOutcome.suggestions?.get(file.name);
+        const relKey = path.relative(canonicalRoot, file.path).replace(/\\/g, '/');
+        const llmHint = llmOutcome.suggestions?.get(relKey) ?? llmOutcome.suggestions?.get(file.name);
         const semanticHint =
           strategy === 'semantic_cluster' ? await classifySemanticContent(file) : null;
         const fallback =
@@ -467,10 +475,11 @@ export class AIOrganizerService {
           canonicalRoot,
           category,
           safeFileName,
-          reservedDestinations
+          reservedDestinations,
+          file.path
         );
 
-        if (destinationPath === file.path) {
+        if (normalizeOrganizerKey(destinationPath) === normalizeOrganizerKey(file.path)) {
           continue;
         }
 
@@ -569,7 +578,8 @@ export class AIOrganizerService {
       }
 
       const canonicalSource = srcLocalCheck.canonicalPath;
-      if (seenSources.has(canonicalSource.toLowerCase())) {
+      const sourceKey = normalizeOrganizerKey(canonicalSource);
+      if (seenSources.has(sourceKey)) {
         throw ErrorFactory.createValidationError(
           'INVALID_INPUT',
           'operations',
@@ -577,7 +587,7 @@ export class AIOrganizerService {
           `Duplicate source path in batch: ${path.basename(canonicalSource)}`
         );
       }
-      seenSources.add(canonicalSource.toLowerCase());
+      seenSources.add(sourceKey);
 
       let sourceLstat: Awaited<ReturnType<typeof fs.lstat>>;
       try {
@@ -616,7 +626,7 @@ export class AIOrganizerService {
       }
 
       const canonicalDest = dstLocalCheck.canonicalPath;
-      const destKey = canonicalDest.toLowerCase();
+      const destKey = normalizeOrganizerKey(canonicalDest);
       if (seenDestinations.has(destKey) || (await pathExistsOnDisk(canonicalDest))) {
         throw new FileSystemError(
           'ALREADY_EXISTS',
@@ -627,11 +637,11 @@ export class AIOrganizerService {
       seenDestinations.add(destKey);
 
       let ancestorDir = path.dirname(canonicalDest);
-      const rootLower = canonicalRoot.toLowerCase();
-      const rootPrefix = rootLower.endsWith(path.sep) ? rootLower : `${rootLower}${path.sep}`;
+      const rootKey = normalizeOrganizerKey(canonicalRoot);
+      const rootPrefix = rootKey.endsWith(path.sep) ? rootKey : `${rootKey}${path.sep}`;
       while (
-        ancestorDir.toLowerCase() !== rootLower &&
-        ancestorDir.toLowerCase().startsWith(rootPrefix) &&
+        normalizeOrganizerKey(ancestorDir) !== rootKey &&
+        normalizeOrganizerKey(ancestorDir).startsWith(rootPrefix) &&
         !(await pathExistsOnDisk(ancestorDir))
       ) {
         neededDirs.add(ancestorDir);
@@ -649,11 +659,10 @@ export class AIOrganizerService {
 
     const sortedDirs = Array.from(neededDirs).sort((a, b) => a.length - b.length);
     const linkRepairSteps: Array<Extract<BatchOperationStep, { type: 'edit_links' }>> = [];
-    if (input.repairMarkdownLinks && this.deps.findImpactForPaths) {
-      const impactedRefs = this.deps.findImpactForPaths(verifiedSteps.map((s) => s.source));
-      if (impactedRefs.length > 0) {
-        // Keep link rewrites scoped strictly within canonical approved roots
-        const scopedRefs: Array<{ sourcePath: string; targetPath: string; isMarkdownLink: boolean }> = [];
+    if (input.repairMarkdownLinks) {
+      const scopedRefs: Array<{ sourcePath: string; targetPath: string; isMarkdownLink: boolean }> = [];
+      if (this.deps.findImpactForPaths) {
+        const impactedRefs = this.deps.findImpactForPaths(verifiedSteps.map((s) => s.source));
         for (const ref of impactedRefs) {
           if (!ref.isMarkdownLink) continue;
           const srcCheck = await this.deps.validator.validateCanonical(ref.sourcePath);
@@ -665,12 +674,12 @@ export class AIOrganizerService {
             });
           }
         }
-        const plannedRepairs = await buildBatchMarkdownLinkRepairSteps(
-          verifiedSteps.map((s) => ({ source: s.source, destination: s.destination })),
-          scopedRefs
-        );
-        linkRepairSteps.push(...plannedRepairs);
       }
+      const plannedRepairs = await buildBatchMarkdownLinkRepairSteps(
+        verifiedSteps.map((s) => ({ source: s.source, destination: s.destination })),
+        scopedRefs
+      );
+      linkRepairSteps.push(...plannedRepairs);
     }
 
     const batchSteps: BatchOperationStep[] = [
@@ -690,6 +699,25 @@ export class AIOrganizerService {
       batchSteps
     );
 
+    const emitMutation =
+      this.deps.notifyMutation ??
+      (hasActiveReactiveWorkspaceKernel()
+        ? (type: 'create' | 'change' | 'unlink', filePath: string): void =>
+            getReactiveWorkspaceKernel().notifyMutation(type, filePath)
+        : undefined);
+    if (emitMutation) {
+      for (const dir of sortedDirs) {
+        emitMutation('create', dir);
+      }
+      for (const step of verifiedSteps) {
+        emitMutation('unlink', step.source);
+        emitMutation('create', step.destination);
+      }
+      for (const repair of linkRepairSteps) {
+        emitMutation('change', repair.filePath);
+      }
+    }
+
     return {
       success: true,
       planId: input.planId,
@@ -704,24 +732,27 @@ export class AIOrganizerService {
     canonicalRoot: string,
     category: string,
     fileName: string,
-    reserved: Set<string>
+    reserved: Set<string>,
+    selfSourcePath?: string
   ): Promise<string> {
     const folder = path.join(canonicalRoot, category);
     const ext = path.extname(fileName);
     const stem = ext ? fileName.slice(0, -ext.length) : fileName;
+    const selfKey = selfSourcePath ? normalizeOrganizerKey(selfSourcePath) : null;
 
     for (let attempt = 0; attempt < 1000; attempt++) {
       const candidateName = attempt === 0 ? fileName : `${stem}_${attempt}${ext}`;
       const candidatePath = path.join(folder, candidateName);
-      const key = candidatePath.toLowerCase();
-      if (!reserved.has(key) && !(await pathExistsOnDisk(candidatePath))) {
+      const key = normalizeOrganizerKey(candidatePath);
+      const isSelf = selfKey !== null && key === selfKey;
+      if (!reserved.has(key) && (isSelf || !(await pathExistsOnDisk(candidatePath)))) {
         reserved.add(key);
         return candidatePath;
       }
     }
 
     const unique = path.join(folder, `${stem}_${crypto.randomUUID().slice(0, 6)}${ext}`);
-    reserved.add(unique.toLowerCase());
+    reserved.add(normalizeOrganizerKey(unique));
     return unique;
   }
 
@@ -760,17 +791,26 @@ export class AIOrganizerService {
       for (let offset = 0; offset < queued.length; offset += ORGANIZER_LLM_BATCH_SIZE) {
         const batch = queued.slice(offset, offset + ORGANIZER_LLM_BATCH_SIZE);
         const batchNumber = batchCount + 1;
-        const validNames = new Set(batch.map((f) => f.name));
+        const relByFile = new Map<CandidateFileEntry, string>();
+        const relKeys = new Set<string>();
+        const basenameCounts = new Map<string, number>();
+        for (const f of batch) {
+          const rel = path.relative(canonicalRoot, f.path).replace(/\\/g, '/');
+          relByFile.set(f, rel);
+          relKeys.add(rel);
+          basenameCounts.set(f.name, (basenameCounts.get(f.name) ?? 0) + 1);
+        }
 
         const lines = await Promise.all(
           batch.map(async (f) => {
+            const rel = relByFile.get(f) ?? f.name;
             const rawSnippet = await readFileSnippetSample(f.path, f.ext, f.size);
             const redacted = rawSnippet
               ? redactSensitiveText(rawSnippet).sanitizedText.replace(/\s+/g, ' ').trim().slice(0, 120)
               : '';
             return redacted
-              ? `${f.name} (${f.ext || 'none'}, ${f.size}B) :: ${redacted}`
-              : `${f.name} (${f.ext || 'none'}, ${f.size}B)`;
+              ? `${rel} (${f.ext || 'none'}, ${f.size}B) :: ${redacted}`
+              : `${rel} (${f.ext || 'none'}, ${f.size}B)`;
           })
         );
 
@@ -820,15 +860,23 @@ export class AIOrganizerService {
           batchCount += 1;
           if (Array.isArray(parsed.items)) {
             for (const item of parsed.items) {
-              const name = typeof item.file === 'string' ? item.file.trim() : '';
-              if (!name || !validNames.has(name)) {
+              const name = typeof item.file === 'string' ? item.file.trim().replace(/\\/g, '/') : '';
+              if (!name) {
                 continue;
               }
+              const isRelMatch = relKeys.has(name);
+              const isUniqueBaseMatch = !isRelMatch && (basenameCounts.get(name) ?? 0) === 1;
+              if (!isRelMatch && !isUniqueBaseMatch) {
+                continue;
+              }
+              const targetKey = isRelMatch
+                ? name
+                : relByFile.get(batch.find((f) => f.name === name)!) ?? name;
               const parsedConf =
                 typeof item.confidence === 'number' && Number.isFinite(item.confidence)
                   ? Math.max(0, Math.min(1, item.confidence))
                   : undefined;
-              map.set(name, {
+              map.set(targetKey, {
                 category: item.category,
                 newName: item.newName,
                 reason: item.reason,

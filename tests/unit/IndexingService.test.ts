@@ -206,4 +206,33 @@ describe('IndexingService', () => {
             expect(mockDeleteFile).toHaveBeenCalledWith('/test/file.txt');
         });
     });
+
+    describe('Stage C zombie chunk purge', () => {
+        it('purges previously indexed chunks when a file becomes empty/whitespace or SecretGuard-blocked', async () => {
+            mockDeleteFile.mockClear();
+            mockExtract.mockResolvedValue({
+                success: true,
+                content: '   \n\t  ',
+                contentType: 'full',
+                fileType: 'txt',
+            });
+
+            const emptyRes = await indexer.indexFile('/test/emptied.txt');
+            expect(emptyRes.success).toBe(false);
+            expect(mockDeleteFile).toHaveBeenCalledWith('/test/emptied.txt');
+
+            mockDeleteFile.mockClear();
+            mockExtract.mockResolvedValue({
+                success: false,
+                content: null,
+                contentType: 'metadata',
+                fileType: 'json',
+                error: 'File too large (99MB)',
+            });
+
+            const largeRes = await indexer.indexFile('/test/oversized.json');
+            expect(largeRes.success).toBe(false);
+            expect(mockDeleteFile).toHaveBeenCalledWith('/test/oversized.json');
+        });
+    });
 });

@@ -27,6 +27,85 @@ function toPosixRelative(fromDir: string, targetFile: string): string {
   return rawRel;
 }
 
+function maskMarkdownCodeRegions(content: string): { masked: string; restore: (text: string) => string } {
+  const saved: string[] = [];
+  const stash = (segment: string): string => {
+    const token = `\uE000MD_CODE_${saved.length}\uE001`;
+    saved.push(segment);
+    return token;
+  };
+
+  let masked = content.replace(/(^|\n)[ \t]*(```+|~~~+)[^\n]*\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, (m) => stash(m));
+  masked = masked.replace(/(`+)([^`\n]+?)\1/g, (m) => stash(m));
+
+  return {
+    masked,
+    restore: (text: string): string =>
+      text.replace(/\uE000MD_CODE_(\d+)\uE001/g, (m, idxStr: string) => saved[Number(idxStr)] ?? m),
+  };
+}
+
+function rewriteWikilinksInMasked(
+  maskedContent: string,
+  oldTargetPath: string,
+  newTargetPath: string
+): string {
+  const oldExt = path.extname(oldTargetPath);
+  const oldStem = path.basename(oldTargetPath, oldExt);
+  const oldBase = path.basename(oldTargetPath);
+  const newExt = path.extname(newTargetPath);
+  const newStem = path.basename(newTargetPath, newExt);
+
+  if (oldStem.toLowerCase() === newStem.toLowerCase()) {
+    return maskedContent;
+  }
+
+  const wikiPattern = new RegExp(
+    `(\\[\\[)(?:${escapeRegExp(oldBase)}|${escapeRegExp(oldStem)})((?:[|#][^\\]]*)?\\]\\])`,
+    'gi'
+  );
+  return maskedContent.replace(wikiPattern, `$1${newStem}$2`);
+}
+
+function rewriteMovedSourceOutgoingLinksInMasked(
+  finalSourcePath: string,
+  maskedContent: string,
+  originalSourceFilePath: string,
+  moveMap: Map<string, { source: string; destination: string }>
+): string {
+  const origSourceDir = path.dirname(originalSourceFilePath);
+  const finalSourceDir = path.dirname(finalSourcePath);
+  const dirChanged = normalizeCmp(origSourceDir) !== normalizeCmp(finalSourceDir);
+
+  return maskedContent.replace(
+    /(\[[^\]]*\]\()([^)\s]+)(\))/g,
+    (full: string, open: string, href: string, close: string) => {
+      if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('#') || href.startsWith('/')) {
+        return full;
+      }
+      const hashIdx = href.indexOf('#');
+      const pathPart = hashIdx >= 0 ? href.slice(0, hashIdx) : href;
+      const anchor = hashIdx >= 0 ? href.slice(hashIdx) : '';
+      if (!pathPart) {
+        return full;
+      }
+
+      const resolvedRaw = path.resolve(origSourceDir, pathPart);
+      const movedTarget =
+        moveMap.get(normalizeCmp(resolvedRaw)) ?? moveMap.get(normalizeCmp(`${resolvedRaw}.md`));
+      if (movedTarget) {
+        return `${open}${toPosixRelative(finalSourceDir, movedTarget.destination)}${anchor}${close}`;
+      }
+
+      if (!dirChanged) {
+        return full;
+      }
+
+      return `${open}${toPosixRelative(finalSourceDir, resolvedRaw)}${anchor}${close}`;
+    }
+  );
+}
+
 /**
  * Rewrite Markdown links in `sourceContent` pointing from `oldTargetPath` to `newTargetPath`.
  * Optional `originalSourceFilePath` resolves pre-move relative hrefs when the source file itself moves.
@@ -41,19 +120,13 @@ export function rewriteMarkdownLinksInContent(
   const newSourceDir = path.dirname(sourceFilePath);
   const resolveSourceDir = path.dirname(originalSourceFilePath);
   const oldKey = normalizeCmp(oldTargetPath);
-  const oldExt = path.extname(oldTargetPath);
-  const oldStem = path.basename(oldTargetPath, oldExt);
-  const oldBase = path.basename(oldTargetPath);
+  const { masked, restore } = maskMarkdownCodeRegions(sourceContent);
 
-  const newExt = path.extname(newTargetPath);
-  const newStem = path.basename(newTargetPath, newExt);
-  let updated = sourceContent;
-
-  // 1. Rewrite standard relative markdown links `[label](./old.md#sec)`
-  updated = updated.replace(
+  // 1. Rewrite standard relative markdown links `[label](./old.md#sec)` outside code regions
+  let updated = masked.replace(
     /(\[[^\]]*\]\()([^)\s]+)(\))/g,
     (full: string, open: string, href: string, close: string) => {
-      if (/^[a-z]+:\/\//i.test(href) || href.startsWith('#')) {
+      if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('#') || href.startsWith('/')) {
         return full;
       }
       const hashIdx = href.indexOf('#');
@@ -75,15 +148,9 @@ export function rewriteMarkdownLinksInContent(
   );
 
   // 2. Rewrite `[[wikilinks]]` only if document basename changed (moves across dirs keep [[stem]] intact)
-  if (oldStem.toLowerCase() !== newStem.toLowerCase()) {
-    const wikiPattern = new RegExp(
-      `(\\[\\[)(?:${escapeRegExp(oldBase)}|${escapeRegExp(oldStem)})((?:[|#][^\\]]*)?\\]\\])`,
-      'gi'
-    );
-    updated = updated.replace(wikiPattern, `$1${newStem}$2`);
-  }
+  updated = rewriteWikilinksInMasked(updated, oldTargetPath, newTargetPath);
 
-  return updated;
+  return restore(updated);
 }
 
 /**
@@ -159,6 +226,19 @@ export async function buildBatchMarkdownLinkRepairSteps(
     refsBySource.set(canonicalSource, list);
   }
 
+  // Also include any moved Markdown file whose directory changed so its outgoing relative links stay valid
+  for (const moved of movedFiles) {
+    const ext = path.extname(moved.source).toLowerCase();
+    if (ext !== '.md' && ext !== '.markdown') continue;
+    if (normalizeCmp(path.dirname(moved.source)) === normalizeCmp(path.dirname(moved.destination))) {
+      continue;
+    }
+    const canonicalSource = path.resolve(moved.source);
+    if (!refsBySource.has(canonicalSource)) {
+      refsBySource.set(canonicalSource, []);
+    }
+  }
+
   const steps: Array<Extract<BatchOperationStep, { type: 'edit_links' }>> = [];
   for (const [origSourcePath, targets] of refsBySource.entries()) {
     const movedSource = moveMap.get(normalizeCmp(origSourcePath));
@@ -167,14 +247,28 @@ export async function buildBatchMarkdownLinkRepairSteps(
     try {
       const prev = await fs.readFile(origSourcePath, 'utf-8');
       let next = prev;
-      for (const pair of targets) {
-        next = rewriteMarkdownLinksInContent(
+      if (movedSource) {
+        const { masked, restore } = maskMarkdownCodeRegions(prev);
+        let updated = rewriteMovedSourceOutgoingLinksInMasked(
           finalSourcePath,
-          next,
-          pair.oldTarget,
-          pair.newTarget,
-          origSourcePath
+          masked,
+          origSourcePath,
+          moveMap
         );
+        for (const pair of targets) {
+          updated = rewriteWikilinksInMasked(updated, pair.oldTarget, pair.newTarget);
+        }
+        next = restore(updated);
+      } else {
+        for (const pair of targets) {
+          next = rewriteMarkdownLinksInContent(
+            finalSourcePath,
+            next,
+            pair.oldTarget,
+            pair.newTarget,
+            origSourcePath
+          );
+        }
       }
       if (next !== prev) {
         steps.push({

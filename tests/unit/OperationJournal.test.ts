@@ -288,4 +288,30 @@ describe('OperationJournal (Recoverable Safety Kernel)', () => {
       moveSpy.mockRestore();
     }
   });
+
+  it('invokes onSuppressWatchPaths on single move, copy, delete, undo, and redo', async () => {
+    const suppressed: string[][] = [];
+    const watchedJournal = new OperationJournal({
+      vaultDir,
+      maxHistory: 10,
+      maxVaultBytes: 1024 * 1024,
+      validator,
+      fileSystemService: fsService,
+      onSuppressWatchPaths: (paths) => suppressed.push(paths),
+    });
+
+    const a = path.join(workspaceRoot, 'single-a.txt');
+    const b = path.join(workspaceRoot, 'single-b.txt');
+    const c = path.join(workspaceRoot, 'single-c.txt');
+    await fs.writeFile(a, 'payload', 'utf-8');
+
+    await watchedJournal.copy(a, b);
+    await watchedJournal.move(b, c);
+    await watchedJournal.undo();
+    await watchedJournal.redo();
+    await watchedJournal.delete(c, false, 'vault');
+
+    expect(suppressed.length).toBeGreaterThanOrEqual(5);
+    expect(suppressed.flat()).toEqual(expect.arrayContaining([a, b, c]));
+  });
 });

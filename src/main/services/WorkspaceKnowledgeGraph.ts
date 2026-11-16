@@ -259,9 +259,13 @@ export class WorkspaceKnowledgeGraph {
       const sourceDir = path.dirname(sourcePath);
       const baseCandidate = path.resolve(sourceDir, trimmed);
       const candidateExts = ['', '.md', '.markdown', '.ts', '.tsx', '.js', '.jsx', '.py', '.json'];
+      const lookupSql =
+        process.platform === 'win32'
+          ? 'SELECT path FROM files WHERE LOWER(path) = LOWER(?) LIMIT 1'
+          : 'SELECT path FROM files WHERE path = ? LIMIT 1';
       for (const ext of candidateExts) {
         const candidate = ext ? `${baseCandidate}${ext}` : baseCandidate;
-        const row = db.prepare('SELECT path FROM files WHERE LOWER(path) = LOWER(?) LIMIT 1').get(candidate) as
+        const row = db.prepare(lookupSql).get(candidate) as
           | { path: string }
           | undefined;
         if (row) {
@@ -271,7 +275,7 @@ export class WorkspaceKnowledgeGraph {
       // Also check index file inside directory import (`./utils` -> `./utils/index.ts`)
       for (const indexFile of ['index.ts', 'index.tsx', 'index.js', 'index.md']) {
         const candidate = path.join(baseCandidate, indexFile);
-        const row = db.prepare('SELECT path FROM files WHERE LOWER(path) = LOWER(?) LIMIT 1').get(candidate) as
+        const row = db.prepare(lookupSql).get(candidate) as
           | { path: string }
           | undefined;
         if (row) {
@@ -501,26 +505,32 @@ export class WorkspaceKnowledgeGraph {
     const conditions: string[] = [];
     const params: Array<string | number> = [];
 
+    const isWindows = process.platform === 'win32';
     if (scopeFilter.folderPath && scopeFilter.folderPath.trim().length > 0) {
       const resolvedFolder = path.resolve(scopeFilter.folderPath).replace(/[\\/]+$/, '');
-      const folderLower = resolvedFolder.toLowerCase();
-      const prefixWithSlash = `${folderLower}/`;
-      const prefixWithBackslash = `${folderLower}\\`;
+      const folderKey = isWindows ? resolvedFolder.toLowerCase() : resolvedFolder;
+      const prefixWithSlash = `${folderKey}/`;
+      const prefixWithBackslash = `${folderKey}\\`;
+      const lhsExpr = isWindows ? `LOWER(${pathExpr})` : pathExpr;
       conditions.push(
-        `(LOWER(${pathExpr}) = ? OR INSTR(LOWER(${pathExpr}), ?) = 1 OR INSTR(LOWER(${pathExpr}), ?) = 1)`
+        `(${lhsExpr} = ? OR INSTR(${lhsExpr}, ?) = 1 OR INSTR(${lhsExpr}, ?) = 1)`
       );
-      params.push(folderLower, prefixWithSlash, prefixWithBackslash);
+      params.push(folderKey, prefixWithSlash, prefixWithBackslash);
     }
 
     if (Array.isArray(scopeFilter.filePaths) && scopeFilter.filePaths.length > 0) {
       const cleanedPaths = scopeFilter.filePaths
-        .map((p) => path.resolve(p).toLowerCase())
+        .map((p) => {
+          const resolved = path.resolve(p);
+          return isWindows ? resolved.toLowerCase() : resolved;
+        })
         .filter(Boolean);
       if (cleanedPaths.length === 0) {
         return { clause: ' AND 1 = 0', params: [] };
       }
       const placeholders = cleanedPaths.map(() => '?').join(', ');
-      conditions.push(`LOWER(${pathExpr}) IN (${placeholders})`);
+      const lhsExpr = isWindows ? `LOWER(${pathExpr})` : pathExpr;
+      conditions.push(`${lhsExpr} IN (${placeholders})`);
       params.push(...cleanedPaths);
     }
 
@@ -558,6 +568,10 @@ export class WorkspaceKnowledgeGraph {
   getChunksForFile(filePath: string, limit: number = 8): KnowledgeGraphChunkRecord[] {
     const db = this.getDb();
     const resolved = path.resolve(filePath);
+    const whereSql =
+      process.platform === 'win32'
+        ? 'WHERE LOWER(file_path) = LOWER(?) OR file_path = ?'
+        : 'WHERE file_path = ? OR file_path = ?';
     const rows = db.prepare(`
       SELECT
         id,
@@ -571,7 +585,7 @@ export class WorkspaceKnowledgeGraph {
         chunk_text,
         indexed_at
       FROM chunks
-      WHERE LOWER(file_path) = LOWER(?) OR file_path = ?
+      ${whereSql}
       ORDER BY chunk_index ASC
       LIMIT ?
     `).all(resolved, filePath, limit) as Array<{
@@ -1310,11 +1324,17 @@ export class WorkspaceKnowledgeGraph {
 
     const groups = new Map<string, WorkspaceCollectionGroup>();
     for (const file of scopedFiles) {
-      const rel = normalizedPrefix
-        ? path.relative(path.resolve(rootPrefix!), path.resolve(file.path))
-        : path.basename(path.dirname(file.path));
-      const segments = rel.split(/[\\/]+/).filter(Boolean);
-      const topFolder = segments.length > 1 ? segments[0] : 'Workspace Root';
+      let topFolder = 'Workspace Root';
+      if (normalizedPrefix) {
+        const rel = path.relative(path.resolve(rootPrefix!), path.resolve(file.path));
+        const segments = rel.split(/[\\/]+/).filter(Boolean);
+        topFolder = segments.length > 1 ? segments[0] : 'Workspace Root';
+      } else {
+        const parentBase = path.basename(path.dirname(file.path));
+        if (parentBase && parentBase !== '.' && parentBase !== '/' && !parentBase.endsWith(':')) {
+          topFolder = parentBase;
+        }
+      }
       const domainCategory = this.classifyCollectionLabel(topFolder, file.fileType);
       const groupId = `${domainCategory.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
 
@@ -1370,12 +1390,17 @@ export class WorkspaceKnowledgeGraph {
     const { byKey } = this.buildCanonicalEdgeAdjacency(db);
     const canonical = byKey.get(this.normalizeLookupPath(filePath)) ?? path.resolve(filePath);
 
+    const symWhere =
+      process.platform === 'win32' ? 'LOWER(file_path) = LOWER(?)' : 'file_path = ?';
+    const linksWhere =
+      process.platform === 'win32' ? 'LOWER(source_path) = LOWER(?)' : 'source_path = ?';
+
     const symRows = db
-      .prepare('SELECT symbol_name, kind, line_number FROM symbols WHERE LOWER(file_path) = LOWER(?) ORDER BY line_number ASC LIMIT 60')
+      .prepare(`SELECT symbol_name, kind, line_number FROM symbols WHERE ${symWhere} ORDER BY line_number ASC LIMIT 60`)
       .all(canonical) as Array<{ symbol_name: string; kind: string; line_number: number }>;
 
     const outRows = db
-      .prepare('SELECT target_ref, target_path, kind, line_number FROM links WHERE LOWER(source_path) = LOWER(?) ORDER BY line_number ASC LIMIT 60')
+      .prepare(`SELECT target_ref, target_path, kind, line_number FROM links WHERE ${linksWhere} ORDER BY line_number ASC LIMIT 60`)
       .all(canonical) as Array<{ target_ref: string; target_path: string | null; kind: string; line_number: number }>;
 
     const backlinks = this.findBacklinks(canonical, 50).map((b) => ({

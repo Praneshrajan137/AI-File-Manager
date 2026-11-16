@@ -104,6 +104,7 @@ export class VectorStore implements IVectorStore {
     private pendingRecords: LanceRecord[] = [];
     private filesPendingReplace = new Set<string>();
     private opChain: Promise<void> = Promise.resolve();
+    private flushCount = 0;
     private readonly BATCH_WRITE_SIZE = 50;
 
     constructor(options: VectorStoreOptions = {}) {
@@ -515,8 +516,22 @@ export class VectorStore implements IVectorStore {
 
             // Yield after write to prevent blocking
             await new Promise(resolve => setImmediate(resolve));
+
+            this.flushCount += 1;
+            const tableWithOptimize = this.table as unknown as { optimize?: () => Promise<unknown> };
+            if (
+                typeof tableWithOptimize.optimize === 'function' &&
+                (this.flushCount % 10 === 0 || recordsToAdd.length >= 25)
+            ) {
+                await tableWithOptimize.optimize().catch(() => undefined);
+            }
         } catch (error: unknown) {
             const msg = error instanceof Error ? error.message : String(error);
+            LLMLogger.warn('LanceDB flush failed; SQLite outbox stays pending for recovery', {
+                filesToDelete: filesToDelete.length,
+                recordsToAdd: recordsToAdd.length,
+                error: msg,
+            });
             throw new Error(`Failed to flush pending records: ${msg}`);
         }
     }
@@ -750,19 +765,30 @@ export class VectorStore implements IVectorStore {
 
             const beforePendingCount = this.pendingRecords.length;
             const deleteKey = normalizeVectorPathKey(filePath);
+            const pathVariants = new Set<string>([filePath]);
+            for (const rec of this.pendingRecords) {
+                if (normalizeVectorPathKey(rec.file_path) === deleteKey) {
+                    pathVariants.add(rec.file_path);
+                }
+            }
             this.pendingRecords = this.pendingRecords.filter(
                 (rec) => normalizeVectorPathKey(rec.file_path) !== deleteKey
             );
             const removedPending = beforePendingCount - this.pendingRecords.length;
             for (const queued of Array.from(this.filesPendingReplace)) {
                 if (normalizeVectorPathKey(queued) === deleteKey) {
+                    pathVariants.add(queued);
                     this.filesPendingReplace.delete(queued);
                 }
             }
             this.knowledgeGraph?.removeFile(filePath);
 
             try {
-                const filterExpr = `file_path = '${this.escapeSql(filePath)}'`;
+                const variantList = Array.from(pathVariants);
+                const filterExpr =
+                    variantList.length === 1
+                        ? `file_path = '${this.escapeSql(variantList[0])}'`
+                        : `file_path IN (${variantList.map((p) => `'${this.escapeSql(p)}'`).join(', ')})`;
                 const persistedCount = await this.table!.countRows(filterExpr);
 
                 if (persistedCount > 0) {

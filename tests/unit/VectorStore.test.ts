@@ -351,5 +351,39 @@ describe('VectorStore', () => {
             expect(hits.some((h) => h.file_path === targetPath)).toBe(true);
             expect(hits.every((h) => h.file_path.startsWith(scopedFolder))).toBe(true);
         }, 60000);
+
+        it('invokes periodic optimize on large flushes and deletes queued chunks case-aware', async () => {
+            const internalTable = (store as unknown as {
+                table: { optimize?: () => Promise<unknown> };
+            }).table;
+            const optSpy =
+                typeof internalTable.optimize === 'function'
+                    ? jest.spyOn(internalTable, 'optimize').mockResolvedValue(undefined)
+                    : null;
+
+            const batchChunks: TextChunk[] = Array.from({ length: 26 }, (_, i) => ({
+                text: `bulk chunk ${i}`,
+                startChar: i * 15,
+                endChar: (i + 1) * 15,
+                chunkIndex: i,
+            }));
+            const batchEmbs: Embedding[] = batchChunks.map(() => new Array(384).fill(0.11));
+
+            await store.addChunks(batchChunks, batchEmbs, '/test/bulk-opt.md');
+            await store.flushPendingRecords();
+            if (optSpy) {
+                expect(optSpy).toHaveBeenCalled();
+                optSpy.mockRestore();
+            }
+
+            // Delete pending chunks before flush cleanly clears queue
+            await store.addChunks(
+                [{ text: 'queued only', startChar: 0, endChar: 11, chunkIndex: 0 }],
+                [new Array(384).fill(0.22)],
+                path.join('/test', 'PendingDelete.txt')
+            );
+            const removed = await store.deleteFile(path.join('/test', 'PendingDelete.txt'));
+            expect(removed).toBeGreaterThanOrEqual(1);
+        });
     });
 });

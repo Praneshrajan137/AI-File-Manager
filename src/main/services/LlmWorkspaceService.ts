@@ -449,6 +449,26 @@ async function ensureServicesInitialized(): Promise<void> {
       retrievalService = new RetrievalService(localVectorStore, localEmbeddingModel, contextManager);
       await localVectorStore.getStats();
 
+      if (!process.env.JEST_WORKER_ID) {
+        const idxRef = indexingService;
+        void replayPendingVectorOutbox({
+          vectorStore: storeRef,
+          indexingService: idxRef,
+          validatePath: async (p) => {
+            try {
+              await validateCanonicalPathOrThrow(p);
+              return true;
+            } catch {
+              return false;
+            }
+          },
+        }).catch((outboxErr: unknown) => {
+          LLMLogger.warn('Failed to replay pending vector outbox entries', {
+            error: outboxErr instanceof Error ? outboxErr.message : String(outboxErr),
+          });
+        });
+      }
+
       if (preInitMutationQueue.size > 0) {
         void drainPreInitKernelMutations().catch((drainErr: unknown) => {
           LLMLogger.warn('Failed to drain pre-init kernel mutations', {
@@ -1304,6 +1324,51 @@ async function drainPreInitKernelMutations(): Promise<void> {
   }
 }
 
+export async function replayPendingVectorOutbox(deps: {
+  vectorStore: Pick<VectorStore, 'getKnowledgeGraph' | 'deleteFile' | 'flushPendingRecords'>;
+  indexingService: Pick<IndexingService, 'indexFile'>;
+  validatePath: (filePath: string) => Promise<boolean>;
+  maxFiles?: number;
+}): Promise<{ replayed: number; purged: number }> {
+  const pendingPaths = deps.vectorStore.getKnowledgeGraph()?.getFilesWithPendingSync(deps.maxFiles ?? 200) ?? [];
+  if (pendingPaths.length === 0) {
+    return { replayed: 0, purged: 0 };
+  }
+
+  let replayed = 0;
+  let purged = 0;
+  for (const pendingPath of pendingPaths) {
+    if (isSensitiveSecretFile(pendingPath).blocked || !(await deps.validatePath(pendingPath))) {
+      await deps.vectorStore.deleteFile(pendingPath).catch(() => 0);
+      purged += 1;
+      continue;
+    }
+    try {
+      const stat = await fs.stat(pendingPath);
+      if (!stat.isFile() || stat.size === 0 || stat.size > MAX_INDEXABLE_FILE_SIZE) {
+        await deps.vectorStore.deleteFile(pendingPath).catch(() => 0);
+        purged += 1;
+        continue;
+      }
+    } catch {
+      await deps.vectorStore.deleteFile(pendingPath).catch(() => 0);
+      purged += 1;
+      continue;
+    }
+
+    const res = await deps.indexingService.indexFile(pendingPath, false, { forceReindex: true });
+    if (res.success) {
+      replayed += 1;
+    }
+  }
+
+  if (replayed > 0) {
+    await deps.vectorStore.flushPendingRecords().catch(() => undefined);
+  }
+
+  return { replayed, purged };
+}
+
 export async function handleKernelIndexMutation(
   eventType: 'create' | 'change' | 'unlink',
   filePath: string
@@ -1352,8 +1417,15 @@ export async function handleKernelIndexMutation(
       return;
     }
 
-    const stat = await fs.stat(canonicalPath);
+    let stat: Awaited<ReturnType<typeof fs.stat>>;
+    try {
+      stat = await fs.stat(canonicalPath);
+    } catch {
+      await indexingService.removeFile(canonicalPath).catch(() => undefined);
+      return;
+    }
     if (!stat.isFile() || stat.size === 0 || stat.size > MAX_INDEXABLE_FILE_SIZE) {
+      await indexingService.removeFile(canonicalPath).catch(() => undefined);
       return;
     }
 
