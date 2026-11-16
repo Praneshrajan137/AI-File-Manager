@@ -352,12 +352,12 @@ export class FileWatcher extends EventEmitter {
      * @returns Function that returns true for ignored paths
      */
     private defaultIgnorePatterns(watchRoot?: string): (filePath: string) => boolean {
-        const normalizedRoot = watchRoot
-            ? path.normalize(watchRoot).toLowerCase().replace(/[\\/]+$/, '')
-            : null;
+        const toSlashLower = (p: string): string =>
+            path.normalize(p).replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+        const normalizedRoot = watchRoot ? (toSlashLower(watchRoot) || '/') : null;
 
         return (filePath: string): boolean => {
-            const normalizedPath = path.normalize(filePath).toLowerCase().replace(/[\\/]+$/, '');
+            const normalizedPath = toSlashLower(filePath) || '/';
 
             // Never ignore the watched directory itself
             if (normalizedRoot && normalizedPath === normalizedRoot) {
@@ -365,13 +365,17 @@ export class FileWatcher extends EventEmitter {
             }
 
             // Keep leading separator when stripping watchRoot so windowsSystemSubpaths
-            // match both immediate children and nested subtrees cleanly.
+            // match both immediate children and nested subtrees cleanly across OSes.
             let targetForDirChecks = normalizedPath;
-            if (normalizedRoot && normalizedPath.startsWith(normalizedRoot + path.sep)) {
+            if (
+                normalizedRoot &&
+                normalizedRoot !== '/' &&
+                normalizedPath.startsWith(`${normalizedRoot}/`)
+            ) {
                 targetForDirChecks = normalizedPath.slice(normalizedRoot.length);
             }
 
-            const basename = path.basename(normalizedPath);
+            const basename = path.posix.basename(normalizedPath);
             if (isSensitiveSecretFile(normalizedPath).blocked) {
                 return true;
             }
@@ -381,43 +385,43 @@ export class FileWatcher extends EventEmitter {
 
             // Windows-specific noisy/EPERM subtrees (avoids blocking AppData\Local\Temp when watched)
             const windowsRootSubpaths = [
-                `${path.sep}programdata`,
-                `${path.sep}msocache`,
-                `${path.sep}recovery`,
-                `${path.sep}config.msi`,
+                '/programdata',
+                '/msocache',
+                '/recovery',
+                '/config.msi',
             ];
             for (const folder of windowsRootSubpaths) {
                 if (
                     normalizedRoot
-                        ? targetForDirChecks === folder || targetForDirChecks.startsWith(`${folder}${path.sep}`)
-                        : targetForDirChecks.includes(`${folder}${path.sep}`) || targetForDirChecks.endsWith(folder)
+                        ? targetForDirChecks === folder || targetForDirChecks.startsWith(`${folder}/`)
+                        : targetForDirChecks.includes(`${folder}/`) || targetForDirChecks.endsWith(folder)
                 ) {
                     return true;
                 }
             }
 
             const windowsSystemSubpaths = [
-                `${path.sep}appdata${path.sep}local${path.sep}microsoft`,
-                `${path.sep}appdata${path.sep}local${path.sep}packages`,
-                `${path.sep}appdata${path.sep}local${path.sep}google`,
-                `${path.sep}appdata${path.sep}roaming${path.sep}microsoft`,
-                `${path.sep}application data`,
-                `${path.sep}local settings`,
-                `${path.sep}temporary internet files`,
-                `${path.sep}system volume information`,
-                `${path.sep}$recycle.bin`,
+                '/appdata/local/microsoft',
+                '/appdata/local/packages',
+                '/appdata/local/google',
+                '/appdata/roaming/microsoft',
+                '/application data',
+                '/local settings',
+                '/temporary internet files',
+                '/system volume information',
+                '/$recycle.bin',
             ];
 
             for (const folder of windowsSystemSubpaths) {
                 if (
-                    targetForDirChecks.includes(`${folder}${path.sep}`) ||
+                    targetForDirChecks.includes(`${folder}/`) ||
                     targetForDirChecks.endsWith(folder)
                 ) {
                     return true;
                 }
             }
 
-            const segments = targetForDirChecks.split(/[\\/]+/).filter(Boolean);
+            const segments = targetForDirChecks.split('/').filter(Boolean);
             const ignoredDirs = new Set([
                 ...DEFAULT_EXCLUDED_DIRS.map((entry) => entry.toLowerCase()),
                 'vectordb',
@@ -429,7 +433,7 @@ export class FileWatcher extends EventEmitter {
             }
 
             // Ignore temporary/lock/database artifact extensions (allow user .log & cache dirs)
-            const ext = path.extname(normalizedPath).toLowerCase();
+            const ext = path.posix.extname(normalizedPath).toLowerCase();
             const ignoredExtensions = ['.tmp', '.swp', '.ldb'];
             if (ignoredExtensions.includes(ext)) {
                 return true;

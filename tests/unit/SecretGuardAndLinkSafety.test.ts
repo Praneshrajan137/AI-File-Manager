@@ -416,4 +416,71 @@ describe('Stage 1: SecretGuard, Multi-Page PDF, Copy & Link-Safe Journal', () =>
       expect(batchSteps[0].nextContent).toContain('[Ext](https://example.com)');
     });
   });
+
+  describe('SecretGuard edge-case & streaming redactor branch coverage', () => {
+    it('handles empty inputs, template exceptions, partial PEM slices, and streaming boundary tokens', () => {
+      expect(isSensitiveSecretFile('')).toEqual({ blocked: false });
+      expect(isSensitiveSecretFile('.env.example')).toEqual({ blocked: false });
+      expect(isSensitiveSecretFile('/home/u/id_ed25519.pub')).toEqual({ blocked: false });
+      expect(isSensitiveSecretFile('/home/u/.kube/config').blocked).toBe(true);
+
+      expect(redactSensitiveText('')).toEqual({ sanitizedText: '', redactionsCount: 0 });
+      expect(redactFileRangeLines([])).toEqual({ lines: [], redactionsCount: 0 });
+
+      // Partial range containing only END PRIVATE KEY or only BEGIN PRIVATE KEY
+      const tailOnly = redactFileRangeLines([
+        { lineNumber: 10, text: 'MIIEvAIBADANBgkqhkiG9w0BAQE=' },
+        { lineNumber: 11, text: '-----END RSA PRIVATE KEY-----' },
+        { lineNumber: 12, text: 'public note' },
+      ]);
+      expect(tailOnly.lines[0].text).toBe('[REDACTED_PRIVATE_KEY_LINE]');
+      expect(tailOnly.lines[1].text).toBe('[REDACTED_PRIVATE_KEY]');
+      expect(tailOnly.lines[2].text).toBe('public note');
+
+      const headOnly = redactFileRangeLines([
+        { lineNumber: 1, text: '-----BEGIN OPENSSH PRIVATE KEY-----' },
+        { lineNumber: 2, text: 'b3BlbnNzaC1rZXktdjEAAAAA' },
+      ]);
+      expect(headOnly.lines[0].text).toBe('[REDACTED_PRIVATE_KEY]');
+      expect(headOnly.lines[1].text).toBe('[REDACTED_PRIVATE_KEY_LINE]');
+
+      // 1. Streaming redactor emits safe prefix before unclosed BEGIN PRIVATE KEY, holds PEM block,
+      // and redacts atomically once END PRIVATE KEY completes
+      const pemRedactor = createStreamingSecretRedactor();
+      expect(pemRedactor.push('')).toBe('');
+      expect(pemRedactor.flush()).toBe('');
+      const longPrefix = `${'word '.repeat(35)}\n-----BEGIN PRIVATE KEY-----\nMIIE`;
+      const prefixOut = pemRedactor.push(longPrefix);
+      expect(prefixOut).toContain('word ');
+      expect(prefixOut).not.toContain('BEGIN PRIVATE KEY');
+      expect(pemRedactor.push('A'.repeat(160))).toBe('');
+      const endOut = pemRedactor.push('\n-----END PRIVATE KEY-----\ntrailer');
+      expect(endOut).toContain('[REDACTED_PRIVATE_KEY]');
+      expect(endOut).not.toContain('AAAA');
+      expect(pemRedactor.flush()).toBe('\ntrailer');
+
+      // 2. Short unclosed BEGIN block is held and redacted cleanly once END arrives before flush
+      const shortPemRedactor = createStreamingSecretRedactor();
+      expect(
+        shortPemRedactor.push(`lead\n-----BEGIN PRIVATE KEY-----\n${'A'.repeat(160)}`)
+      ).toBe('');
+      const shortEndOut = shortPemRedactor.push('\n-----END PRIVATE KEY-----');
+      expect(shortEndOut).toContain('[REDACTED_PRIVATE_KEY]');
+      expect(shortPemRedactor.flush()).toBe('');
+
+      // 3. Bearer / Basic boundary pull-back prevents leaking half of header before secret token
+      const bearerRedactor = createStreamingSecretRedactor();
+      const firstBearerChunk = `Intro text here Bearer ${'tok1234567890'.repeat(12)}`;
+      const emittedBeforeFlush = bearerRedactor.push(firstBearerChunk);
+      const flushedTail = bearerRedactor.flush();
+      const combined = emittedBeforeFlush + flushedTail;
+      expect(combined).toContain('[REDACTED_BEARER_TOKEN]');
+      expect(combined).not.toContain('tok1234567890');
+
+      // 4. Single contiguous non-whitespace token > TAIL_HOLD_CHARS returns '' until whitespace/flush
+      const solidRedactor = createStreamingSecretRedactor();
+      expect(solidRedactor.push('ghp_' + 'Z'.repeat(160))).toBe('');
+      expect(solidRedactor.flush()).toBe('[REDACTED_GITHUB_TOKEN]');
+    });
+  });
 });

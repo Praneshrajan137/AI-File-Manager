@@ -221,9 +221,6 @@ export function isSensitiveSecretFile(filePath: string): SecretGuardFileCheck {
   }
 
   if (SENSITIVE_PREFIXES.some((prefix) => baseLower.startsWith(prefix))) {
-    if (baseLower === '.env.example' || baseLower === '.env.sample' || baseLower === '.env.template') {
-      return { blocked: false };
-    }
     return {
       blocked: true,
       reason: `Sensitive environment or key file blocked by SecretGuard (${baseLower})`,
@@ -358,7 +355,14 @@ export function createStreamingSecretRedactor(): {
       const beginIdx = buffer.search(PRIVATE_KEY_BEGIN_LINE_RE);
       if (beginIdx !== -1) {
         const afterBegin = buffer.slice(beginIdx);
-        if (!PRIVATE_KEY_END_LINE_RE.test(afterBegin) && buffer.length < MAX_PEM_HOLD_CHARS) {
+        const endMatch = afterBegin.match(PRIVATE_KEY_END_LINE_RE);
+        if (endMatch && endMatch.index !== undefined) {
+          const blockEnd = beginIdx + endMatch.index + endMatch[0].length;
+          const readySlice = buffer.slice(0, blockEnd);
+          buffer = buffer.slice(blockEnd);
+          return redactSensitiveText(readySlice).sanitizedText;
+        }
+        if (buffer.length < MAX_PEM_HOLD_CHARS) {
           if (beginIdx > TAIL_HOLD_CHARS) {
             const safePrefix = buffer.slice(0, beginIdx);
             buffer = afterBegin;
