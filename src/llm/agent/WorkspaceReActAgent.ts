@@ -16,7 +16,7 @@ import {
   RetrievalSource,
 } from '@shared/contracts';
 import { formatUntrustedWorkspaceData } from '../services/ContextManager';
-import { isSensitiveSecretFile, redactSensitiveText } from '@shared/security/SecretGuard';
+import { isSensitiveSecretFile, redactFileRangeLines, redactSensitiveText } from '@shared/security/SecretGuard';
 import {
   ChatTokenUsage,
   LocalChatMessage,
@@ -950,9 +950,10 @@ export class WorkspaceReActAgent {
               ? Math.max(startLine, Math.min(startLine + 120, Math.floor(Number(args.endLine))))
               : startLine + 40;
           const result = await this.deps.readFileRange(check.canonicalPath, startLine, endLine);
+          const { lines: sanitizedLines } = redactFileRangeLines(result.lines);
           const citation = `${path.basename(result.path)}#L${result.startLine}-L${result.endLine}`;
-          const textBody = result.lines
-            .map((l) => `${l.lineNumber}: ${redactSensitiveText(l.text).sanitizedText}`)
+          const textBody = sanitizedLines
+            .map((l) => `${l.lineNumber}: ${l.text}`)
             .join('\n');
           recordSource({
             filePath: result.path,

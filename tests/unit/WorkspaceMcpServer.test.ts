@@ -397,4 +397,138 @@ describe('Stage 5 (MCP Server): Read-Only JSON-RPC 2.0 Stdio Server with PathVal
     expect(serialized.message).not.toContain('super_secret_token_999999');
     expect(serialized.message).toContain('[REDACTED_BEARER_TOKEN]');
   });
+
+  it('redacts sliced multi-line PEM keys in read_file_range, enforces root/cluster isolation on graph stats, and opens SQLite lazily', async () => {
+    const keyDocPath = path.join(workspaceRoot, 'src', 'key-doc.md');
+    await fs.writeFile(
+      keyDocPath,
+      [
+        '# Key Example',
+        '-----BEGIN PRIVATE KEY-----',
+        'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQSecretBodyLine1',
+        'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQSecretBodyLine2',
+        '-----END PRIVATE KEY-----',
+        'Trailing public note',
+      ].join('\n'),
+      'utf-8'
+    );
+
+    // Slice containing BEGIN without END
+    const headSliceRes = await server.handleMessage({
+      jsonrpc: '2.0',
+      id: 40,
+      method: 'tools/call',
+      params: { name: 'read_file_range', arguments: { filePath: keyDocPath, startLine: 1, endLine: 3 } },
+    });
+    const headPayload = JSON.parse(
+      (headSliceRes?.result as { content: Array<{ text: string }> }).content[0].text
+    ) as { lines: Array<{ lineNumber: number; text: string }> };
+    expect(headPayload.lines[0].text).toBe('# Key Example');
+    expect(headPayload.lines[1].text).toBe('[REDACTED_PRIVATE_KEY]');
+    expect(headPayload.lines[2].text).toBe('[REDACTED_PRIVATE_KEY_LINE]');
+
+    // Slice containing END without BEGIN
+    const tailSliceRes = await server.handleMessage({
+      jsonrpc: '2.0',
+      id: 41,
+      method: 'tools/call',
+      params: { name: 'read_file_range', arguments: { filePath: keyDocPath, startLine: 4, endLine: 6 } },
+    });
+    const tailPayload = JSON.parse(
+      (tailSliceRes?.result as { content: Array<{ text: string }> }).content[0].text
+    ) as { lines: Array<{ lineNumber: number; text: string }> };
+    expect(tailPayload.lines[0].text).toBe('[REDACTED_PRIVATE_KEY_LINE]');
+    expect(tailPayload.lines[1].text).toBe('[REDACTED_PRIVATE_KEY]');
+    expect(tailPayload.lines[2].text).toBe('Trailing public note');
+
+    // Out-of-root + sensitive + duplicate cluster filtering in graph_lookup stats
+    const outsideDoc = path.join(outsideRoot, 'secret-note.txt');
+    const hiddenEnv = path.join(workspaceRoot, '.env');
+    const dupA = path.join(workspaceRoot, 'src', 'dup-a.txt');
+    const dupB = path.join(workspaceRoot, 'src', 'dup-b.txt');
+    await fs.writeFile(dupA, 'duplicate body content', 'utf-8');
+    await fs.writeFile(dupB, 'duplicate body content', 'utf-8');
+
+    graph.upsertDocument({
+      filePath: outsideDoc,
+      fileType: 'txt',
+      sha256: 'shared-out-in-hash',
+      size: 512,
+      mtimeMs: Date.now(),
+      chunks: [{ id: 'out-1', chunkIndex: 0, text: 'secret outside', startChar: 0, endChar: 14, startLine: 1, endLine: 1 }],
+      symbols: [],
+      links: [],
+    });
+    graph.upsertDocument({
+      filePath: hiddenEnv,
+      fileType: 'env',
+      sha256: 'hash-env-1',
+      size: 128,
+      mtimeMs: Date.now(),
+      chunks: [],
+      symbols: [],
+      links: [],
+    });
+    graph.upsertDocument({
+      filePath: path.join(workspaceRoot, 'singleton-outside-dup.txt'),
+      fileType: 'txt',
+      sha256: 'shared-out-in-hash',
+      size: 512,
+      mtimeMs: Date.now(),
+      chunks: [],
+      symbols: [],
+      links: [],
+    });
+    graph.upsertDocument({
+      filePath: dupA,
+      fileType: 'txt',
+      sha256: 'real-in-root-dup',
+      size: 256,
+      mtimeMs: Date.now(),
+      chunks: [],
+      symbols: [],
+      links: [],
+    });
+    graph.upsertDocument({
+      filePath: dupB,
+      fileType: 'txt',
+      sha256: 'real-in-root-dup',
+      size: 256,
+      mtimeMs: Date.now(),
+      chunks: [],
+      symbols: [],
+      links: [],
+    });
+
+    const statsRes = await server.handleMessage({
+      jsonrpc: '2.0',
+      id: 42,
+      method: 'tools/call',
+      params: { name: 'graph_lookup', arguments: { kind: 'stats' } },
+    });
+    const statsPayload = JSON.parse(
+      (statsRes?.result as { content: Array<{ text: string }> }).content[0].text
+    ) as {
+      totalFiles: number;
+      totalWastedBytes: number;
+      duplicateClusters: Array<{ sha256: string; fileSize: number; files: string[] }>;
+    };
+    // Only auth.ts, README.md, singleton-outside-dup.txt, dup-a.txt, dup-b.txt are in-root & non-secret = 5 files
+    expect(statsPayload.totalFiles).toBe(5);
+    expect(statsPayload.totalWastedBytes).toBe(256);
+    expect(statsPayload.duplicateClusters).toHaveLength(1);
+    expect(statsPayload.duplicateClusters[0].sha256).toBe('real-in-root-dup');
+    expect(statsPayload.duplicateClusters[0].fileSize).toBe(256);
+
+    // Lazy DB initialization check: server constructed with nonexistent graphDbPath must not create DB at construction
+    const lazyDbPath = path.join(sandboxDir, 'lazy-should-not-exist-yet.sqlite');
+    const lazyServer = new WorkspaceMcpServer({
+      allowedRoots: [workspaceRoot],
+      graphDbPath: lazyDbPath,
+      vaultDir: path.join(sandboxDir, 'trash-vault'),
+    });
+    expect(fsSync.existsSync(lazyDbPath)).toBe(false);
+    await lazyServer.close();
+    expect(fsSync.existsSync(lazyDbPath)).toBe(false);
+  });
 });

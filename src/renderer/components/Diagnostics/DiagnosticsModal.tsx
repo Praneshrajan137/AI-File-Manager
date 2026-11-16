@@ -18,7 +18,7 @@ export function buildMcpSnippetJson(allowedRoots: string[]): string {
       mcpServers: {
         'privatevault-workspace': {
           command: 'node',
-          args: ['dist/main/mcpServer.js', '--roots', roots.join(',')],
+          args: ['dist/main/mcpServer.js', ...roots.flatMap((root) => ['--root', root])],
         },
       },
     },

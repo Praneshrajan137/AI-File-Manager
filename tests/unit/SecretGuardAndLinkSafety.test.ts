@@ -1,7 +1,11 @@
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import { isSensitiveSecretFile, redactSensitiveText } from '../../src/shared/security/SecretGuard';
+import {
+  isSensitiveSecretFile,
+  redactFileRangeLines,
+  redactSensitiveText,
+} from '../../src/shared/security/SecretGuard';
 import { FileContentExtractor } from '../../src/llm/services/FileContentExtractor';
 import { DirectoryScanner } from '../../src/main/services/DirectoryScanner';
 import { PathValidator } from '../../src/main/services/PathValidator';
@@ -110,6 +114,80 @@ describe('Stage 1: SecretGuard, Multi-Page PDF, Copy & Link-Safe Journal', () =>
       expect(paths).not.toContain('.env');
       expect(paths).toContain('.env.example');
       expect(paths).toContain('config.ts');
+    });
+
+    it('redacts full and partially sliced multi-line PEM/PGP blocks via redactFileRangeLines', () => {
+      const fullBlock = [
+        { lineNumber: 1, text: 'header = "ok"' },
+        { lineNumber: 2, text: '-----BEGIN RSA PRIVATE KEY-----' },
+        { lineNumber: 3, text: 'MIIEowIBAAKCAQEA7secretBase64LineOne' },
+        { lineNumber: 4, text: 'MIIEowIBAAKCAQEA7secretBase64LineTwo' },
+        { lineNumber: 5, text: '-----END RSA PRIVATE KEY-----' },
+        { lineNumber: 6, text: 'footer = "done"' },
+      ];
+      const fullRes = redactFileRangeLines(fullBlock);
+      expect(fullRes.redactionsCount).toBeGreaterThanOrEqual(1);
+      expect(fullRes.lines[0].text).toBe('header = "ok"');
+      expect(fullRes.lines[1].text).toBe('[REDACTED_PRIVATE_KEY]');
+      expect(fullRes.lines[2].text).toBe('[REDACTED_PRIVATE_KEY_LINE]');
+      expect(fullRes.lines[3].text).toBe('[REDACTED_PRIVATE_KEY_LINE]');
+      expect(fullRes.lines[4].text).toMatch(/^\[REDACTED_PRIVATE_KEY(_LINE)?\]$/);
+      expect(fullRes.lines[5].text).toBe('footer = "done"');
+
+      // Sliced range starting mid-block (only END marker visible)
+      const tailSlice = redactFileRangeLines([
+        { lineNumber: 10, text: 'secretMiddleBase64PayloadNoHeader' },
+        { lineNumber: 11, text: '-----END PRIVATE KEY-----' },
+        { lineNumber: 12, text: 'normal_after_key = 42' },
+      ]);
+      expect(tailSlice.lines[0].text).toBe('[REDACTED_PRIVATE_KEY_LINE]');
+      expect(tailSlice.lines[1].text).toBe('[REDACTED_PRIVATE_KEY]');
+      expect(tailSlice.lines[2].text).toBe('normal_after_key = 42');
+
+      // Sliced range ending mid-block (only BEGIN marker visible)
+      const headSlice = redactFileRangeLines([
+        { lineNumber: 1, text: 'normal_before = 1' },
+        { lineNumber: 2, text: '-----BEGIN PGP PRIVATE KEY BLOCK-----' },
+        { lineNumber: 3, text: 'lQOYBGFakePgpSecretLineWithoutEndMarker' },
+      ]);
+      expect(headSlice.lines[0].text).toBe('normal_before = 1');
+      expect(headSlice.lines[1].text).toBe('[REDACTED_PRIVATE_KEY]');
+      expect(headSlice.lines[2].text).toBe('[REDACTED_PRIVATE_KEY_LINE]');
+    });
+
+    it('redacts expanded token patterns and detects sensitive cloud/k8s/infra credential files', () => {
+      const sample = [
+        'auth: Basic dXNlcjpzZWNyZXRwYXNzd29yZA==',
+        'jwt: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
+        'db: postgres://admin:TopSecretPass99@db.example.com:5432/prod',
+        'cache: redis://:RedisPass12345@redis.local:6379/0',
+        '{"apiKey": "mySuperSecretJsonApiKey987654", "clientSecret": "clientSecVal123456"}',
+        'gitlab: glpat-abcdefghij1234567890',
+        'stripe_wh: whsec_1234567890abcdef123456',
+        'npm_tok: npm_1234567890abcdefghij1234567890',
+        'pypi_tok: pypi-AgEIcHlwaS5vcmcCJD1234567890abcdef',
+      ].join('\n');
+
+      const redacted = redactSensitiveText(sample);
+      expect(redacted.redactionsCount).toBeGreaterThanOrEqual(9);
+      expect(redacted.sanitizedText).not.toContain('dXNlcjpzZWNyZXRwYXNzd29yZA==');
+      expect(redacted.sanitizedText).not.toContain('TopSecretPass99');
+      expect(redacted.sanitizedText).not.toContain('RedisPass12345');
+      expect(redacted.sanitizedText).not.toContain('mySuperSecretJsonApiKey987654');
+      expect(redacted.sanitizedText).not.toContain('clientSecVal123456');
+      expect(redacted.sanitizedText).not.toContain('glpat-');
+      expect(redacted.sanitizedText).not.toContain('whsec_');
+      expect(redacted.sanitizedText).not.toContain('npm_123456');
+      expect(redacted.sanitizedText).not.toContain('pypi-AgE');
+      expect(redacted.sanitizedText).not.toContain('dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U');
+
+      expect(isSensitiveSecretFile('repo/.kube/config').blocked).toBe(true);
+      expect(isSensitiveSecretFile('repo/.docker/config.json').blocked).toBe(true);
+      expect(isSensitiveSecretFile('infra/terraform.tfstate').blocked).toBe(true);
+      expect(isSensitiveSecretFile('repo/.git/credentials').blocked).toBe(true);
+      expect(isSensitiveSecretFile('keys/serviceAccountKey.json').blocked).toBe(true);
+      expect(isSensitiveSecretFile('certs/server.pem').blocked).toBe(true);
+      expect(isSensitiveSecretFile('src/config.example.json').blocked).toBe(false);
     });
 
     it('streams PDF pages beyond page 100 using partial page batches up to maxCharacters', async () => {

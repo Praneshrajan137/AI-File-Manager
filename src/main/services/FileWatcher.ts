@@ -4,6 +4,8 @@ import * as path from 'path';
 import { EventQueue } from '@main/dsa/EventQueue';
 import { FileEvent, EventPriority } from '@shared/contracts';
 import { FileSystemLogger } from '@shared/logging';
+import { DEFAULT_EXCLUDED_DIRS } from '@shared/config';
+import { isSensitiveSecretFile } from '@shared/security/SecretGuard';
 
 /**
  * Options for file watching.
@@ -163,16 +165,20 @@ export class FileWatcher extends EventEmitter {
 
             // Store handlers for cleanup (Bug Fix #9)
             this.eventHandlers.set('add', addHandler as WatcherListener);
+            this.eventHandlers.set('addDir', addHandler as WatcherListener);
             this.eventHandlers.set('change', changeHandler as WatcherListener);
             this.eventHandlers.set('unlink', unlinkHandler as WatcherListener);
+            this.eventHandlers.set('unlinkDir', unlinkHandler as WatcherListener);
             this.eventHandlers.set('error', errorHandler as WatcherListener);
             this.eventHandlers.set('ready', readyHandler as WatcherListener);
 
             // Register event handlers
             watcher
                 .on('add', addHandler)
+                .on('addDir', addHandler)
                 .on('change', changeHandler)
                 .on('unlink', unlinkHandler)
+                .on('unlinkDir', unlinkHandler)
                 .on('error', errorHandler)
                 .on('ready', readyHandler);
         });
@@ -358,19 +364,38 @@ export class FileWatcher extends EventEmitter {
                 return false;
             }
 
-            // Inspect segments strictly relative to watchRoot when inside watchRoot
-            // so OS temp roots (e.g. AppData\Local\Temp, /tmp) are watchable when explicitly opened.
+            // Keep leading separator when stripping watchRoot so windowsSystemSubpaths
+            // match both immediate children and nested subtrees cleanly.
             let targetForDirChecks = normalizedPath;
             if (normalizedRoot && normalizedPath.startsWith(normalizedRoot + path.sep)) {
-                targetForDirChecks = normalizedPath.slice(normalizedRoot.length + 1);
+                targetForDirChecks = normalizedPath.slice(normalizedRoot.length);
             }
 
             const basename = path.basename(normalizedPath);
+            if (isSensitiveSecretFile(normalizedPath).blocked) {
+                return true;
+            }
             if (basename.startsWith('.') && basename !== '.' && basename !== '..') {
                 return true;
             }
 
             // Windows-specific noisy/EPERM subtrees (avoids blocking AppData\Local\Temp when watched)
+            const windowsRootSubpaths = [
+                `${path.sep}programdata`,
+                `${path.sep}msocache`,
+                `${path.sep}recovery`,
+                `${path.sep}config.msi`,
+            ];
+            for (const folder of windowsRootSubpaths) {
+                if (
+                    normalizedRoot
+                        ? targetForDirChecks === folder || targetForDirChecks.startsWith(`${folder}${path.sep}`)
+                        : targetForDirChecks.includes(`${folder}${path.sep}`) || targetForDirChecks.endsWith(folder)
+                ) {
+                    return true;
+                }
+            }
+
             const windowsSystemSubpaths = [
                 `${path.sep}appdata${path.sep}local${path.sep}microsoft`,
                 `${path.sep}appdata${path.sep}local${path.sep}packages`,
@@ -381,10 +406,6 @@ export class FileWatcher extends EventEmitter {
                 `${path.sep}temporary internet files`,
                 `${path.sep}system volume information`,
                 `${path.sep}$recycle.bin`,
-                `${path.sep}programdata`,
-                `${path.sep}msocache`,
-                `${path.sep}recovery`,
-                `${path.sep}config.msi`,
             ];
 
             for (const folder of windowsSystemSubpaths) {
@@ -398,13 +419,7 @@ export class FileWatcher extends EventEmitter {
 
             const segments = targetForDirChecks.split(/[\\/]+/).filter(Boolean);
             const ignoredDirs = new Set([
-                'node_modules',
-                '.git',
-                '.vscode',
-                '.idea',
-                '.cursor',
-                '__pycache__',
-                '.file-manager',
+                ...DEFAULT_EXCLUDED_DIRS.map((entry) => entry.toLowerCase()),
                 'vectordb',
                 '.lancedb',
             ]);

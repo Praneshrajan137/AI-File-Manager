@@ -16,7 +16,7 @@ import {
 } from '../../shared/contracts';
 import { ExtractedLink, ExtractedSymbol, StructuralChunk } from '../../llm/services/StructuralChunker';
 import { MAX_PERSISTED_TRACE_RECORDS } from '../../llm/orchestration/TraceLedger';
-import { redactSensitiveText } from '../../shared/security/SecretGuard';
+import { isSensitiveSecretFile, redactSensitiveText } from '../../shared/security/SecretGuard';
 
 export interface KnowledgeGraphChunkRecord {
   id: string;
@@ -876,41 +876,115 @@ export class WorkspaceKnowledgeGraph {
     return refs;
   }
 
-  getInsights(): KnowledgeGraphInsights {
+  private isWithinAllowedRoots(filePath: string, allowedRoots?: readonly string[]): boolean {
+    if (!allowedRoots || allowedRoots.length === 0) {
+      return true;
+    }
+    const target = this.normalizeLookupPath(filePath);
+    return allowedRoots.some((root) => {
+      const normalizedRoot = this.normalizeLookupPath(root);
+      const prefix = normalizedRoot.endsWith(path.sep) ? normalizedRoot : `${normalizedRoot}${path.sep}`;
+      return target === normalizedRoot || target.startsWith(prefix);
+    });
+  }
+
+  getInsights(allowedRoots?: readonly string[]): KnowledgeGraphInsights {
     const db = this.getDb();
-    const stats = this.getStats();
-    const duplicateClusters = this.getDuplicateClusters();
+    const allFiles = db
+      .prepare(
+        'SELECT path, sha256, size, file_type, chunk_count, token_estimate, indexed_at FROM files ORDER BY indexed_at DESC'
+      )
+      .all() as Array<{
+      path: string;
+      sha256: string;
+      size: number;
+      file_type: string;
+      chunk_count: number;
+      token_estimate: number;
+      indexed_at: number;
+    }>;
+
+    const visibleFiles = allFiles.filter(
+      (f) => !isSensitiveSecretFile(f.path).blocked && this.isWithinAllowedRoots(f.path, allowedRoots)
+    );
+
+    const hasRootScope = Array.isArray(allowedRoots) && allowedRoots.length > 0;
+    const stats = hasRootScope
+      ? {
+          totalFiles: visibleFiles.length,
+          totalChunks: visibleFiles.reduce((sum, f) => sum + Number(f.chunk_count ?? 0), 0),
+          totalTokens: visibleFiles.reduce((sum, f) => sum + Number(f.token_estimate ?? 0), 0),
+          lastIndexed: visibleFiles.reduce(
+            (maxTs, f) => Math.max(maxTs, Number(f.indexed_at ?? 0)),
+            0
+          ),
+        }
+      : this.getStats();
+
+    const byHash = new Map<string, { fileSize: number; files: string[] }>();
+    for (const file of visibleFiles) {
+      if (Number(file.size ?? 0) <= 0 || !file.sha256) continue;
+      const existing = byHash.get(file.sha256);
+      if (existing) {
+        existing.files.push(file.path);
+        existing.fileSize = Math.max(existing.fileSize, Number(file.size));
+      } else {
+        byHash.set(file.sha256, { fileSize: Number(file.size), files: [file.path] });
+      }
+    }
+    const duplicateClusters: DuplicateCluster[] = Array.from(byHash.entries())
+      .filter(([, group]) => group.files.length >= 2)
+      .map(([sha256, group]) => ({
+        sha256,
+        files: [...group.files].sort(),
+        fileSize: group.fileSize,
+        wastedBytes: group.fileSize * (group.files.length - 1),
+      }))
+      .sort((a, b) => b.wastedBytes - a.wastedBytes)
+      .slice(0, 100);
     const totalWastedBytes = duplicateClusters.reduce((s, c) => s + c.wastedBytes, 0);
 
-    const hubRows = db.prepare(`
-      SELECT target_ref, COUNT(*) AS backlink_count
-      FROM links
-      GROUP BY target_ref
-      ORDER BY backlink_count DESC
-      LIMIT 10
-    `).all() as Array<{ target_ref: string; backlink_count: number }>;
+    const visiblePathSet = new Set(visibleFiles.map((f) => this.normalizeLookupPath(f.path)));
+    const allLinkRows = db
+      .prepare('SELECT source_path, target_ref FROM links')
+      .all() as Array<{ source_path: string; target_ref: string }>;
+    const hubCounts = new Map<string, number>();
+    for (const row of allLinkRows) {
+      if (!visiblePathSet.has(this.normalizeLookupPath(row.source_path))) {
+        continue;
+      }
+      const ref = row.target_ref;
+      if (!ref || isSensitiveSecretFile(ref).blocked || ref.includes('..') || ref.includes('\0')) {
+        continue;
+      }
+      if (
+        hasRootScope &&
+        (path.isAbsolute(ref) || /^[A-Za-z]:[\\/]/.test(ref)) &&
+        !this.isWithinAllowedRoots(ref, allowedRoots)
+      ) {
+        continue;
+      }
+      hubCounts.set(ref, (hubCounts.get(ref) ?? 0) + 1);
+    }
 
-    const recentRows = db.prepare(`
-      SELECT path, file_type, chunk_count, indexed_at
-      FROM files
-      ORDER BY indexed_at DESC
-      LIMIT 10
-    `).all() as Array<{ path: string; file_type: string; chunk_count: number; indexed_at: number }>;
+    const topHubs = Array.from(hubCounts.entries())
+      .map(([targetRef, backlinkCount]) => ({ targetRef, backlinkCount }))
+      .sort((a, b) => b.backlinkCount - a.backlinkCount || a.targetRef.localeCompare(b.targetRef))
+      .slice(0, 10);
+
+    const recentFiles = visibleFiles.slice(0, 10).map((r) => ({
+      path: r.path,
+      fileType: r.file_type,
+      chunkCount: Number(r.chunk_count),
+      indexedAt: Number(r.indexed_at),
+    }));
 
     return {
       ...stats,
       duplicateClusters,
       totalWastedBytes,
-      topHubs: hubRows.map((h) => ({
-        targetRef: h.target_ref,
-        backlinkCount: Number(h.backlink_count),
-      })),
-      recentFiles: recentRows.map((r) => ({
-        path: r.path,
-        fileType: r.file_type,
-        chunkCount: Number(r.chunk_count),
-        indexedAt: Number(r.indexed_at),
-      })),
+      topHubs,
+      recentFiles,
     };
   }
 

@@ -552,4 +552,47 @@ describe('FileWatcher', () => {
             expect(chokidar.watch).toHaveBeenCalled();
         });
     });
+
+    describe('Stage B watcher hygiene & directory events', () => {
+        it('ignores non-dot sensitive secret files, default excluded dirs, and top-level ProgramData inside watched root', async () => {
+            const startPromise = watcher.start('C:\\');
+            const readyHandler = mockChokidarWatcher.on.mock.calls.find(
+                (call: any) => call[0] === 'ready'
+            )?.[1];
+            if (readyHandler) readyHandler();
+            await startPromise;
+
+            const watchOptions = (chokidar.watch as jest.Mock).mock.calls[0][1];
+            const ignoreFunc = watchOptions.ignored as (p: string) => boolean;
+
+            expect(ignoreFunc('C:\\vault\\credentials.json')).toBe(true);
+            expect(ignoreFunc('C:\\vault\\server.pem')).toBe(true);
+            expect(ignoreFunc('C:\\repo\\node_modules\\pkg\\index.js')).toBe(true);
+            expect(ignoreFunc('C:\\ProgramData\\Microsoft\\cache.bin')).toBe(true);
+            expect(ignoreFunc('C:\\Users\\alice\\ProgramData\\notes.txt')).toBe(false);
+        });
+
+        it('registers and enqueues addDir and unlinkDir directory events', async () => {
+            const startPromise = watcher.start('/home/user/documents');
+            const readyHandler = mockChokidarWatcher.on.mock.calls.find(
+                (call: any) => call[0] === 'ready'
+            )?.[1];
+            if (readyHandler) readyHandler();
+            await startPromise;
+
+            const addDirHandler = mockChokidarWatcher.on.mock.calls.find(
+                (call: any) => call[0] === 'addDir'
+            )?.[1];
+            const unlinkDirHandler = mockChokidarWatcher.on.mock.calls.find(
+                (call: any) => call[0] === 'unlinkDir'
+            )?.[1];
+
+            expect(addDirHandler).toEqual(expect.any(Function));
+            expect(unlinkDirHandler).toEqual(expect.any(Function));
+
+            addDirHandler('/home/user/documents/new-folder');
+            unlinkDirHandler('/home/user/documents/old-folder');
+            expect(eventQueue.size()).toBe(2);
+        });
+    });
 });

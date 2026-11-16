@@ -1,5 +1,7 @@
 import { ipcMain, IpcMainInvokeEvent } from 'electron';
-import { validateCanonicalPathOrThrow, withContract } from './securityMiddleware';
+import path from 'path';
+import { getPathValidator, validateCanonicalPathOrThrow, withContract } from './securityMiddleware';
+import { isSensitiveSecretFile } from '@shared/security/SecretGuard';
 import {
   checkWorkspaceGraphImpact,
   getWorkspaceCollectionsData,
@@ -21,7 +23,29 @@ async function handleQueryInsights(
   _event: IpcMainInvokeEvent,
   input: { symbolQuery?: string; backlinkTarget?: string }
 ): Promise<GraphInsightsResponse> {
-  return queryWorkspaceGraphInsights(input);
+  const result = await queryWorkspaceGraphInsights(input);
+  const validator = getPathValidator();
+  if (!result?.stats) {
+    return result;
+  }
+  return {
+    ...result,
+    stats: {
+      ...result.stats,
+      topHubs: result.stats.topHubs.filter((hub) => {
+        if (isSensitiveSecretFile(hub.targetRef).blocked) {
+          return false;
+        }
+        if (hub.targetRef.includes('..') || hub.targetRef.includes('\0')) {
+          return false;
+        }
+        if (path.isAbsolute(hub.targetRef) || /^[A-Za-z]:[\\/]/.test(hub.targetRef)) {
+          return validator.validate(hub.targetRef).valid;
+        }
+        return true;
+      }),
+    },
+  };
 }
 
 async function handleImpactCheck(

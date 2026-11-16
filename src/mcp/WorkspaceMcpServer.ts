@@ -18,9 +18,9 @@ import { FileSystemService } from '../main/services/FileSystemService';
 import { OperationJournal } from '../main/services/OperationJournal';
 import { AIOrganizerService } from '../main/services/AIOrganizerService';
 import { WorkspaceKnowledgeGraph } from '../main/services/WorkspaceKnowledgeGraph';
-import { isSensitiveSecretFile, redactSensitiveText } from '../shared/security/SecretGuard';
+import { isSensitiveSecretFile, redactFileRangeLines, redactSensitiveText } from '../shared/security/SecretGuard';
 import { OrganizeStrategy } from '../shared/contracts';
-import { ConfigManager } from '../shared/config';
+import { ConfigManager, DEFAULT_EXCLUDED_DIRS } from '../shared/config';
 import { Logger } from '../shared/logging';
 
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
@@ -34,13 +34,12 @@ export const MCP_SERVER_INFO = {
   version: '0.2.0',
 } as const;
 
-const SKIPPED_WALK_DIRS = new Set([
-  '.git',
-  'node_modules',
-  '.file-manager',
+const SKIPPED_WALK_DIRS_LOWER = new Set([
+  ...DEFAULT_EXCLUDED_DIRS.map((entry) => entry.toLowerCase()),
   'dist',
   'build',
-  '.next',
+  '.lancedb',
+  'vectordb',
 ]);
 
 export interface JsonRpcRequest {
@@ -285,8 +284,9 @@ export class WorkspaceMcpServer {
   private readonly validator: PathValidator;
   private readonly fsService: FileSystemService;
   private readonly organizer: AIOrganizerService;
-  private readonly graph: WorkspaceKnowledgeGraph | null;
-  private readonly ownsGraph: boolean;
+  private graph: WorkspaceKnowledgeGraph | null;
+  private ownsGraph: boolean;
+  private readonly graphDbPath?: string;
   private readonly allowedRoots: string[];
 
   constructor(options: WorkspaceMcpServerOptions) {
@@ -298,6 +298,7 @@ export class WorkspaceMcpServer {
     }
 
     this.allowedRoots = roots;
+    this.graphDbPath = options.graphDbPath;
     this.validator = new PathValidator(roots);
     this.fsService = new FileSystemService(roots);
 
@@ -321,11 +322,19 @@ export class WorkspaceMcpServer {
     this.organizer = new AIOrganizerService({
       validator: this.validator,
       operationJournal: journal,
-      findImpactForPaths: this.graph
-        ? (paths): ReturnType<WorkspaceKnowledgeGraph['findImpactForPaths']> =>
-            this.graph!.findImpactForPaths(paths)
-        : undefined,
+      findImpactForPaths: (paths): ReturnType<WorkspaceKnowledgeGraph['findImpactForPaths']> => {
+        const g = this.getGraph();
+        return g ? g.findImpactForPaths(paths) : [];
+      },
     });
+  }
+
+  private getGraph(): WorkspaceKnowledgeGraph | null {
+    if (!this.graph && this.graphDbPath && fsSync.existsSync(this.graphDbPath)) {
+      this.graph = new WorkspaceKnowledgeGraph(this.graphDbPath);
+      this.ownsGraph = true;
+    }
+    return this.graph;
   }
 
   async close(): Promise<void> {
@@ -514,7 +523,7 @@ export class WorkspaceMcpServer {
     const entries = await fs.readdir(dirPath, { withFileTypes: true });
     const filtered: Array<{ name: string; path: string; isDirectory: boolean }> = [];
     for (const entry of entries) {
-      if (SKIPPED_WALK_DIRS.has(entry.name)) {
+      if (SKIPPED_WALK_DIRS_LOWER.has(entry.name.toLowerCase())) {
         continue;
       }
       const childPath = path.join(dirPath, entry.name);
@@ -562,10 +571,11 @@ export class WorkspaceMcpServer {
     const normalizeSeenKey = (p: string): string =>
       process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
 
-    if (this.graph) {
+    const graph = this.getGraph();
+    if (graph) {
       for (const root of scanRoots) {
         if (matches.length >= limit) break;
-        const indexedCandidates = this.graph.listIndexedFilePaths(query, root, limit * 2);
+        const indexedCandidates = graph.listIndexedFilePaths(query, root, limit * 2);
         for (const candidate of indexedCandidates) {
           if (matches.length >= limit) break;
           if (isSensitiveSecretFile(candidate).blocked) continue;
@@ -588,33 +598,56 @@ export class WorkspaceMcpServer {
       }
     }
 
+    const visitedDirs = new Set<string>();
     const walk = async (dir: string, depth: number): Promise<void> => {
       if (depth > 6 || matches.length >= limit) {
         return;
       }
+      const canonicalDirCheck = await this.validator.validateCanonical(dir);
+      if (!canonicalDirCheck.valid || !canonicalDirCheck.canonicalPath) {
+        return;
+      }
+      const dirKey = normalizeSeenKey(canonicalDirCheck.canonicalPath);
+      if (visitedDirs.has(dirKey)) {
+        return;
+      }
+      visitedDirs.add(dirKey);
+
       let entries: fsSync.Dirent[];
       try {
-        entries = await fs.readdir(dir, { withFileTypes: true });
+        entries = await fs.readdir(canonicalDirCheck.canonicalPath, { withFileTypes: true });
       } catch {
         return;
       }
 
       for (const entry of entries) {
         if (matches.length >= limit) break;
-        if (SKIPPED_WALK_DIRS.has(entry.name)) continue;
-        const fullPath = path.join(dir, entry.name);
+        if (SKIPPED_WALK_DIRS_LOWER.has(entry.name.toLowerCase())) continue;
+        const fullPath = path.join(canonicalDirCheck.canonicalPath, entry.name);
         if (isSensitiveSecretFile(fullPath).blocked) continue;
-        if (!(await this.validator.validateCanonical(fullPath)).valid) continue;
+        const entryCheck = await this.validator.validateCanonical(fullPath);
+        if (!entryCheck.valid || !entryCheck.canonicalPath) continue;
+        const resolvedEntry = entryCheck.canonicalPath;
+        if (isSensitiveSecretFile(resolvedEntry).blocked) continue;
 
-        if (entry.name.toLowerCase().includes(query) || fullPath.toLowerCase().includes(query)) {
-          const key = normalizeSeenKey(fullPath);
-          if (!seenPaths.has(key)) {
-            seenPaths.add(key);
-            matches.push({ path: fullPath, name: entry.name, isDirectory: entry.isDirectory() });
+        let isDir = entry.isDirectory();
+        if (typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink()) {
+          try {
+            isDir = (await fs.stat(resolvedEntry)).isDirectory();
+          } catch {
+            continue;
           }
         }
-        if (entry.isDirectory() && depth < 6) {
-          await walk(fullPath, depth + 1);
+
+        if (entry.name.toLowerCase().includes(query) || resolvedEntry.toLowerCase().includes(query)) {
+          const key = normalizeSeenKey(resolvedEntry);
+          if (!seenPaths.has(key)) {
+            seenPaths.add(key);
+            matches.push({ path: resolvedEntry, name: entry.name, isDirectory: isDir });
+          }
+        }
+        if (isDir && depth < 6) {
+          await walk(resolvedEntry, depth + 1);
         }
       }
     };
@@ -673,12 +706,9 @@ export class WorkspaceMcpServer {
         : undefined;
 
     const range = await this.fsService.readFileRange(canonicalPath, startLine, endLine);
-    let totalRedactions = 0;
-    const redactedLines = range.lines.map((line) => {
-      const res = redactSensitiveText(line.text);
-      totalRedactions += res.redactionsCount;
-      return { lineNumber: line.lineNumber, text: res.sanitizedText };
-    });
+    const { lines: redactedLines, redactionsCount: totalRedactions } = redactFileRangeLines(
+      range.lines
+    );
 
     return {
       path: range.path,
@@ -697,35 +727,34 @@ export class WorkspaceMcpServer {
     const rootPrefix = asOptionalString(args.rootPrefix);
     const scopedRoot = rootPrefix ? await this.assertValidatedPath(rootPrefix) : undefined;
 
-    if (!this.graph) {
+    const graph = this.getGraph();
+    if (!graph) {
       return { indexed: false, kind, note: 'Knowledge graph SQLite database not present yet.' };
     }
 
     switch (kind) {
       case 'stats': {
-        const insights = this.graph.getInsights();
+        const insights = graph.getInsights(this.allowedRoots);
+        const scopedDuplicateClusters = insights.duplicateClusters
+          .map((c) => {
+            const scopedFiles = c.files.filter((fp) => this.isPathAllowedFast(fp));
+            return {
+              ...c,
+              files: scopedFiles,
+              wastedBytes: scopedFiles.length >= 2 ? c.fileSize * (scopedFiles.length - 1) : 0,
+            };
+          })
+          .filter((c) => c.files.length >= 2);
+        const scopedWastedBytes = scopedDuplicateClusters.reduce((sum, c) => sum + c.wastedBytes, 0);
+
         return {
           totalFiles: insights.totalFiles,
           totalChunks: insights.totalChunks,
           totalTokens: insights.totalTokens,
           lastIndexed: insights.lastIndexed,
-          totalWastedBytes: insights.totalWastedBytes,
-          duplicateClusters: insights.duplicateClusters.map((c) => ({
-            ...c,
-            files: c.files.filter((fp) => this.isPathAllowedFast(fp)),
-          })),
-          topHubs: insights.topHubs.filter((hub) => {
-            if (isSensitiveSecretFile(hub.targetRef).blocked) {
-              return false;
-            }
-            if (hub.targetRef.includes('..') || hub.targetRef.includes('\0')) {
-              return false;
-            }
-            if (path.isAbsolute(hub.targetRef) || /^[A-Za-z]:[\\/]/.test(hub.targetRef)) {
-              return this.isPathAllowedFast(hub.targetRef);
-            }
-            return true;
-          }),
+          totalWastedBytes: scopedWastedBytes,
+          duplicateClusters: scopedDuplicateClusters,
+          topHubs: insights.topHubs,
           recentFiles: insights.recentFiles.filter((f) => this.isPathAllowedFast(f.path)),
         };
       }
@@ -733,7 +762,7 @@ export class WorkspaceMcpServer {
         const query = asString(args.query, 'query');
         return {
           query,
-          matches: this.graph
+          matches: graph
             .findBySymbol(query, 30)
             .filter((m) => this.isPathAllowedFast(m.filePath)),
         };
@@ -742,13 +771,13 @@ export class WorkspaceMcpServer {
         const query = asString(args.query, 'query');
         return {
           query,
-          backlinks: this.graph
+          backlinks: graph
             .findBacklinks(query, 50)
             .filter((b) => this.isPathAllowedFast(b.sourcePath)),
         };
       }
       case 'collections': {
-        const groups = this.graph.getSemanticCollections(scopedRoot);
+        const groups = graph.getSemanticCollections(scopedRoot);
         return {
           collections: groups
             .map((g) => ({
@@ -759,7 +788,7 @@ export class WorkspaceMcpServer {
         };
       }
       case 'map': {
-        const map = this.graph.getWorkspaceGraphMap(scopedRoot, 100);
+        const map = graph.getWorkspaceGraphMap(scopedRoot, 100);
         const safeNodes = map.nodes.filter((n) => this.isPathAllowedFast(n.path));
         const safeSet = new Set(safeNodes.map((n) => n.path));
         return {

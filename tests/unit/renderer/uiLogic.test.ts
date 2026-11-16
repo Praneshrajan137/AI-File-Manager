@@ -309,6 +309,29 @@ describe('Renderer UI & M5 Control Upgrades', () => {
       expect(modalHtml).toContain('data-testid="diagnostics-mcp-section"');
       expect(modalHtml).toContain('dist/main/mcpServer.js');
       expect(modalHtml).toContain('data-testid="copy-mcp-config-button"');
+
+      const commaModalHtml = renderToStaticMarkup(
+        React.createElement(DiagnosticsModal, {
+          isOpen: true,
+          onClose: () => undefined,
+          initialSnapshot: {
+            capturedAt: Date.now(),
+            uptimeMs: 1200,
+            allowedRoots: ['C:\\vault,team', 'D:\\notes'],
+            watcher: { status: 'watching', watchedPath: 'C:\\vault,team', eventsReceived: 0, lastEventAt: null, lastError: null },
+            eventQueue: { pending: 0, processed: 0, coalesced: 0, dropped: 0, lastFlushAt: null, lastFlushDurationMs: 0 },
+            pathTrie: { entryCount: 0, indexedRoots: ['C:\\vault,team'], lastIndexDurationMs: 0 },
+            cache: { entries: 0, capacity: 100, currentBytes: 0, maxBytes: 1024, hits: 0, misses: 0, hitRate: 0, invalidations: 0 },
+            preview: { capacityPerFile: 50, previewsServed: 0, cacheHits: 0 },
+            vectorStore: { initialized: false, totalChunks: 0, indexedFiles: 0, lexicalDocs: 0, pendingBuffer: 0, activeExecutionProvider: 'cpu', supportedDevices: ['cpu'] },
+            llm: { queriesExecuted: 0, successfulQueries: 0, failedQueries: 0, avgRetrievalMs: 0, avgGenerationMs: 0, lastError: null, activeProvider: 'ollama', activeModel: 'qwen2.5' },
+            ipc: { registeredChannels: 1, totalCalls: 0, totalErrors: 0, channels: [] },
+          },
+        })
+      ).replace(/&quot;/g, '"');
+      expect(commaModalHtml).toContain('"--root"');
+      expect(commaModalHtml).toContain('"C:\\\\vault,team"');
+      expect(commaModalHtml).not.toContain('"--roots"');
     });
 
     it('renders M7 Stage 1 DeleteConfirmDialog, VaultSection, FavoritesList, Toast Undo action, and Toolbar Undo/Redo', () => {

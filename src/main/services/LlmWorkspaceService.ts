@@ -36,7 +36,7 @@ import {
 } from '@shared/contracts';
 import { IPCResponseMap } from '@shared/ipc/contracts';
 import { LLMLogger } from '@shared/logging';
-import { isSensitiveSecretFile, redactSensitiveText } from '@shared/security/SecretGuard';
+import { isSensitiveSecretFile, redactFileRangeLines } from '@shared/security/SecretGuard';
 import { WorkspaceReActAgent } from '../../llm/agent/WorkspaceReActAgent';
 import { verifyGroundedResponse } from '../../llm/orchestration/GroundingVerifier';
 import {
@@ -52,7 +52,7 @@ import { OfflineSynthesisService } from '../../llm/services/OfflineSynthesisServ
 import { RetrievalService } from '../../llm/services/RetrievalService';
 import { VectorStore } from '../../llm/services/VectorStore';
 import { EmbeddingWorkerPool } from '../../llm/workers/EmbeddingWorkerPool';
-import { validateCanonicalPathOrThrow } from '../handlers/securityMiddleware';
+import { resolveAllowedRoots, validateCanonicalPathOrThrow } from '../handlers/securityMiddleware';
 import { searchWorkspacePaths } from '../handlers/searchHandlers';
 import { ErrorSerializer } from '../middleware/ErrorSerializer';
 import { AIOrganizerService } from './AIOrganizerService';
@@ -212,13 +212,8 @@ async function readSecretGuardedRange(
     throw err;
   }
   const result = await fsService.readFileRange(filePath, startLine, endLine);
-  let redactions = 0;
-  const sanitizedLines = result.lines.map((line) => {
-    const cleaned = redactSensitiveText(line.text);
-    redactions += cleaned.redactionsCount;
-    return cleaned.redactionsCount > 0 ? { ...line, text: cleaned.sanitizedText } : line;
-  });
-  if (redactions > 0) {
+  const { lines: sanitizedLines, redactionsCount } = redactFileRangeLines(result.lines);
+  if (redactionsCount > 0) {
     RuntimeDiagnostics.getInstance().recordSecretGuardBlock();
   }
   return {
@@ -289,15 +284,20 @@ export function queryWorkspaceGraphInsights(input: {
   symbolQuery?: string;
   backlinkTarget?: string;
 }): GraphInsightsResponse {
+  const allowedRoots = resolveAllowedRoots();
   return withKnowledgeGraph((kg) => {
-    const stats = kg.getInsights();
+    const stats = kg.getInsights(allowedRoots);
     const symbolMatches =
       input.symbolQuery && input.symbolQuery.trim().length > 0
-        ? kg.findBySymbol(input.symbolQuery.trim(), 25)
+        ? kg
+            .findBySymbol(input.symbolQuery.trim(), 25)
+            .filter((m) => !isSensitiveSecretFile(m.filePath).blocked)
         : undefined;
     const backlinks =
       input.backlinkTarget && input.backlinkTarget.trim().length > 0
-        ? kg.findBacklinks(input.backlinkTarget.trim(), 50)
+        ? kg
+            .findBacklinks(input.backlinkTarget.trim(), 50)
+            .filter((b) => !isSensitiveSecretFile(b.sourcePath).blocked)
         : undefined;
 
     return {
