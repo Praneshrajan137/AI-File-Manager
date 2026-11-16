@@ -244,6 +244,52 @@ export class WorkspaceKnowledgeGraph {
     return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
   }
 
+  private canonicalizeLookupPath(targetPath: string): string {
+    const resolved = path.resolve(targetPath);
+    const realpathFn =
+      typeof fs.realpathSync?.native === 'function'
+        ? (p: string): string => fs.realpathSync.native(p)
+        : typeof fs.realpathSync === 'function'
+          ? (p: string): string => fs.realpathSync(p)
+          : null;
+
+    let canonical = resolved;
+    if (realpathFn) {
+      let probe = resolved;
+      const tail: string[] = [];
+      for (let i = 0; i < 64; i += 1) {
+        try {
+          const realProbe = realpathFn(probe);
+          canonical = tail.length > 0 ? path.join(realProbe, ...tail.reverse()) : realProbe;
+          break;
+        } catch {
+          const parent = path.dirname(probe);
+          if (parent === probe) {
+            canonical = resolved;
+            break;
+          }
+          tail.push(path.basename(probe));
+          probe = parent;
+        }
+      }
+    }
+
+    return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+  }
+
+  private isPathWithinPrefix(candidatePath: string, prefixPath: string): boolean {
+    const target = this.canonicalizeLookupPath(candidatePath).replace(/[\\/]+$/, '');
+    const prefix = this.canonicalizeLookupPath(prefixPath).replace(/[\\/]+$/, '');
+    if (!prefix) {
+      return target.startsWith('/');
+    }
+    return (
+      target === prefix ||
+      target.startsWith(`${prefix}/`) ||
+      target.startsWith(`${prefix}\\`)
+    );
+  }
+
   private resolveLinkTargetPath(
     db: NodeSqliteDatabase,
     sourcePath: string,
@@ -894,12 +940,7 @@ export class WorkspaceKnowledgeGraph {
     if (!allowedRoots || allowedRoots.length === 0) {
       return true;
     }
-    const target = this.normalizeLookupPath(filePath);
-    return allowedRoots.some((root) => {
-      const normalizedRoot = this.normalizeLookupPath(root);
-      const prefix = normalizedRoot.endsWith(path.sep) ? normalizedRoot : `${normalizedRoot}${path.sep}`;
-      return target === normalizedRoot || target.startsWith(prefix);
-    });
+    return allowedRoots.some((root) => this.isPathWithinPrefix(filePath, root));
   }
 
   getInsights(allowedRoots?: readonly string[]): KnowledgeGraphInsights {
@@ -1232,15 +1273,9 @@ export class WorkspaceKnowledgeGraph {
     const db = this.getDb();
     const { allFiles, edges } = this.buildCanonicalEdgeAdjacency(db);
 
-    const normalizedPrefix = rootPrefix ? this.normalizeLookupPath(rootPrefix).replace(/[\\/]+$/, '') : null;
     const inRoot = (candidate: string): boolean => {
-      if (!normalizedPrefix) return true;
-      const norm = this.normalizeLookupPath(candidate);
-      return (
-        norm === normalizedPrefix ||
-        norm.startsWith(`${normalizedPrefix}/`) ||
-        norm.startsWith(`${normalizedPrefix}\\`)
-      );
+      if (!rootPrefix) return true;
+      return this.isPathWithinPrefix(candidate, rootPrefix);
     };
 
     const scopedFiles = allFiles.filter((f) => inRoot(f.path));
@@ -1293,15 +1328,9 @@ export class WorkspaceKnowledgeGraph {
     const db = this.getDb();
     const { allFiles, edges } = this.buildCanonicalEdgeAdjacency(db);
 
-    const normalizedPrefix = rootPrefix ? this.normalizeLookupPath(rootPrefix).replace(/[\\/]+$/, '') : null;
     const scopedFiles = allFiles.filter((f) => {
-      if (!normalizedPrefix) return true;
-      const norm = this.normalizeLookupPath(f.path);
-      return (
-        norm === normalizedPrefix ||
-        norm.startsWith(`${normalizedPrefix}/`) ||
-        norm.startsWith(`${normalizedPrefix}\\`)
-      );
+      if (!rootPrefix) return true;
+      return this.isPathWithinPrefix(f.path, rootPrefix);
     });
 
     const symbolRows = db
@@ -1325,8 +1354,11 @@ export class WorkspaceKnowledgeGraph {
     const groups = new Map<string, WorkspaceCollectionGroup>();
     for (const file of scopedFiles) {
       let topFolder = 'Workspace Root';
-      if (normalizedPrefix) {
-        const rel = path.relative(path.resolve(rootPrefix!), path.resolve(file.path));
+      if (rootPrefix) {
+        const rel = path.relative(
+          this.canonicalizeLookupPath(rootPrefix),
+          this.canonicalizeLookupPath(file.path)
+        );
         const segments = rel.split(/[\\/]+/).filter(Boolean);
         topFolder = segments.length > 1 ? segments[0] : 'Workspace Root';
       } else {
@@ -1576,17 +1608,11 @@ export class WorkspaceKnowledgeGraph {
       .all() as Array<{ path: string }>;
 
     const qLower = query ? query.trim().toLowerCase() : '';
-    const normRoot = rootPrefix ? this.normalizeLookupPath(rootPrefix) : '';
-    const rootWithSep =
-      normRoot && !normRoot.endsWith(path.sep) ? `${normRoot}${path.sep}` : normRoot;
 
     const results: string[] = [];
     for (const row of rows) {
-      if (normRoot) {
-        const normPath = this.normalizeLookupPath(row.path);
-        if (normPath !== normRoot && !normPath.startsWith(rootWithSep)) {
-          continue;
-        }
+      if (rootPrefix && !this.isPathWithinPrefix(row.path, rootPrefix)) {
+        continue;
       }
       if (qLower && !row.path.toLowerCase().includes(qLower)) {
         continue;

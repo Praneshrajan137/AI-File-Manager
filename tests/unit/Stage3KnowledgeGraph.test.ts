@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import fsSync from 'fs';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -706,6 +707,53 @@ describe('Stage 3 (M9) Knowledge Graph, Chunker, Dual-Lane Pool & Retrieval', ()
         expect(meta.symbols.map((s) => s.name)).toEqual(['realHandler']);
       } finally {
         await fs.rm(tmpRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('canonicalizes alias/short allowedRoots in getInsights, map, collections, and searchFilePaths while blocking outside paths', () => {
+      const kg = new WorkspaceKnowledgeGraph(':memory:');
+      const rootCanonical = path.join(path.parse(os.tmpdir()).root, 'Users', 'runneradmin', 'AppData', 'Local', 'Temp', 'ws');
+      const rootAlias = path.join(path.parse(os.tmpdir()).root, 'Users', 'RUNNER~1', 'AppData', 'Local', 'Temp', 'ws');
+      const indexedInside = path.join(rootCanonical, 'notes.md');
+      const indexedOutside = path.join(path.parse(os.tmpdir()).root, 'Users', 'otheruser', 'secret.md');
+
+      const mapAlias = (target: fsSync.PathLike): string =>
+        String(target).replace(/RUNNER~1/gi, 'runneradmin');
+      const nativeSpy = jest
+        .spyOn(fsSync.realpathSync, 'native')
+        .mockImplementation(mapAlias as typeof fsSync.realpathSync.native);
+      const realpathSpy = jest
+        .spyOn(fsSync, 'realpathSync')
+        .mockImplementation(mapAlias as typeof fsSync.realpathSync);
+
+      try {
+        kg.upsertDocument({
+          filePath: indexedInside,
+          fileType: 'md',
+          chunks: [{ id: 'in-1', chunkIndex: 0, text: 'inside content', startChar: 0, endChar: 14 }],
+        });
+        kg.upsertDocument({
+          filePath: indexedOutside,
+          fileType: 'md',
+          chunks: [{ id: 'out-1', chunkIndex: 0, text: 'outside content', startChar: 0, endChar: 15 }],
+        });
+
+        const insights = kg.getInsights([rootAlias]);
+        expect(insights.totalFiles).toBe(1);
+        expect(insights.recentFiles.map((f) => f.path)).toEqual([indexedInside]);
+
+        const map = kg.getWorkspaceGraphMap(rootAlias, 50);
+        expect(map.nodes.map((n) => n.path)).toEqual([indexedInside]);
+
+        const collections = kg.getSemanticCollections(rootAlias);
+        expect(collections.flatMap((c) => c.files.map((f) => f.path))).toEqual([indexedInside]);
+
+        expect(kg.listIndexedFilePaths('notes', rootAlias)).toEqual([indexedInside]);
+        expect(kg.listIndexedFilePaths('secret', rootAlias)).toEqual([]);
+      } finally {
+        nativeSpy.mockRestore();
+        realpathSpy.mockRestore();
+        kg.close();
       }
     });
   });

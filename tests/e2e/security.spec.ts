@@ -153,7 +153,7 @@ test.describe('Security', () => {
     expect(nodeAPIs.hasElectronAPI).toBe(true);
   });
 
-  test('blocks SHELL:OPEN_PATH on dangerous executable/script extensions and vault-asset:// on .env SecretGuard files', async ({ page }) => {
+  test('blocks SHELL:OPEN_PATH on dangerous executable/script extensions and vault-asset:// on .env SecretGuard files', async ({ electronApp, page }) => {
     await page.waitForLoadState('networkidle');
 
     const exeFile = path.join(testDir, 'payload.exe');
@@ -164,7 +164,7 @@ test.describe('Security', () => {
     await fs.writeFile(envFile, 'OPENAI_API_KEY=sk-proj-secret1234567890123456\n', 'utf-8');
 
     const results = await page.evaluate(
-      async ({ exePath, ps1Path, envPath }) => {
+      async ({ exePath, ps1Path }) => {
         const openAttempt = async (target: string): Promise<{ blocked: boolean; code: string | null }> => {
           try {
             await window.electronAPI.shell.openPath(target);
@@ -180,23 +180,22 @@ test.describe('Security', () => {
 
         const exeRes = await openAttempt(exePath);
         const ps1Res = await openAttempt(ps1Path);
-        const assetResp = await fetch(
-          `vault-asset://local/file?path=${encodeURIComponent(envPath)}`
-        );
-        return {
-          exeRes,
-          ps1Res,
-          vaultStatus: assetResp.status,
-        };
+        return { exeRes, ps1Res };
       },
-      { exePath: exeFile, ps1Path: ps1File, envPath: envFile }
+      { exePath: exeFile, ps1Path: ps1File }
     );
+
+    const envAssetUrl = `vault-asset://local/file?path=${encodeURIComponent(envFile)}`;
+    const vaultStatus = await electronApp.evaluate(async ({ net }, url: string) => {
+      const response = await net.fetch(url);
+      return response.status;
+    }, envAssetUrl);
 
     expect(results.exeRes.blocked).toBe(true);
     expect(results.exeRes.code).toBe('UNAUTHORIZED_ACCESS');
     expect(results.ps1Res.blocked).toBe(true);
     expect(results.ps1Res.code).toBe('UNAUTHORIZED_ACCESS');
-    expect(results.vaultStatus).toBe(403);
+    expect(vaultStatus).toBe(403);
   });
 });
 
