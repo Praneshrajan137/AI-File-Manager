@@ -123,15 +123,19 @@ export class LocalModelTransport {
   }
 
   private doFetch(url: string, init?: RequestInit): Promise<Response> {
+    const safeInit: RequestInit = {
+      ...init,
+      redirect: init?.redirect ?? 'error',
+    };
     if (this.customFetch) {
-      return this.customFetch(url, init);
+      return this.customFetch(url, safeInit);
     }
     const netFetch = getElectronNetFetch();
     if (netFetch) {
-      return netFetch(url, init);
+      return netFetch(url, safeInit);
     }
     if (typeof globalThis.fetch === 'function') {
-      return globalThis.fetch(url, init);
+      return globalThis.fetch(url, safeInit);
     }
     throw new Error('No fetch implementation available');
   }
@@ -229,31 +233,63 @@ export class LocalModelTransport {
       const decoder = new TextDecoder();
       let buffer = '';
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
+      const parseSseLine = (rawLine: string): { content?: string; errorMsg?: string } | null => {
+        const line = rawLine.trim();
+        if (!line.startsWith('data:')) return null;
+        const jsonStr = line.slice(5).trim();
+        if (!jsonStr || jsonStr === '[DONE]') return null;
+        try {
+          const parsed = JSON.parse(jsonStr) as {
+            error?: { message?: string } | string;
+            choices?: Array<{ delta?: { content?: string }; message?: { content?: string } }>;
+          };
+          if (parsed.error) {
+            const errMsg =
+              typeof parsed.error === 'string'
+                ? parsed.error
+                : parsed.error.message || 'OpenAI-compatible runtime error';
+            return { errorMsg: errMsg };
+          }
+          const piece =
+            parsed.choices?.[0]?.delta?.content ?? parsed.choices?.[0]?.message?.content;
+          return piece ? { content: piece } : null;
+        } catch {
+          return null;
+        }
+      };
 
-        for (const rawLine of lines) {
-          const line = rawLine.trim();
-          if (!line.startsWith('data:')) continue;
-          const jsonStr = line.slice(5).trim();
-          if (!jsonStr || jsonStr === '[DONE]') continue;
-          try {
-            const parsed = JSON.parse(jsonStr) as {
-              choices?: Array<{ delta?: { content?: string }; message?: { content?: string } }>;
-            };
-            const piece =
-              parsed.choices?.[0]?.delta?.content ?? parsed.choices?.[0]?.message?.content;
-            if (piece) {
-              yield piece;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+
+          for (const rawLine of lines) {
+            const parsed = parseSseLine(rawLine);
+            if (parsed?.errorMsg) {
+              throw new Error(parsed.errorMsg);
             }
-          } catch {
-            // Skip partial SSE frames
+            if (parsed?.content) {
+              yield parsed.content;
+            }
           }
         }
+
+        if (buffer.trim()) {
+          for (const rawLine of buffer.split('\n')) {
+            const parsed = parseSseLine(rawLine);
+            if (parsed?.errorMsg) {
+              throw new Error(parsed.errorMsg);
+            }
+            if (parsed?.content) {
+              yield parsed.content;
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock?.();
       }
       return;
     }
@@ -286,36 +322,56 @@ export class LocalModelTransport {
 
     const decoder = new TextDecoder();
     let buffer = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-      for (const line of lines) {
-        if (!line.trim()) continue;
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const data = JSON.parse(line) as { error?: string; message?: { content?: string } };
+            if (data.error) {
+              throw new Error(typeof data.error === 'string' ? data.error : 'Ollama stream error');
+            }
+            if (data.message?.content) {
+              yield data.message.content;
+            }
+          } catch (parseOrStreamErr: unknown) {
+            if (
+              parseOrStreamErr instanceof Error &&
+              !(parseOrStreamErr instanceof SyntaxError)
+            ) {
+              throw parseOrStreamErr;
+            }
+          }
+        }
+      }
+
+      if (buffer.trim()) {
         try {
-          const data = JSON.parse(line) as { message?: { content?: string } };
+          const data = JSON.parse(buffer) as { error?: string; message?: { content?: string } };
+          if (data.error) {
+            throw new Error(typeof data.error === 'string' ? data.error : 'Ollama stream error');
+          }
           if (data.message?.content) {
             yield data.message.content;
           }
-        } catch {
-          // Skip invalid JSON lines
+        } catch (parseOrStreamErr: unknown) {
+          if (
+            parseOrStreamErr instanceof Error &&
+            !(parseOrStreamErr instanceof SyntaxError)
+          ) {
+            throw parseOrStreamErr;
+          }
         }
       }
-    }
-
-    if (buffer.trim()) {
-      try {
-        const data = JSON.parse(buffer) as { message?: { content?: string } };
-        if (data.message?.content) {
-          yield data.message.content;
-        }
-      } catch {
-        // Ignore trailing malformed fragment
-      }
+    } finally {
+      reader.releaseLock?.();
     }
   }
 

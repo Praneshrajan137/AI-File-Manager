@@ -44,7 +44,15 @@ const DEFAULT_OPTIONS: Required<CompressionOptions> = {
  * so attacker-controlled files cannot break out of `<untrusted_workspace_data>`.
  */
 export function escapePromptFenceText(value: string): string {
-    return value.replace(/<(\/?\s*untrusted_workspace_data\b)/gi, '&lt;$1');
+    return value
+        .replace(/<(\/?\s*(?:untrusted_workspace_data|workspace_context|system)\b)/gi, '&lt;$1')
+        .replace(/<\|([A-Za-z0-9_/-]{1,40})\|>/g, '&lt;|$1|&gt;');
+}
+
+export function neutralizeOuterContextTags(value: string): string {
+    return value
+        .replace(/<(\/?\s*(?:workspace_context|system)\b)/gi, '&lt;$1')
+        .replace(/<\|([A-Za-z0-9_/-]{1,40})\|>/g, '&lt;|$1|&gt;');
 }
 
 function escapePromptFenceAttr(value: string): string {

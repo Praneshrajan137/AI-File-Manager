@@ -23,6 +23,7 @@ import { VectorStore } from './VectorStore';
 import { LexicalSearchMatch } from './HybridLexicalIndex';
 import { ContextManager, formatUntrustedWorkspaceData } from './ContextManager';
 import { LLMMetrics, MetricOperation } from './LLMMetrics';
+import { LLMLogger } from '../../shared/logging';
 
 const RRF_K = 60;
 
@@ -59,21 +60,31 @@ export class RetrievalService {
         const timer = LLMMetrics.getInstance().startTimer(MetricOperation.RETRIEVAL);
 
         try {
-            // 1. Embed query on HIGH priority lane
-            const queryEmbedding = await this.embeddingModel.embed(query);
-
+            const storePartial = this.vectorStore as Partial<VectorStore>;
+            const supportsLexical = typeof storePartial.searchLexical === 'function';
             const scopeFilter = this.buildScopeFilter(scope);
 
-            // 2. Pre-filtered Dense vector candidates + SQLite FTS5 BM25 lexical candidates
-            const rawDense = await this.vectorStore.search(
-                queryEmbedding,
-                this.TOP_K,
-                scopeFilter
-            );
-            const rawLexical: LexicalSearchMatch[] =
-                typeof (this.vectorStore as Partial<VectorStore>).searchLexical === 'function'
-                    ? this.vectorStore.searchLexical(query, this.TOP_K, scopeFilter)
-                    : [];
+            let queryEmbedding: Embedding = [];
+            let rawDense: VectorRecord[] = [];
+            try {
+                queryEmbedding = await this.embeddingModel.embed(query);
+                rawDense = await this.vectorStore.search(
+                    queryEmbedding,
+                    this.TOP_K,
+                    scopeFilter
+                );
+            } catch (denseErr: unknown) {
+                if (!supportsLexical) {
+                    throw denseErr;
+                }
+                LLMLogger.warn('Dense embedding/vector retrieval unavailable; degrading to FTS5 + KG', {
+                    error: denseErr instanceof Error ? denseErr.message : String(denseErr),
+                });
+            }
+
+            const rawLexical: LexicalSearchMatch[] = supportsLexical
+                ? this.vectorStore.searchLexical(query, this.TOP_K, scopeFilter)
+                : [];
 
             const matchesScope = this.createScopeMatcher(scope);
 

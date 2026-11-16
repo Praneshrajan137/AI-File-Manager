@@ -81,6 +81,25 @@ describe('GroundingVerifier & TraceLedger', () => {
       expect(result.sanitizedAnswer).not.toContain(secretToken);
       expect(result.sanitizedAnswer).toContain('(unverified: .env#L1-L3)');
     });
+
+    it('rejects oversized endLine ranges, prevents subdir basename collisions, and preserves markdown hyperlinks', () => {
+      const result = verifyGroundedResponse({
+        answer:
+          'Check [a/index.ts#L10-L15] vs [a/index.ts#L10-L500] and read [index.ts](./index.ts).',
+        sources: [
+          { filePath: '/vault/b/index.ts', startLine: 1, endLine: 40 },
+          { filePath: '/vault/a/index.ts', startLine: 10, endLine: 25 },
+        ],
+        stripUngroundedBrackets: true,
+      });
+
+      expect(result.report.totalCitations).toBe(2);
+      expect(result.report.verifiedCitations).toBe(1);
+      expect(result.report.ungroundedCitations).toEqual(['[a/index.ts#L10-L500]']);
+      expect(result.sanitizedAnswer).toContain('[a/index.ts#L10-L15]');
+      expect(result.sanitizedAnswer).toContain('(unverified: a/index.ts#L10-L500)');
+      expect(result.sanitizedAnswer).toContain('[index.ts](./index.ts)');
+    });
   });
 
   describe('TraceLedger & WorkspaceKnowledgeGraph persistence', () => {

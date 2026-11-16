@@ -383,6 +383,7 @@ export interface IPCResponseMap {
   'LLM:QUERY': {
     success: boolean;
     error?: string;
+    sanitizedAnswer?: string;
     sources?: RetrievalSource[];
     agentSteps?: AgentTraceStep[];
     offlineSynthesis?: boolean;

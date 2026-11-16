@@ -230,6 +230,7 @@ const electronAPI = {
       const channel = `LLM:QUERY:${Date.now()}:${llmStreamCounter}`;
       options?.onChannelCreated?.(channel);
       let streamEnded = false;
+      let streamedSanitizedAnswer: string | undefined;
       let streamedSources: RetrievalSource[] | undefined;
       let streamedAgentSteps: AgentTraceStep[] | undefined;
       let streamedOfflineSynthesis: boolean | undefined;
@@ -262,6 +263,7 @@ const electronAPI = {
         _event: IpcRendererEvent,
         payload?: {
           ok?: boolean;
+          sanitizedAnswer?: string;
           sources?: RetrievalSource[];
           agentSteps?: AgentTraceStep[];
           offlineSynthesis?: boolean;
@@ -274,6 +276,9 @@ const electronAPI = {
           generationMs?: number;
         }
       ): void => {
+        if (typeof payload?.sanitizedAnswer === 'string') {
+          streamedSanitizedAnswer = payload.sanitizedAnswer;
+        }
         if (Array.isArray(payload?.sources)) {
           streamedSources = payload.sources;
         }
@@ -337,7 +342,8 @@ const electronAPI = {
         }
         if (
           result.ok &&
-          ((streamedSources && !result.data.sources) ||
+          ((streamedSanitizedAnswer !== undefined && result.data.sanitizedAnswer === undefined) ||
+            (streamedSources && !result.data.sources) ||
             (streamedAgentSteps && !result.data.agentSteps) ||
             (streamedOfflineSynthesis !== undefined && result.data.offlineSynthesis === undefined) ||
             (streamedProposedPlan && !result.data.proposedPlan) ||
@@ -350,6 +356,7 @@ const electronAPI = {
         ) {
           return wrapIPCSuccess({
             ...result.data,
+            sanitizedAnswer: result.data.sanitizedAnswer ?? streamedSanitizedAnswer,
             sources: result.data.sources ?? streamedSources,
             agentSteps: result.data.agentSteps ?? streamedAgentSteps,
             offlineSynthesis: result.data.offlineSynthesis ?? streamedOfflineSynthesis,

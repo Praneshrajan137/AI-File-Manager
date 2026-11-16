@@ -568,6 +568,78 @@ describe('Stage 3 Frontier Local AI Runtime & Spatial Associative Retrieval', ()
 
       await expect(agent.run('Cancel mid flight', { signal: controller.signal })).rejects.toThrow();
     });
+
+    it('preserves partial steps on mid-run abort, deduplicates in-batch identical tool calls, and forwards deadline signal to proposeOrganizePlan', async () => {
+      const controller = new AbortController();
+      let proposeSignal: AbortSignal | undefined;
+      let turn = 0;
+
+      const batchAndAbortFetch = jest.fn(async () => {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              message: {
+                role: 'assistant',
+                content: '',
+                tool_calls: [
+                  { function: { name: 'search_files', arguments: { query: 'auth' } } },
+                  { function: { name: 'search_files', arguments: { query: 'auth' } } },
+                ],
+              },
+            }),
+          } as unknown as Response;
+        }
+        if (turn === 2) {
+          return {
+            ok: true,
+            json: async () => ({
+              message: {
+                role: 'assistant',
+                content: '',
+                tool_calls: [
+                  { function: { name: 'propose_organize_plan', arguments: { targetDir: '/vault', strategy: 'auto' } } },
+                ],
+              },
+            }),
+          } as unknown as Response;
+        }
+        controller.abort();
+        throw Object.assign(new Error('Cancelled by user'), { name: 'AbortError' });
+      }) as unknown as typeof fetch;
+
+      const searchFilesSpy = jest.fn(async () => ['/vault/src/auth.ts']);
+      const agent = new WorkspaceReActAgent(
+        createStubAgentDeps(batchAndAbortFetch, {
+          searchFiles: searchFilesSpy,
+          proposeOrganizePlan: async (dir, _strat, sig) => {
+            proposeSignal = sig;
+            return {
+              planId: 'p1',
+              strategy: 'auto',
+              targetDir: dir,
+              operations: [],
+              skippedFiles: 0,
+              summary: 'ok',
+              createdAt: Date.now(),
+              usedLLM: false,
+            };
+          },
+        })
+      );
+
+      const partialRes = await agent.run('Inspect and abort on turn 2', {
+        signal: controller.signal,
+        runTimeoutMs: 5000,
+      });
+      expect(searchFilesSpy).toHaveBeenCalledTimes(1);
+      expect(proposeSignal).toBeDefined();
+      expect(partialRes.aborted).toBe(true);
+      expect(partialRes.terminationReason).toBe('aborted');
+      expect(partialRes.steps).toHaveLength(3);
+      expect(partialRes.steps[1].duplicatePrevented).toBe(true);
+    });
   });
 
   describe('IPC Stage 3 Contracts', () => {

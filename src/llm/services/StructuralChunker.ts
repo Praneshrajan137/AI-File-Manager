@@ -68,6 +68,9 @@ export function extractSymbolsAndLinks(
   const isMarkdown = MARKDOWN_EXTENSIONS.has(ext) || ext === 'txt';
   const lines = content.split(/\r?\n/);
   let inFence = false;
+  let inBlockComment = false;
+  let multiImportBuf = '';
+  let multiImportStartLine = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -108,23 +111,62 @@ export function extractSymbolsAndLinks(
     }
 
     if (isCode) {
+      let codeLine = line;
+      if (inBlockComment) {
+        const closeIdx = codeLine.indexOf('*/');
+        if (closeIdx === -1) {
+          continue;
+        }
+        codeLine = codeLine.slice(closeIdx + 2);
+        inBlockComment = false;
+      }
+      codeLine = codeLine.replace(/\/\*[\s\S]*?\*\//g, '');
+      const openBlockIdx = codeLine.indexOf('/*');
+      if (openBlockIdx !== -1) {
+        codeLine = codeLine.slice(0, openBlockIdx);
+        inBlockComment = true;
+      }
+      const lineCommentIdx = codeLine.indexOf('//');
+      if (lineCommentIdx !== -1) {
+        codeLine = codeLine.slice(0, lineCommentIdx);
+      }
+
+      if (!codeLine.trim()) {
+        continue;
+      }
+
       for (const { kind, regex } of SYMBOL_PATTERNS) {
-        const match = line.match(regex);
+        const match = codeLine.match(regex);
         if (match && match[1]) {
           symbols.push({ name: match[1], kind, lineNumber: lineNum });
           break;
         }
       }
 
-      const esImport = line.match(/(?:import|export)\s+[^'"]*?from\s+['"]([^'"]+)['"]/);
-      if (esImport?.[1]) {
-        links.push({ targetRef: esImport[1], kind: 'import', lineNumber: lineNum });
+      if (multiImportBuf) {
+        multiImportBuf += ` ${codeLine.trim()}`;
+        const multiMatch = multiImportBuf.match(/(?:import|export)\s+[\s\S]*?from\s+['"]([^'"]+)['"]/);
+        if (multiMatch?.[1]) {
+          links.push({ targetRef: multiMatch[1], kind: 'import', lineNumber: multiImportStartLine });
+          multiImportBuf = '';
+        } else if (multiImportBuf.length > 600 || /;\s*$/.test(codeLine)) {
+          multiImportBuf = '';
+        }
+      } else {
+        const esImport = codeLine.match(/(?:import|export)\s+[^'"]*?from\s+['"]([^'"]+)['"]/);
+        if (esImport?.[1]) {
+          links.push({ targetRef: esImport[1], kind: 'import', lineNumber: lineNum });
+        } else if (/^\s*(?:import|export)\s+type\b|^\s*(?:import|export)\s*\{/.test(codeLine) && !/\bfrom\s+['"]/.test(codeLine)) {
+          multiImportBuf = codeLine.trim();
+          multiImportStartLine = lineNum;
+        }
       }
-      const cjsRequire = line.match(/require\(\s*['"]([^'"]+)['"]\s*\)/);
+
+      const cjsRequire = codeLine.match(/require\(\s*['"]([^'"]+)['"]\s*\)/);
       if (cjsRequire?.[1]) {
         links.push({ targetRef: cjsRequire[1], kind: 'import', lineNumber: lineNum });
       }
-      const pyImport = line.match(/^\s*(?:from\s+([A-Za-z0-9_.]+)\s+import|import\s+([A-Za-z0-9_.]+))/);
+      const pyImport = codeLine.match(/^\s*(?:from\s+([A-Za-z0-9_.]+)\s+import|import\s+([A-Za-z0-9_.]+))/);
       const pyTarget = pyImport?.[1] ?? pyImport?.[2];
       if (pyTarget) {
         links.push({ targetRef: pyTarget, kind: 'import', lineNumber: lineNum });

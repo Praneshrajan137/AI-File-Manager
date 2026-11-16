@@ -19,6 +19,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { MAX_INDEXABLE_FILE_SIZE } from '../../shared/contracts';
 import { isSensitiveSecretFile, redactSensitiveText } from '../../shared/security/SecretGuard';
 
 /**
@@ -90,9 +91,9 @@ const DOCUMENT_EXTENSIONS = new Set([
     'ipynb',
 ]);
 
-// Default configuration
+// Default configuration aligned with MAX_INDEXABLE_FILE_SIZE (10MB)
 const DEFAULT_CONFIG: Required<ExtractionConfig> = {
-    maxFileSize: 50 * 1024 * 1024, // 50MB
+    maxFileSize: MAX_INDEXABLE_FILE_SIZE,
     maxCharacters: 500000,          // ~125 pages
     includeMetadata: true,
 };
@@ -595,34 +596,27 @@ export class FileContentExtractor {
     }
 
     /**
-     * Clean extracted text content.
+     * Normalize line endings while preserving 1-to-1 line numbering for chunk citations.
      */
     private cleanText(text: string): string {
-        return text
-            // Normalize line endings
+        const normalized = text
             .replace(/\r\n/g, '\n')
-            .replace(/\r/g, '\n')
-            // Remove excessive blank lines
-            .replace(/\n{4,}/g, '\n\n\n')
-            // Trim
-            .trim();
+            .replace(/\r/g, '\n');
+        return normalized.trim().length === 0 ? '' : normalized.trimEnd();
     }
 
     /**
-     * Clean PDF-specific text artifacts.
+     * Clean PDF-specific text artifacts without splitting camelCase identifiers.
      */
     private cleanPDFText(text: string): string {
         return text
-            // Fix common PDF spacing issues
-            .replace(/([a-z])([A-Z])/g, '$1 $2')
             // Remove form feed characters
             .replace(/\f/g, '\n\n')
-            // Normalize whitespace
+            // Normalize horizontal whitespace only
             .replace(/[ \t]+/g, ' ')
-            // Clean up line endings
+            // Clean up space padding around newlines
             .replace(/\n /g, '\n')
             .replace(/ \n/g, '\n')
-            // Remove excessive blank lines
             .replace(/\n{4,}/g, '\n\n\n')
             .trim();
     }

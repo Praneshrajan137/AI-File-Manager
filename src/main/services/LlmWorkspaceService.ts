@@ -36,7 +36,7 @@ import {
 } from '@shared/contracts';
 import { IPCResponseMap } from '@shared/ipc/contracts';
 import { LLMLogger } from '@shared/logging';
-import { isSensitiveSecretFile, redactFileRangeLines } from '@shared/security/SecretGuard';
+import { createStreamingSecretRedactor, isSensitiveSecretFile, redactFileRangeLines } from '@shared/security/SecretGuard';
 import { WorkspaceReActAgent } from '../../llm/agent/WorkspaceReActAgent';
 import { verifyGroundedResponse } from '../../llm/orchestration/GroundingVerifier';
 import {
@@ -250,7 +250,8 @@ export function searchWorkspaceContent(
   const fetchLimit = normalizedRoot ? Math.min(200, Math.max(topK * 4, 40)) : topK;
 
   return withKnowledgeGraph((kg) => {
-    const hits = kg.searchLexical(trimmed, fetchLimit);
+    const scopeFilter = searchRoot ? { folderPath: searchRoot } : undefined;
+    const hits = kg.searchLexical(trimmed, fetchLimit, scopeFilter);
     const results: ContentSearchMatch[] = [];
     for (const hit of hits) {
       if (normalizedRoot && rootPrefix) {
@@ -613,6 +614,7 @@ export async function executeCopilotQuery(
           safeSend(channel, verificationOutcome.sanitizedAnswer);
           safeSend(`${channel}:end`, {
             ok: true,
+            sanitizedAnswer: verificationOutcome.sanitizedAnswer,
             offlineSynthesis: true,
             sources: synth.sources,
             agentSteps: offlineSteps,
@@ -649,6 +651,7 @@ export async function executeCopilotQuery(
 
           return {
             success: true,
+            sanitizedAnswer: verificationOutcome.sanitizedAnswer,
             offlineSynthesis: true,
             sources: synth.sources,
             agentSteps: offlineSteps,
@@ -675,11 +678,12 @@ export async function executeCopilotQuery(
           readFileRange: (filePath, startLine, endLine) =>
             readSecretGuardedRange(fsService, filePath, startLine, endLine),
           queryGraph: (graphInput) => queryWorkspaceGraphInsights(graphInput),
-          proposeOrganizePlan: (targetDir, strategy) =>
+          proposeOrganizePlan: (targetDir, strategy, signal) =>
             createOrganizerService().proposeOrganizationPlan({
               targetDir,
               strategy,
               useLLM: true,
+              signal,
             }),
           validatePath: (candidate) => validator.validateCanonical(candidate),
         });
@@ -710,6 +714,7 @@ export async function executeCopilotQuery(
 
         safeSend(`${channel}:end`, {
           ok: true,
+          sanitizedAnswer: agentResult.answer,
           sources: agentResult.sources,
           agentSteps: agentResult.steps,
           proposedPlan: agentResult.proposedPlan,
@@ -749,6 +754,7 @@ export async function executeCopilotQuery(
 
         return {
           success: true,
+          sanitizedAnswer: agentResult.answer,
           sources: agentResult.sources,
           agentSteps: agentResult.steps,
           proposedPlan: agentResult.proposedPlan,
@@ -851,6 +857,7 @@ export async function executeCopilotQuery(
         safeSend(channel, verificationOutcome.sanitizedAnswer);
         safeSend(`${channel}:end`, {
           ok: true,
+          sanitizedAnswer: verificationOutcome.sanitizedAnswer,
           offlineSynthesis: true,
           sources: structuredSources,
           traceId,
@@ -885,6 +892,7 @@ export async function executeCopilotQuery(
         });
         return {
           success: true,
+          sanitizedAnswer: verificationOutcome.sanitizedAnswer,
           offlineSynthesis: true,
           sources: structuredSources,
           traceId,
@@ -897,6 +905,7 @@ export async function executeCopilotQuery(
 
       const genStart = Date.now();
       let streamedAnswer = '';
+      const streamRedactor = createStreamingSecretRedactor();
       for await (const chunk of llmInterface!.query(query, retrievalResult, {
         model: llmConfig?.model,
         temperature: llmConfig?.temperature,
@@ -909,7 +918,14 @@ export async function executeCopilotQuery(
           break;
         }
         streamedAnswer += chunk;
-        safeSend(channel, chunk);
+        const safeDelta = streamRedactor.push(chunk);
+        if (safeDelta) {
+          safeSend(channel, safeDelta);
+        }
+      }
+      const streamTail = streamRedactor.flush();
+      if (streamTail && !event.sender.isDestroyed() && !queryAbort.signal.aborted) {
+        safeSend(channel, streamTail);
       }
       generationMs = Date.now() - genStart;
       LLMMetrics.getInstance().recordTiming(MetricOperation.LLM_QUERY, generationMs);
@@ -935,6 +951,7 @@ export async function executeCopilotQuery(
 
       safeSend(`${channel}:end`, {
         ok: true,
+        sanitizedAnswer: verificationOutcome.sanitizedAnswer,
         sources: structuredSources,
         traceId,
         terminationReason: ragRunResult.terminationReason,
@@ -968,6 +985,7 @@ export async function executeCopilotQuery(
 
       return {
         success: true,
+        sanitizedAnswer: verificationOutcome.sanitizedAnswer,
         sources: structuredSources,
         traceId,
         terminationReason: ragRunResult.terminationReason,

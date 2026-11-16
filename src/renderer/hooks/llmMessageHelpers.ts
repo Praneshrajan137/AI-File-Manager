@@ -11,6 +11,7 @@ import type { Message, SendQueryOptions } from './useLLM';
 export interface LLMQueryResultShape {
   success?: boolean;
   error?: string;
+  sanitizedAnswer?: string;
   sources?: RetrievalSource[];
   agentSteps?: AgentTraceStep[];
   offlineSynthesis?: boolean;
@@ -30,6 +31,7 @@ export function buildLlmMetadataPatch(
 ): Partial<Message> | null {
   if (!result) return null;
   const hasMetadata =
+    typeof result.sanitizedAnswer === 'string' ||
     (result.sources && result.sources.length > 0) ||
     (result.agentSteps && result.agentSteps.length > 0) ||
     result.offlineSynthesis !== undefined ||
@@ -46,6 +48,9 @@ export function buildLlmMetadataPatch(
   const structuredSources = result.sources ?? [];
   const uniquePaths = Array.from(new Set(structuredSources.map((s) => s.filePath)));
   return {
+    ...(typeof result.sanitizedAnswer === 'string' && result.sanitizedAnswer.length > 0
+      ? { content: result.sanitizedAnswer }
+      : {}),
     sources: uniquePaths.length > 0 ? uniquePaths : existing?.sources,
     structuredSources: structuredSources.length > 0 ? structuredSources : existing?.structuredSources,
     agentSteps: result.agentSteps ?? existing?.agentSteps,

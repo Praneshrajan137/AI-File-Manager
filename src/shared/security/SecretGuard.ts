@@ -332,3 +332,67 @@ export function redactFileRangeLines<T extends { lineNumber: number; text: strin
 
   return { lines: sanitizedLines, redactionsCount };
 }
+
+/**
+ * Stateful streaming redactor for incremental LLM token emission.
+ * Buffers incomplete boundary tokens and multi-line PEM private key blocks so
+ * secrets split across chunk boundaries are masked before reaching the renderer.
+ */
+export function createStreamingSecretRedactor(): {
+  push: (chunk: string) => string;
+  flush: () => string;
+} {
+  let buffer = '';
+  const TAIL_HOLD_CHARS = 140;
+  const MAX_PEM_HOLD_CHARS = 8192;
+
+  return {
+    push(chunk: string): string {
+      if (!chunk) return '';
+      buffer += chunk;
+
+      if (buffer.length <= TAIL_HOLD_CHARS) {
+        return '';
+      }
+
+      const beginIdx = buffer.search(PRIVATE_KEY_BEGIN_LINE_RE);
+      if (beginIdx !== -1) {
+        const afterBegin = buffer.slice(beginIdx);
+        if (!PRIVATE_KEY_END_LINE_RE.test(afterBegin) && buffer.length < MAX_PEM_HOLD_CHARS) {
+          if (beginIdx > TAIL_HOLD_CHARS) {
+            const safePrefix = buffer.slice(0, beginIdx);
+            buffer = afterBegin;
+            return redactSensitiveText(safePrefix).sanitizedText;
+          }
+          return '';
+        }
+      }
+
+      let cut = buffer.length - TAIL_HOLD_CHARS;
+      // Pull cut backward past any mid-token run or leading auth scheme prefix
+      while (cut > 0 && !/\s/.test(buffer[cut - 1])) {
+        cut -= 1;
+      }
+      if (cut > 0) {
+        const beforeCut = buffer.slice(Math.max(0, cut - 16), cut);
+        const prefixMatch = beforeCut.match(/(?:Bearer|Basic)\s+$/i);
+        if (prefixMatch) {
+          cut = Math.max(0, cut - prefixMatch[0].length);
+        }
+      }
+      if (cut <= 0) {
+        return '';
+      }
+
+      const emitRaw = buffer.slice(0, cut);
+      buffer = buffer.slice(cut);
+      return redactSensitiveText(emitRaw).sanitizedText;
+    },
+    flush(): string {
+      if (!buffer) return '';
+      const out = redactSensitiveText(buffer).sanitizedText;
+      buffer = '';
+      return out;
+    },
+  };
+}

@@ -5,6 +5,7 @@ import { resolveCopyCollisionName } from '@renderer/utils/explorerHelpers';
 import { Breadcrumb } from '@renderer/components/Toolbar/Breadcrumb';
 import { wrapBridgeNamespace } from '@renderer/utils/installElectronAPI';
 import { wrapIPCError, wrapIPCSuccess } from '@shared/ipc/envelope';
+import { buildLlmMetadataPatch } from '@renderer/hooks/llmMessageHelpers';
 import { FileGrid } from '@renderer/components/FileExplorer/FileGrid';
 import { FilePreviewDrawer } from '@renderer/components/Preview/FilePreviewDrawer';
 import { FileContextMenu } from '@renderer/components/ContextMenu/FileContextMenu';
@@ -773,6 +774,15 @@ describe('Renderer UI & M5 Control Upgrades', () => {
       expect(resolveCopyCollisionName('notes.md', existing, false)).toBe('notes (copy 2).md');
       expect(resolveCopyCollisionName('fresh.md', existing, true)).toBe('fresh.md');
       expect(resolveCopyCollisionName('.gitignore', existing, false)).toBe('.gitignore (copy)');
+
+      const reconciledPatch = buildLlmMetadataPatch({
+        success: true,
+        sanitizedAnswer: 'Verified [auth.ts#L1-L5] and (unverified: fake.ts#L99)',
+        sources: [{ filePath: 'C:\\vault\\auth.ts', startLine: 1, endLine: 5 }],
+        traceId: 'trace-sync-1',
+      });
+      expect(reconciledPatch?.content).toBe('Verified [auth.ts#L1-L5] and (unverified: fake.ts#L99)');
+      expect(reconciledPatch?.sources).toEqual(['C:\\vault\\auth.ts']);
     });
   });
 });

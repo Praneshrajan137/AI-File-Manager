@@ -176,5 +176,34 @@ describe('RetrievalService', () => {
             expect(result.sources).toContain('/docs/fileB.txt');
             expect(result.sources.length).toBe(2); // Deduplicated
         });
+
+        it('degrades gracefully to SQLite FTS5 lexical search when embedding fails', async () => {
+            mockEmbed.mockRejectedValueOnce(new Error('Embedding worker offline'));
+            const lexicalStore = {
+                search: jest.fn(),
+                searchLexical: jest.fn().mockReturnValue([
+                    {
+                        record: {
+                            id: 'lex-1',
+                            chunk_text: 'Zero-trust token rotation schedule is every 72 hours.',
+                            embedding: [],
+                            file_path: '/docs/security.md',
+                            chunk_index: 0,
+                            indexed_at: Date.now(),
+                            start_line: 3,
+                            end_line: 8,
+                            heading: 'Rotation',
+                        },
+                        bm25Score: 8.5,
+                    },
+                ]),
+            } as unknown as VectorStore;
+
+            const resilientRetrieval = new RetrievalService(lexicalStore, mockEmbeddingModel);
+            const res = await resilientRetrieval.retrieve('token rotation');
+            expect(res.sources).toEqual(['/docs/security.md']);
+            expect(res.context).toContain('Zero-trust token rotation');
+            expect(lexicalStore.search).not.toHaveBeenCalled();
+        });
     });
 });

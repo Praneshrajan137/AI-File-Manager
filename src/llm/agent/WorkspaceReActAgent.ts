@@ -182,7 +182,8 @@ export interface WorkspaceReActAgentDeps {
   queryGraph: (input: { symbolQuery?: string; backlinkTarget?: string }) => GraphInsightsResponse;
   proposeOrganizePlan?: (
     targetDir: string,
-    strategy?: OrganizeStrategy
+    strategy?: OrganizeStrategy,
+    signal?: AbortSignal
   ) => Promise<OrganizePlanResult>;
   validatePath: (
     candidatePath: string
@@ -536,11 +537,18 @@ export class WorkspaceReActAgent {
         try {
           assistantMsg = await this.invokeChat(messages, true, deadline.signal);
         } catch (err) {
+          if (options.signal?.aborted && (trace.length > 0 || collectedSources.length > 0)) {
+            return buildAbortedResult();
+          }
           if (!options.signal?.aborted && deadline.isTimedOut()) {
             terminationReason = 'wall_clock_budget';
             break;
           }
           throw err;
+        }
+
+        if (options.signal?.aborted) {
+          return buildAbortedResult();
         }
 
         usage = accumulateTokenUsage(usage, assistantMsg.usage);
@@ -553,19 +561,26 @@ export class WorkspaceReActAgent {
         }
 
         emitPhase('act');
-        const prepared = parsedCalls.map((tc) => {
+        const batchLeaderIndexByKey = new Map<string, number>();
+        const prepared = parsedCalls.map((tc, idx) => {
           const cacheKey = `${tc.name}:${stableJsonStringify(tc.arguments)}`;
+          const cached = toolOutcomeCache.get(cacheKey);
+          const batchLeaderIdx = cached ? undefined : batchLeaderIndexByKey.get(cacheKey);
+          if (!cached && batchLeaderIdx === undefined) {
+            batchLeaderIndexByKey.set(cacheKey, idx);
+          }
           return {
             tc,
             cacheKey,
-            cached: toolOutcomeCache.get(cacheKey),
+            cached,
+            batchLeaderIdx,
           };
         });
 
         const freshResults = new Map<number, { outcome: ExecutedToolOutcome; durationMs: number }>();
         const missEntries = prepared
           .map((item, idx) => ({ item, idx }))
-          .filter(({ item }) => !item.cached);
+          .filter(({ item }) => !item.cached && item.batchLeaderIdx === undefined);
 
         await Promise.all(
           missEntries.map(async ({ item, idx }) => {
@@ -574,13 +589,22 @@ export class WorkspaceReActAgent {
               item.tc.name,
               item.tc.arguments,
               options.contextScope,
-              recordSource
+              recordSource,
+              options.signal !== undefined || options.runTimeoutMs !== undefined
+                ? deadline.signal
+                : undefined
             );
             freshResults.set(idx, { outcome, durationMs: Date.now() - started });
           })
         );
 
-        const allDuplicatesInTurn = prepared.every((item) => Boolean(item.cached));
+        if (options.signal?.aborted) {
+          return buildAbortedResult();
+        }
+
+        const allDuplicatesInTurn = prepared.every(
+          (item) => Boolean(item.cached) || item.batchLeaderIdx !== undefined
+        );
         if (allDuplicatesInTurn) {
           consecutiveDuplicates += 1;
         } else {
@@ -602,14 +626,20 @@ export class WorkspaceReActAgent {
 
         emitPhase('observe');
         for (let idx = 0; idx < prepared.length; idx++) {
-          const { tc, cacheKey, cached } = prepared[idx];
+          const { tc, cacheKey, cached, batchLeaderIdx } = prepared[idx];
           const resolved = cached
             ? { outcome: cached, durationMs: 0, isDuplicate: true }
-            : {
-                outcome: freshResults.get(idx)!.outcome,
-                durationMs: freshResults.get(idx)!.durationMs,
-                isDuplicate: false,
-              };
+            : batchLeaderIdx !== undefined
+              ? {
+                  outcome: freshResults.get(batchLeaderIdx)!.outcome,
+                  durationMs: 0,
+                  isDuplicate: true,
+                }
+              : {
+                  outcome: freshResults.get(idx)!.outcome,
+                  durationMs: freshResults.get(idx)!.durationMs,
+                  isDuplicate: false,
+                };
 
           if (resolved.isDuplicate) {
             duplicateCallsPrevented += 1;
@@ -695,7 +725,10 @@ export class WorkspaceReActAgent {
           usage = accumulateTokenUsage(usage, synth.usage);
           finalAnswer = (synth.content ?? '').trim();
         } catch (err) {
-          if (!options.signal?.aborted && deadline.isTimedOut()) {
+          if (options.signal?.aborted) {
+            return buildAbortedResult();
+          }
+          if (deadline.isTimedOut()) {
             emitPhase('fallback');
             terminationReason = 'wall_clock_budget';
             finalAnswer =
@@ -820,7 +853,8 @@ export class WorkspaceReActAgent {
     toolName: string,
     args: Record<string, unknown>,
     contextScope: CopilotContextScope | undefined,
-    recordSource: (src: RetrievalSource) => void
+    recordSource: (src: RetrievalSource) => void,
+    signal?: AbortSignal
   ): Promise<ExecutedToolOutcome> {
     if (!ALLOWED_AGENT_TOOLS.has(toolName as AgentToolName)) {
       const msg = `[SECURITY_BLOCKED] Tool "${toolName}" denied: only read-only workspace tools are permitted.`;
@@ -1041,7 +1075,9 @@ export class WorkspaceReActAgent {
           ].includes(strategyRaw)
             ? strategyRaw
             : 'auto') as OrganizeStrategy;
-          const plan = await this.deps.proposeOrganizePlan(check.canonicalPath, strategy);
+          const plan = signal
+            ? await this.deps.proposeOrganizePlan(check.canonicalPath, strategy, signal)
+            : await this.deps.proposeOrganizePlan(check.canonicalPath, strategy);
           const payload = JSON.stringify({
             planId: plan.planId,
             strategy: plan.strategy,

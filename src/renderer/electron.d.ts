@@ -127,6 +127,7 @@ interface ElectronAPI {
     ) => Promise<{
       success: boolean;
       error?: string;
+      sanitizedAnswer?: string;
       sources?: RetrievalSource[];
       agentSteps?: AgentTraceStep[];
       offlineSynthesis?: boolean;

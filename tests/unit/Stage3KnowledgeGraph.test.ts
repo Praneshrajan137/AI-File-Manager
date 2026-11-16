@@ -671,5 +671,42 @@ describe('Stage 3 (M9) Knowledge Graph, Chunker, Dual-Lane Pool & Retrieval', ()
         await fs.rm(tmpRoot, { recursive: true, force: true });
       }
     });
+
+    it('preserves 1-to-1 line alignment & PDF camelCase identifiers and parses multiline ES imports while ignoring block comments', async () => {
+      const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'stage3-staged-'));
+      try {
+        const blankTxt = path.join(tmpRoot, 'spaced.txt');
+        await fs.writeFile(blankTxt, 'Line1\n\n\n\n\nLine6Target', 'utf-8');
+        const extractor = new FileContentExtractor();
+        const extRes = await extractor.extract(blankTxt);
+        expect(extRes.success).toBe(true);
+        expect(extRes.content?.split('\n')[5]).toBe('Line6Target');
+
+        const cleanedPdf = (extractor as unknown as { cleanPDFText: (s: string) => string }).cleanPDFText(
+          'Service PathValidator verifies getFileConnections over iPhone sync.'
+        );
+        expect(cleanedPdf).toContain('PathValidator');
+        expect(cleanedPdf).toContain('getFileConnections');
+        expect(cleanedPdf).toContain('iPhone');
+
+        const tsSource = [
+          '/*',
+          ' * import { FakeBlocked } from "./ignored-in-block";',
+          ' * export function commentedOutFn() {}',
+          ' */',
+          'import {',
+          '  AlphaService,',
+          '  BetaService,',
+          "} from './services/alpha';",
+          '// export function lineCommentFn() {}',
+          'export function realHandler() { return 1; }',
+        ].join('\n');
+        const meta = extractSymbolsAndLinks(tsSource, path.join(tmpRoot, 'sample.ts'));
+        expect(meta.links.map((l) => l.targetRef)).toEqual(['./services/alpha']);
+        expect(meta.symbols.map((s) => s.name)).toEqual(['realHandler']);
+      } finally {
+        await fs.rm(tmpRoot, { recursive: true, force: true });
+      }
+    });
   });
 });

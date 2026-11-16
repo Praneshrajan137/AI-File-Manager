@@ -48,6 +48,7 @@ function matchCitationAgainstObserved(
 ): { verified: boolean; resolvedPath?: string; reason: string } {
   const normalizedTarget = normalizePathForMatch(citation.target.trim());
   const targetBase = path.posix.basename(normalizedTarget);
+  const hasDirSegment = normalizedTarget.includes('/');
 
   if (isSensitiveSecretFile(normalizedTarget).blocked || isSensitiveSecretFile(targetBase).blocked) {
     return {
@@ -70,31 +71,35 @@ function matchCitationAgainstObserved(
   for (const candidate of candidatePaths) {
     const normalizedCand = normalizePathForMatch(candidate);
     const candBase = path.posix.basename(normalizedCand);
-    const isMatch =
-      normalizedCand === normalizedTarget ||
-      normalizedCand.endsWith(`/${normalizedTarget}`) ||
-      candBase === targetBase;
+    const isMatch = hasDirSegment
+      ? normalizedCand === normalizedTarget || normalizedCand.endsWith(`/${normalizedTarget}`)
+      : normalizedCand === normalizedTarget || candBase === targetBase;
 
     if (!isMatch) {
       continue;
     }
 
-    matchedPath = candidate;
+    if (!matchedPath) {
+      matchedPath = candidate;
+    }
     const matchingSources = sources.filter(
       (s) => normalizePathForMatch(s.filePath) === normalizedCand
     );
 
     if (citation.startLine === undefined || matchingSources.length === 0) {
+      matchedPath = candidate;
       exactLineMatch = true;
       break;
     }
 
+    const citeEnd = citation.endLine ?? citation.startLine;
     const lineMatches = matchingSources.some((src) => {
       if (src.startLine === undefined) return true;
       const effEnd = src.endLine ?? src.startLine;
-      return citation.startLine! >= src.startLine - 5 && citation.startLine! <= effEnd + 5;
+      return citation.startLine! >= src.startLine - 5 && citeEnd <= effEnd + 5;
     });
     if (lineMatches) {
+      matchedPath = candidate;
       exactLineMatch = true;
       break;
     }
@@ -135,6 +140,10 @@ export function verifyGroundedResponse(
   BRACKET_CITATION_REGEX.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = BRACKET_CITATION_REGEX.exec(workingAnswer)) !== null) {
+    // Do not rewrite Markdown hyperlink labels `[file.ts](./file.ts)`
+    if (workingAnswer[m.index + m[0].length] === '(') {
+      continue;
+    }
     const startLine = m[2] ? Number.parseInt(m[2], 10) : undefined;
     const endLine = m[3] ? Number.parseInt(m[3], 10) : undefined;
     matches.push({

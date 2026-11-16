@@ -350,6 +350,7 @@ export class AIOrganizerService {
     strategy?: OrganizeStrategy;
     useLLM?: boolean;
     recursive?: boolean;
+    signal?: AbortSignal;
   }): Promise<OrganizePlanResult> {
     const strategy: OrganizeStrategy = input.strategy ?? 'auto';
     const rootValidation = await this.deps.validator.validateCanonical(input.targetDir);
@@ -435,7 +436,7 @@ export class AIOrganizerService {
         Boolean(this.deps.model);
 
       const llmOutcome = llmEnabled
-        ? await this.tryFetchLocalLlmSuggestions(canonicalRoot, fileCandidates)
+        ? await this.tryFetchLocalLlmSuggestions(canonicalRoot, fileCandidates, input.signal)
         : { suggestions: null, batchCount: 0 };
 
       usedLLM = llmOutcome.suggestions !== null && llmOutcome.suggestions.size > 0;
@@ -758,7 +759,8 @@ export class AIOrganizerService {
 
   private async tryFetchLocalLlmSuggestions(
     canonicalRoot: string,
-    files: CandidateFileEntry[]
+    files: CandidateFileEntry[],
+    parentSignal?: AbortSignal
   ): Promise<{
     suggestions: Map<
       string,
@@ -836,7 +838,10 @@ export class AIOrganizerService {
             {
               temperature: 0.1,
               maxTokens: 768,
-              signal: AbortSignal.timeout(ORGANIZER_LLM_TIMEOUT_MS),
+              signal:
+                parentSignal && typeof AbortSignal.any === 'function'
+                  ? AbortSignal.any([parentSignal, AbortSignal.timeout(ORGANIZER_LLM_TIMEOUT_MS)])
+                  : parentSignal ?? AbortSignal.timeout(ORGANIZER_LLM_TIMEOUT_MS),
             }
           );
 

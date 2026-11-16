@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import {
+  createStreamingSecretRedactor,
   isSensitiveSecretFile,
   redactFileRangeLines,
   redactSensitiveText,
@@ -188,6 +189,19 @@ describe('Stage 1: SecretGuard, Multi-Page PDF, Copy & Link-Safe Journal', () =>
       expect(isSensitiveSecretFile('keys/serviceAccountKey.json').blocked).toBe(true);
       expect(isSensitiveSecretFile('certs/server.pem').blocked).toBe(true);
       expect(isSensitiveSecretFile('src/config.example.json').blocked).toBe(false);
+    });
+
+    it('redacts tokens split across streaming chunks via createStreamingSecretRedactor', () => {
+      const redactor = createStreamingSecretRedactor();
+      const bearerChunk1 = 'Auth header is Bearer my_secret_stream_';
+      const bearerChunk2 = 'token_9876543210abcdef and safe trailing prose '.padEnd(180, '.');
+      const out1 = redactor.push(bearerChunk1);
+      const out2 = redactor.push(bearerChunk2);
+      const tail = redactor.flush();
+      const combined = out1 + out2 + tail;
+      expect(combined).not.toContain('my_secret_stream_token_9876543210abcdef');
+      expect(combined).toContain('[REDACTED_BEARER_TOKEN]');
+      expect(combined).toContain('safe trailing prose');
     });
 
     it('streams PDF pages beyond page 100 using partial page batches up to maxCharacters', async () => {
