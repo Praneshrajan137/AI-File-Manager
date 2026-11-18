@@ -26,7 +26,6 @@ import {
     WorkspaceKnowledgeGraph,
 } from '../../main/services/WorkspaceKnowledgeGraph';
 import { ExtractedLink, ExtractedSymbol } from './StructuralChunker';
-import { l2NormalizeVector } from './SemanticClustering';
 import { RuntimeDiagnostics } from '../../main/services/RuntimeDiagnostics';
 import { LLMLogger } from '../../shared/logging';
 import { atomicWriteFile } from '../../shared/utils/atomicFs';
@@ -676,8 +675,15 @@ export class VectorStore implements IVectorStore {
                         : rawResults.slice(0, topK);
                 }
 
+                const chunkLocations =
+                    typeof this.knowledgeGraph?.getChunkLocationsBatch === 'function'
+                        ? this.knowledgeGraph.getChunkLocationsBatch(filtered.map((row) => row.id))
+                        : null;
+
                 return filtered.map((row) => {
-                    const loc = this.knowledgeGraph?.getChunkLocation(row.id);
+                    const loc = chunkLocations
+                        ? chunkLocations.get(row.id) ?? null
+                        : this.knowledgeGraph?.getChunkLocation(row.id) ?? null;
                     return {
                         id: row.id,
                         chunk_text: row.chunk_text,
@@ -788,7 +794,7 @@ export class VectorStore implements IVectorStore {
 
             const accumulators = new Map<
                 string,
-                { filePath: string; sum: number[]; count: number; samples: string[] }
+                { filePath: string; sum: Float64Array; count: number; samples: string[] }
             >();
 
             const ingestRow = (row: LanceRecord): void => {
@@ -796,22 +802,34 @@ export class VectorStore implements IVectorStore {
                 if (allowedKeys && !allowedKeys.has(key)) {
                     return;
                 }
-                const vec = this.toPlainVector(row.vector);
-                if (vec.length === 0) {
+                const vecRaw = row.vector as ArrayLike<number> | { toArray?: () => ArrayLike<number> };
+                let vec: ArrayLike<number>;
+                if (Array.isArray(vecRaw) || ArrayBuffer.isView(vecRaw)) {
+                    vec = vecRaw as ArrayLike<number>;
+                } else if (
+                    vecRaw &&
+                    typeof (vecRaw as { toArray?: () => ArrayLike<number> }).toArray === 'function'
+                ) {
+                    vec = (vecRaw as { toArray: () => ArrayLike<number> }).toArray();
+                } else {
+                    vec = this.toPlainVector(vecRaw);
+                }
+                if (!vec || vec.length === 0) {
                     return;
                 }
                 let entry = accumulators.get(key);
                 if (!entry) {
                     entry = {
                         filePath: row.file_path,
-                        sum: new Array<number>(vec.length).fill(0),
+                        sum: new Float64Array(vec.length),
                         count: 0,
                         samples: [],
                     };
                     accumulators.set(key, entry);
                 }
-                for (let i = 0; i < Math.min(vec.length, entry.sum.length); i += 1) {
-                    entry.sum[i] += vec[i];
+                const len = Math.min(vec.length, entry.sum.length);
+                for (let i = 0; i < len; i += 1) {
+                    entry.sum[i] += Number(vec[i]);
                 }
                 entry.count += 1;
                 if (entry.samples.length < 3 && row.chunk_text) {
@@ -823,15 +841,22 @@ export class VectorStore implements IVectorStore {
                 const count = await this.table.countRows();
                 if (count > 0) {
                     const effectiveLimit = Math.min(count, Math.max(1, maxRows));
+                    interface QueryChainLike {
+                        select?: (cols: string[]) => QueryChainLike;
+                        limit: (n: number) => { toArray: () => Promise<LanceRecord[]> };
+                    }
                     const tableAny = this.table as unknown as {
-                        query?: () => { limit: (n: number) => { toArray: () => Promise<LanceRecord[]> } };
-                        vectorSearch: (vec: number[]) => {
-                            limit: (n: number) => { toArray: () => Promise<LanceRecord[]> };
-                        };
+                        query?: () => QueryChainLike;
+                        vectorSearch: (vec: number[]) => QueryChainLike;
                     };
                     let rows: LanceRecord[] = [];
                     if (typeof tableAny.query === 'function') {
-                        rows = await tableAny.query().limit(effectiveLimit).toArray();
+                        const q = tableAny.query();
+                        const projected =
+                            typeof q.select === 'function'
+                                ? q.select(['file_path', 'vector', 'chunk_text'])
+                                : q;
+                        rows = await projected.limit(effectiveLimit).toArray();
                     } else if (typeof tableAny.vectorSearch === 'function') {
                         const seed = new Array<number>(this.EMBEDDING_DIM).fill(0);
                         seed[0] = 1;
@@ -854,10 +879,25 @@ export class VectorStore implements IVectorStore {
 
             for (const entry of accumulators.values()) {
                 if (entry.count === 0) continue;
-                const mean = entry.sum.map((v) => v / entry.count);
+                const dim = entry.sum.length;
+                let normSq = 0;
+                for (let i = 0; i < dim; i += 1) {
+                    const v = entry.sum[i];
+                    normSq += v * v;
+                }
+                const norm = Math.sqrt(normSq);
+                const normalized = new Array<number>(dim);
+                if (norm > 0) {
+                    const invNorm = 1 / norm;
+                    for (let i = 0; i < dim; i += 1) {
+                        normalized[i] = entry.sum[i] * invNorm;
+                    }
+                } else {
+                    normalized.fill(0);
+                }
                 centroids.set(entry.filePath, {
                     filePath: entry.filePath,
-                    vector: l2NormalizeVector(mean),
+                    vector: normalized,
                     chunkCount: entry.count,
                     sampleText: entry.samples.join('\n'),
                 });
@@ -1059,10 +1099,14 @@ export class VectorStore implements IVectorStore {
 
     private toPlainVector(raw: unknown): number[] {
         if (Array.isArray(raw)) {
-            return raw.map((v) => Number(v));
+            return raw;
+        }
+        if (ArrayBuffer.isView(raw)) {
+            return Array.from(raw as Float32Array);
         }
         if (raw && typeof (raw as { toArray?: () => ArrayLike<number> }).toArray === 'function') {
-            return Array.from((raw as { toArray: () => ArrayLike<number> }).toArray(), Number);
+            const arr = (raw as { toArray: () => ArrayLike<number> }).toArray();
+            return Array.isArray(arr) ? arr : Array.from(arr);
         }
         if (raw && typeof (raw as Iterable<number>)[Symbol.iterator] === 'function') {
             return Array.from(raw as Iterable<number>, Number);

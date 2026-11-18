@@ -21,7 +21,7 @@ import {
 } from '../../shared/contracts';
 import { VectorStore } from './VectorStore';
 import { FileContentExtractor } from './FileContentExtractor';
-import { extractSymbolsAndLinks, StructuralChunker } from './StructuralChunker';
+import { StructuralChunker } from './StructuralChunker';
 import { computeBufferSha256 } from '../../main/services/WorkspaceKnowledgeGraph';
 import { LLMMetrics, MetricOperation } from './LLMMetrics';
 import { isSensitiveSecretFile } from '../../shared/security/SecretGuard';
@@ -168,8 +168,8 @@ export class IndexingService implements IIndexingService {
                 };
             }
 
-            // Structure-aware contextual chunking with line numbers
-            const chunks = this.structuralChunker.chunk(content, filePath);
+            // Structure-aware contextual chunking with single-pass symbol/link extraction
+            const { chunks, symbols, links } = this.structuralChunker.chunkWithMetadata(content, filePath);
 
             if (chunks.length === 0) {
                 await this.vectorStore.deleteFile(filePath).catch(() => 0);
@@ -183,14 +183,9 @@ export class IndexingService implements IIndexingService {
                 };
             }
 
-            const { symbols, links } = extractSymbolsAndLinks(content, filePath);
-
             // Generate embeddings (batch for efficiency)
             const chunkTexts = chunks.map((c) => c.text);
             const embeddings = await this.embeddingModel.embedBatch(chunkTexts);
-
-            // Yield to event loop after embeddings
-            await new Promise(resolve => setImmediate(resolve));
 
             // Store in vector database & knowledge graph
             await this.vectorStore.addChunks(chunks, embeddings, filePath, {
@@ -248,16 +243,17 @@ export class IndexingService implements IIndexingService {
         const results: IndexingResult[] = [];
 
         try {
-            // Process sequentially to avoid overwhelming system
-            for (const filePath of filePaths) {
+            for (let i = 0; i < filePaths.length; i++) {
                 if (options?.signal?.aborted) {
                     break;
                 }
-                const result = await this.indexFile(filePath, false, options);
+                const result = await this.indexFile(filePaths[i], false, options);
                 results.push(result);
 
-                // Yield between files without artificial fixed delay
-                await new Promise(resolve => setImmediate(resolve));
+                // Yield periodically without stalling single-file throughput
+                if ((i & 3) === 3) {
+                    await new Promise(resolve => setImmediate(resolve));
+                }
             }
         } finally {
             if (typeof this.vectorStore.flushPendingRecords === 'function') {

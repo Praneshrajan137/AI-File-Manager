@@ -12,6 +12,7 @@ import { IpcMainInvokeEvent } from 'electron';
 import fsSync from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
+import { monitorEventLoopDelay } from 'perf_hooks';
 import { AppConfig, ConfigManager, resolveCanonicalVectorDbDir, resolveDefaultModelCacheDir } from '@shared/config';
 import {
   AgentRunResult,
@@ -1244,65 +1245,84 @@ export async function getIndexingStatus(
   }
 }
 
-function calculateAdaptiveYield(filePath: string, currentIndexed: number): number {
-  const ext = path.extname(filePath).toLowerCase();
-  const heavyExtensions = ['.pdf', '.docx', '.xlsx', '.pptx'];
-  const baseYield = heavyExtensions.includes(ext) ? 250 : 100;
-  const fatigueMultiplier = 1 + Math.floor(currentIndexed / 10) * 0.1;
-  return Math.min(Math.round(baseYield * fatigueMultiplier), 500);
+function resolveEventLoopAdaptiveYieldMs(
+  p95LagMs: number,
+  activeQueriesCount: number
+): number {
+  if (activeQueriesCount > 0) {
+    return 40;
+  }
+  if (p95LagMs > 24) {
+    return Math.min(40, Math.round(p95LagMs * 0.5));
+  }
+  return 0;
 }
 
 async function indexFilesBackground(
   filePaths: string[],
   event: IpcMainInvokeEvent
 ): Promise<void> {
-  const BATCH_SIZE = 5;
+  const BATCH_PROGRESS_INTERVAL = 5;
+  const eld = monitorEventLoopDelay({ resolution: 20 });
+  eld.enable();
 
-  for (const filePath of filePaths) {
-    if (abortIndexing) {
-      LLMLogger.info('Indexing aborted by user');
-      break;
-    }
-
-    try {
-      currentFile = filePath;
-
-      const canonicalPath = await validateCanonicalPathOrThrow(filePath);
-      if (isSensitiveSecretFile(canonicalPath).blocked) {
-        continue;
+  try {
+    for (let idx = 0; idx < filePaths.length; idx++) {
+      const filePath = filePaths[idx];
+      if (abortIndexing) {
+        LLMLogger.info('Indexing aborted by user');
+        break;
       }
 
-      const indexResult = await indexingService!.indexFile(canonicalPath, false, {
-        skipMetadataStubs: true,
-      });
-      const didEmbedWork = indexResult.success && indexResult.chunksCreated > 0;
-      if (didEmbedWork) {
-        indexedCount++;
-      }
+      try {
+        currentFile = filePath;
 
-      if (!event.sender.isDestroyed()) {
-        event.sender.send('LLM:INDEXING_PROGRESS', {
-          indexed: indexedCount,
-          total: totalToIndex,
-          currentFile: filePath,
-        });
-      }
-
-      if (didEmbedWork) {
-        const yieldDuration = calculateAdaptiveYield(filePath, indexedCount);
-        await new Promise((resolve) => setTimeout(resolve, yieldDuration));
-
-        if (indexedCount % BATCH_SIZE === 0) {
-          const batchYield = Math.min(300 + indexedCount * 2, 600);
-          await new Promise((resolve) => setTimeout(resolve, batchYield));
+        const canonicalPath = await validateCanonicalPathOrThrow(filePath);
+        if (isSensitiveSecretFile(canonicalPath).blocked) {
+          continue;
         }
-      } else {
-        await new Promise((resolve) => setImmediate(resolve));
+
+        const indexResult = await indexingService!.indexFile(canonicalPath, false, {
+          skipMetadataStubs: true,
+        });
+        const didEmbedWork = indexResult.success && indexResult.chunksCreated > 0;
+        if (didEmbedWork) {
+          indexedCount++;
+        }
+
+        if (
+          !event.sender.isDestroyed() &&
+          (didEmbedWork || idx === filePaths.length - 1 || idx % BATCH_PROGRESS_INTERVAL === 0)
+        ) {
+          event.sender.send('LLM:INDEXING_PROGRESS', {
+            indexed: indexedCount,
+            total: totalToIndex,
+            currentFile: filePath,
+          });
+        }
+
+        if (didEmbedWork) {
+          const p95LagMs = eld.percentile(95) / 1e6;
+          eld.reset();
+          const yieldMs = resolveEventLoopAdaptiveYieldMs(
+            Number.isFinite(p95LagMs) ? p95LagMs : 0,
+            activeQueryAbortControllers.size
+          );
+          if (yieldMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, yieldMs));
+          } else {
+            await new Promise((resolve) => setImmediate(resolve));
+          }
+        } else if ((idx & 3) === 3) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        LLMLogger.warn('Failed to index file', { filePath, error: msg });
       }
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      LLMLogger.warn('Failed to index file', { filePath, error: msg });
     }
+  } finally {
+    eld.disable();
   }
 
   try {

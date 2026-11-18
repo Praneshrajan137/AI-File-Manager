@@ -96,88 +96,125 @@ const SENSITIVE_PATH_SUFFIX_PATTERNS: readonly { pattern: RegExp; reason: string
 interface RedactionRule {
   pattern: RegExp;
   replacement: string;
+  hasBackref?: boolean;
+  triggers?: readonly string[];
+  guardRe?: RegExp;
+  requiresAssignment?: boolean;
 }
+
+const RULE_18_TRIGGERS = [
+  '_KEY', 'Key', '_key',
+  '_TOKEN', 'Token', '_token',
+  '_SECRET', 'Secret', '_secret',
+  '_PASSWORD', 'Password', '_password',
+] as const;
 
 const PRIVATE_KEY_BEGIN_LINE_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
 const PRIVATE_KEY_END_LINE_RE = /-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
+const BEARER_GUARD_RE = /bearer\s/i;
+const BASIC_GUARD_RE = /basic\s/i;
 
 const INLINE_SECRET_RULES: readonly RedactionRule[] = [
   {
     pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/g,
     replacement: '[REDACTED_PRIVATE_KEY]',
+    triggers: ['-----BEGIN '],
   },
   {
     pattern: /\b(AKIA|ASIA)[0-9A-Z]{16}\b/g,
     replacement: '[REDACTED_AWS_KEY]',
+    triggers: ['AKIA', 'ASIA'],
   },
   {
     pattern: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b/g,
     replacement: '[REDACTED_GITHUB_TOKEN]',
+    triggers: ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_'],
   },
   {
     pattern: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
     replacement: '[REDACTED_GITHUB_TOKEN]',
+    triggers: ['github_pat_'],
   },
   {
     pattern: /\bglpat-[A-Za-z0-9_-]{20,}\b/g,
     replacement: '[REDACTED_GITLAB_TOKEN]',
+    triggers: ['glpat-'],
   },
   {
     pattern: /\bsk-(?:ant-|proj-|live_|test_)?[A-Za-z0-9_-]{20,}\b/g,
     replacement: '[REDACTED_API_KEY]',
+    triggers: ['sk-'],
   },
   {
     pattern: /\bhf_[A-Za-z0-9]{20,}\b/g,
     replacement: '[REDACTED_HF_TOKEN]',
+    triggers: ['hf_'],
   },
   {
     pattern: /\bnpm_[A-Za-z0-9]{20,}\b/g,
     replacement: '[REDACTED_NPM_TOKEN]',
+    triggers: ['npm_'],
   },
   {
     pattern: /\bpypi-[A-Za-z0-9_-]{20,}\b/g,
     replacement: '[REDACTED_PYPI_TOKEN]',
+    triggers: ['pypi-'],
   },
   {
     pattern: /\b(?:xox[baprs]|xapp)-[A-Za-z0-9-]{10,}\b/g,
     replacement: '[REDACTED_SLACK_TOKEN]',
+    triggers: ['xox', 'xapp-'],
   },
   {
     pattern: /\bwhsec_[A-Za-z0-9]{20,}\b/g,
     replacement: '[REDACTED_WEBHOOK_SECRET]',
+    triggers: ['whsec_'],
   },
   {
     pattern: /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/g,
     replacement: '[REDACTED_SENDGRID_KEY]',
+    triggers: ['SG.'],
   },
   {
     pattern: /\b(?:dop_v1_[a-f0-9]{32,}|dapi[a-f0-9]{24,})\b/g,
     replacement: '[REDACTED_API_KEY]',
+    triggers: ['dop_v1_', 'dapi'],
   },
   {
     pattern: /\bAIza[0-9A-Za-z_-]{35}\b/g,
     replacement: '[REDACTED_GOOGLE_API_KEY]',
+    triggers: ['AIza'],
   },
   {
     pattern: /(\bBearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi,
     replacement: '$1[REDACTED_BEARER_TOKEN]',
+    hasBackref: true,
+    guardRe: BEARER_GUARD_RE,
   },
   {
     pattern: /(\bBasic\s+)[A-Za-z0-9+/=]{12,}/gi,
     replacement: '$1[REDACTED_BASIC_AUTH]',
+    hasBackref: true,
+    guardRe: BASIC_GUARD_RE,
   },
   {
     pattern: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
     replacement: '[REDACTED_JWT]',
+    triggers: ['eyJ'],
   },
   {
     pattern: /([a-z][a-z0-9+.-]{1,20}:\/\/[^/\s:@"'`]*:)([^@\s"'`]+)(@[^\s"'`]+)/gi,
     replacement: '$1[REDACTED_PASSWORD]$3',
+    hasBackref: true,
+    triggers: ['://'],
   },
   {
     pattern:
       /(['"]?[A-Za-z0-9_]*(?:API_KEY|SECRET_KEY|ACCESS_KEY|ACCESS_TOKEN|AUTH_TOKEN|REFRESH_TOKEN|PRIVATE_KEY|CLIENT_SECRET|WEBHOOK_SECRET|JWT_SECRET|DB_PASSWORD|DATABASE_PASSWORD|ENCRYPTION_KEY|apiKey|secretKey|accessKey|accessToken|authToken|refreshToken|privateKey|clientSecret|webhookSecret|jwtSecret|dbPassword|databasePassword|encryptionKey|api_key|secret_key|access_key|access_token|auth_token|refresh_token|private_key|client_secret|webhook_secret|jwt_secret|db_password|database_password|encryption_key)['"]?)(\s*[:=]\s*['"]?)([A-Za-z0-9+/=._-]{8,})(['"]?)/g,
     replacement: '$1$2[REDACTED_SECRET]$4',
+    hasBackref: true,
+    requiresAssignment: true,
+    triggers: RULE_18_TRIGGERS,
   },
 ];
 
@@ -240,6 +277,22 @@ export function isSensitiveSecretFile(filePath: string): SecretGuardFileCheck {
   return { blocked: false };
 }
 
+function shouldCheckRule(text: string, rule: RedactionRule): boolean {
+  if (rule.requiresAssignment && !text.includes(':') && !text.includes('=')) {
+    return false;
+  }
+  if (rule.guardRe) {
+    return rule.guardRe.test(text);
+  }
+  const triggers = rule.triggers!;
+  for (let i = 0; i < triggers.length; i += 1) {
+    if (text.includes(triggers[i])) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function applyInlineRules(text: string, preserveLineCount: boolean): SecretRedactionResult {
   if (!text) {
     return { sanitizedText: text, redactionsCount: 0 };
@@ -249,12 +302,15 @@ function applyInlineRules(text: string, preserveLineCount: boolean): SecretRedac
   let redactionsCount = 0;
 
   for (const rule of INLINE_SECRET_RULES) {
-    const freshRegex = new RegExp(rule.pattern.source, rule.pattern.flags);
-    sanitizedText = sanitizedText.replace(freshRegex, (...args) => {
+    if (!shouldCheckRule(sanitizedText, rule)) {
+      continue;
+    }
+    rule.pattern.lastIndex = 0;
+    sanitizedText = sanitizedText.replace(rule.pattern, (...args) => {
       redactionsCount += 1;
       const fullMatch = String(args[0] ?? '');
       let replacement = rule.replacement;
-      if (replacement.includes('$')) {
+      if (rule.hasBackref) {
         replacement = replacement.replace(/\$(\d)/g, (_, idxText: string) => {
           const idx = Number(idxText);
           const cap = args[idx];

@@ -172,38 +172,85 @@ async function embedText(text: string): Promise<number[]> {
  */
 let embeddingCount = 0;
 const GC_THRESHOLD = 100; // Hint GC every 100 embeddings
+const WORKER_MICRO_BATCH_SIZE = 8;
 
 async function embedBatch(
     id: number,
     texts: string[]
 ): Promise<number[][]> {
-    const embeddings: number[][] = [];
     const total = texts.length;
+    if (total === 0) {
+        return [];
+    }
 
-    for (let i = 0; i < texts.length; i++) {
-        const embedding = await embedText(texts[i]);
-        embeddings.push(embedding);
-        embeddingCount++;
+    const embeddings = new Array<number[]>(total);
+    const nonEmptyIndices: number[] = [];
+    const nonEmptyTexts: string[] = [];
 
-        // Send progress every 5 items or on last item
-        if (i % 5 === 0 || i === total - 1) {
-            parentPort?.postMessage({
-                type: 'progress',
-                id,
-                current: i + 1,
-                total,
-            });
+    for (let i = 0; i < total; i++) {
+        const text = texts[i];
+        if (!text || text.trim() === '') {
+            embeddings[i] = new Array(DIMENSIONS).fill(0);
+        } else {
+            nonEmptyIndices.push(i);
+            nonEmptyTexts.push(text);
         }
+    }
 
-        // Hint GC periodically to prevent memory accumulation
-        if (embeddingCount % GC_THRESHOLD === 0) {
-            if (typeof global.gc === 'function') {
-                global.gc();
+    if (nonEmptyTexts.length === 0) {
+        parentPort?.postMessage({ type: 'progress', id, current: total, total });
+        return embeddings;
+    }
+
+    if (!extractor) {
+        throw new Error('Embedding extractor is not initialized');
+    }
+
+    let processedNonEmpty = 0;
+    for (let start = 0; start < nonEmptyTexts.length; start += WORKER_MICRO_BATCH_SIZE) {
+        const sliceTexts = nonEmptyTexts.slice(start, start + WORKER_MICRO_BATCH_SIZE);
+        const sliceIndices = nonEmptyIndices.slice(start, start + WORKER_MICRO_BATCH_SIZE);
+        let handledBatched = false;
+
+        if (sliceTexts.length > 1) {
+            const output = await extractor(sliceTexts as unknown as string, {
+                pooling: 'mean',
+                normalize: true,
+            });
+            const dims = (output as { dims?: number[] }).dims;
+            const rawData = output?.data as Float32Array | undefined;
+            if (Array.isArray(dims) && dims.length >= 2 && dims[0] === sliceTexts.length && rawData) {
+                const dim = dims[1] > 0 ? dims[1] : DIMENSIONS;
+                for (let k = 0; k < sliceTexts.length; k++) {
+                    embeddings[sliceIndices[k]] = Array.from(rawData.subarray(k * dim, (k + 1) * dim));
+                }
+                handledBatched = true;
             }
         }
 
-        // Yield to prevent blocking worker's event loop
-        await new Promise(resolve => setImmediate(resolve));
+        if (!handledBatched) {
+            for (let k = 0; k < sliceTexts.length; k++) {
+                embeddings[sliceIndices[k]] = await embedText(sliceTexts[k]);
+            }
+        }
+
+        processedNonEmpty += sliceTexts.length;
+        embeddingCount += sliceTexts.length;
+
+        const currentProgress =
+            start + WORKER_MICRO_BATCH_SIZE >= nonEmptyTexts.length ? total : processedNonEmpty;
+        parentPort?.postMessage({
+            type: 'progress',
+            id,
+            current: currentProgress,
+            total,
+        });
+
+        if (embeddingCount % GC_THRESHOLD < sliceTexts.length && typeof global.gc === 'function') {
+            global.gc();
+        }
+
+        await new Promise((resolve) => setImmediate(resolve));
     }
 
     return embeddings;

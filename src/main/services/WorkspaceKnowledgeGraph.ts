@@ -958,6 +958,41 @@ export class WorkspaceKnowledgeGraph {
     };
   }
 
+  getChunkLocationsBatch(
+    chunkIds: string[]
+  ): Map<string, { startLine: number; endLine: number; heading: string }> {
+    const out = new Map<string, { startLine: number; endLine: number; heading: string }>();
+    if (chunkIds.length === 0) {
+      return out;
+    }
+
+    const db = this.getDb();
+    const uniqueIds = Array.from(new Set(chunkIds));
+    const BATCH_LIMIT = 900;
+    for (let start = 0; start < uniqueIds.length; start += BATCH_LIMIT) {
+      const slice = uniqueIds.slice(start, start + BATCH_LIMIT);
+      const placeholders = slice.map(() => '?').join(', ');
+      const rows = db
+        .prepare(
+          `SELECT id, start_line, end_line, heading FROM chunks WHERE id IN (${placeholders})`
+        )
+        .all(...slice) as Array<{
+        id: string;
+        start_line: number;
+        end_line: number;
+        heading: string;
+      }>;
+      for (const row of rows) {
+        out.set(row.id, {
+          startLine: row.start_line,
+          endLine: row.end_line,
+          heading: row.heading,
+        });
+      }
+    }
+    return out;
+  }
+
   getStats(): {
     totalFiles: number;
     totalChunks: number;

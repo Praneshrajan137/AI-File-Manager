@@ -177,6 +177,12 @@ export function extractSymbolsAndLinks(
   return { symbols, links };
 }
 
+export interface ChunkWithMetadataResult {
+  chunks: StructuralChunk[];
+  symbols: ExtractedSymbol[];
+  links: ExtractedLink[];
+}
+
 /**
  * Structure-aware, contextual chunker targeting <= 420 tokens per chunk so embeddings
  * never truncate past BGE-small-en-v1.5's 512-token context window while preserving
@@ -196,8 +202,12 @@ export class StructuralChunker {
   }
 
   chunk(text: string, filePath: string): StructuralChunk[] {
+    return this.chunkWithMetadata(text, filePath).chunks;
+  }
+
+  chunkWithMetadata(text: string, filePath: string): ChunkWithMetadataResult {
     if (!text || text.trim().length === 0) {
-      return [];
+      return { chunks: [], symbols: [], links: [] };
     }
 
     const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -459,7 +469,11 @@ export class StructuralChunker {
       flushSegment(lines.length - 1);
     }
 
-    return chunks;
+    return {
+      chunks,
+      symbols: extractedMeta.symbols,
+      links: extractedMeta.links,
+    };
   }
 }
 
