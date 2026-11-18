@@ -105,6 +105,23 @@ export function buildSafeFtsQuery(rawQuery: string): string {
     .join(' OR ');
 }
 
+interface GraphAdjacencySnapshot {
+  dataVersion: number;
+  localWriteEpoch: number;
+  allFiles: Array<{ path: string; canonicalPath: string; fileType: string; chunkCount: number }>;
+  byKey: Map<string, string>;
+  canonByKey: Map<string, string>;
+  edges: WorkspaceGraphEdge[];
+  adj: Map<string, Set<string>>;
+  topSymbolsByFile: Map<string, string[]>;
+  inDeg: Map<string, number>;
+  outDeg: Map<string, number>;
+  linkDegree: Map<string, number>;
+}
+
+const RELATIVE_CANDIDATE_EXTS = ['', '.md', '.markdown', '.ts', '.tsx', '.js', '.jsx', '.py', '.json'] as const;
+const RELATIVE_INDEX_FILES = ['index.ts', 'index.tsx', 'index.js', 'index.md'] as const;
+
 /**
  * Persistent disk-backed Workspace Knowledge Graph powered by Node 24 / Electron 45
  * built-in `node:sqlite` (WAL mode + FTS5 `bm25()` + SHA-256 duplicates + symbol/link graph).
@@ -113,10 +130,45 @@ export function buildSafeFtsQuery(rawQuery: string): string {
 export class WorkspaceKnowledgeGraph {
   private db: NodeSqliteDatabase | null = null;
   private readonly dbPath: string;
+  private stmts = new Map<string, ReturnType<NodeSqliteDatabase['prepare']>>();
+  private localWriteEpoch = 0;
+  private cachedAdjacency: GraphAdjacencySnapshot | null = null;
 
   constructor(dbPath: string = ':memory:') {
     this.dbPath = dbPath;
     this.openAndMigrate();
+  }
+
+  private prepareCached(db: NodeSqliteDatabase, sql: string): ReturnType<NodeSqliteDatabase['prepare']> {
+    let stmt = this.stmts.get(sql);
+    if (!stmt) {
+      stmt = db.prepare(sql);
+      this.stmts.set(sql, stmt);
+    }
+    return stmt;
+  }
+
+  private readDataVersion(db: NodeSqliteDatabase): number {
+    const row = this.prepareCached(db, 'PRAGMA data_version').get() as { data_version?: number } | undefined;
+    return Number(row?.data_version ?? 0);
+  }
+
+  private invalidateGraphSnapshot(): void {
+    this.localWriteEpoch += 1;
+    this.cachedAdjacency = null;
+  }
+
+  private extractTargetKeyLower(targetRef: string): string {
+    const trimmed = targetRef.split('|')[0].split('#')[0].split('?')[0].trim();
+    if (!trimmed) return '';
+    const normalized = trimmed.replace(/\\/g, '/').replace(/\/+$/, '');
+    const slashIdx = normalized.lastIndexOf('/');
+    const base = slashIdx >= 0 ? normalized.slice(slashIdx + 1) : normalized;
+    return base.toLowerCase();
+  }
+
+  private extractCleanTrimmedLower(targetRef: string): string {
+    return targetRef.trim().toLowerCase();
   }
 
   private openAndMigrate(): void {
@@ -137,104 +189,205 @@ export class WorkspaceKnowledgeGraph {
       PRAGMA synchronous = NORMAL;
       PRAGMA foreign_keys = ON;
       PRAGMA temp_store = MEMORY;
-
-      CREATE TABLE IF NOT EXISTS files (
-        path TEXT PRIMARY KEY,
-        sha256 TEXT NOT NULL,
-        size INTEGER NOT NULL,
-        mtime_ms INTEGER NOT NULL,
-        file_type TEXT NOT NULL,
-        chunk_count INTEGER NOT NULL,
-        token_estimate INTEGER NOT NULL,
-        indexed_at INTEGER NOT NULL,
-        vector_sync_status TEXT NOT NULL DEFAULT 'synced'
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_files_sha256 ON files(sha256);
-
-      CREATE TABLE IF NOT EXISTS chunks (
-        id TEXT PRIMARY KEY,
-        file_path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
-        chunk_index INTEGER NOT NULL,
-        start_char INTEGER NOT NULL,
-        end_char INTEGER NOT NULL,
-        start_line INTEGER NOT NULL,
-        end_line INTEGER NOT NULL,
-        heading TEXT NOT NULL,
-        chunk_text TEXT NOT NULL,
-        indexed_at INTEGER NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_chunks_file_path ON chunks(file_path);
-
-      CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-        chunk_id UNINDEXED,
-        file_path,
-        heading,
-        chunk_text,
-        tokenize = 'unicode61 tokenchars ''_'''
-      );
-
-      CREATE TABLE IF NOT EXISTS symbols (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        file_path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
-        symbol_name TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        line_number INTEGER NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(symbol_name);
-      CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
-
-      CREATE TABLE IF NOT EXISTS links (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
-        target_ref TEXT NOT NULL,
-        target_path TEXT,
-        kind TEXT NOT NULL,
-        line_number INTEGER NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_links_target ON links(target_ref);
-      CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_path);
-
-      CREATE TABLE IF NOT EXISTS agent_traces (
-        trace_id TEXT PRIMARY KEY,
-        created_at INTEGER NOT NULL,
-        mode TEXT NOT NULL,
-        model TEXT NOT NULL,
-        provider TEXT NOT NULL,
-        prompt_version TEXT NOT NULL,
-        query_preview TEXT NOT NULL,
-        status TEXT NOT NULL,
-        duration_ms INTEGER NOT NULL,
-        step_count INTEGER NOT NULL,
-        duplicate_calls_prevented INTEGER NOT NULL DEFAULT 0,
-        verified_citations INTEGER NOT NULL DEFAULT 0,
-        ungrounded_citations_count INTEGER NOT NULL DEFAULT 0,
-        redactions_applied INTEGER NOT NULL DEFAULT 0,
-        prompt_tokens INTEGER,
-        completion_tokens INTEGER,
-        total_tokens INTEGER,
-        error_summary TEXT,
-        payload_json TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_agent_traces_created_at ON agent_traces(created_at DESC);
     `);
 
-    // Idempotent schema migration for pre-existing databases adding canonical target_path & outbox state
-    const fileColumns = db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>;
-    if (!fileColumns.some((c) => c.name === 'vector_sync_status')) {
-      db.exec("ALTER TABLE files ADD COLUMN vector_sync_status TEXT NOT NULL DEFAULT 'synced';");
-    }
-    db.exec('CREATE INDEX IF NOT EXISTS idx_files_vector_sync ON files(vector_sync_status);');
+    const uvRow = db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined;
+    const currentVersion = Number(uvRow?.user_version ?? 0);
 
-    const linkColumns = db.prepare('PRAGMA table_info(links)').all() as Array<{ name: string }>;
-    if (!linkColumns.some((c) => c.name === 'target_path')) {
-      db.exec('ALTER TABLE links ADD COLUMN target_path TEXT;');
+    if (currentVersion < 2) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS files (
+          path TEXT PRIMARY KEY,
+          sha256 TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          mtime_ms INTEGER NOT NULL,
+          file_type TEXT NOT NULL,
+          chunk_count INTEGER NOT NULL,
+          token_estimate INTEGER NOT NULL,
+          indexed_at INTEGER NOT NULL,
+          vector_sync_status TEXT NOT NULL DEFAULT 'synced',
+          canonical_path TEXT,
+          path_lower TEXT,
+          basename_lower TEXT,
+          stem_lower TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_files_sha256 ON files(sha256);
+
+        CREATE TABLE IF NOT EXISTS chunks (
+          id TEXT PRIMARY KEY,
+          file_path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
+          chunk_index INTEGER NOT NULL,
+          start_char INTEGER NOT NULL,
+          end_char INTEGER NOT NULL,
+          start_line INTEGER NOT NULL,
+          end_line INTEGER NOT NULL,
+          heading TEXT NOT NULL,
+          chunk_text TEXT NOT NULL,
+          indexed_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_chunks_file_path ON chunks(file_path);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+          chunk_id UNINDEXED,
+          file_path,
+          heading,
+          chunk_text,
+          tokenize = 'unicode61 tokenchars ''_'''
+        );
+
+        CREATE TABLE IF NOT EXISTS symbols (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          file_path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
+          symbol_name TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          line_number INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(symbol_name);
+        CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
+
+        CREATE TABLE IF NOT EXISTS links (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
+          target_ref TEXT NOT NULL,
+          target_path TEXT,
+          kind TEXT NOT NULL,
+          line_number INTEGER NOT NULL,
+          target_path_lower TEXT,
+          target_ref_lower TEXT,
+          target_key_lower TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_links_target ON links(target_ref);
+        CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_path);
+
+        CREATE TABLE IF NOT EXISTS agent_traces (
+          trace_id TEXT PRIMARY KEY,
+          created_at INTEGER NOT NULL,
+          mode TEXT NOT NULL,
+          model TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          prompt_version TEXT NOT NULL,
+          query_preview TEXT NOT NULL,
+          status TEXT NOT NULL,
+          duration_ms INTEGER NOT NULL,
+          step_count INTEGER NOT NULL,
+          duplicate_calls_prevented INTEGER NOT NULL DEFAULT 0,
+          verified_citations INTEGER NOT NULL DEFAULT 0,
+          ungrounded_citations_count INTEGER NOT NULL DEFAULT 0,
+          redactions_applied INTEGER NOT NULL DEFAULT 0,
+          prompt_tokens INTEGER,
+          completion_tokens INTEGER,
+          total_tokens INTEGER,
+          error_summary TEXT,
+          payload_json TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_traces_created_at ON agent_traces(created_at DESC);
+      `);
+
+      // Idempotent schema migration for pre-existing v1 databases
+      const fileColumns = db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>;
+      const fileColSet = new Set(fileColumns.map((c) => c.name));
+      if (!fileColSet.has('vector_sync_status')) {
+        db.exec("ALTER TABLE files ADD COLUMN vector_sync_status TEXT NOT NULL DEFAULT 'synced';");
+      }
+      if (!fileColSet.has('canonical_path')) {
+        db.exec('ALTER TABLE files ADD COLUMN canonical_path TEXT;');
+      }
+      if (!fileColSet.has('path_lower')) {
+        db.exec('ALTER TABLE files ADD COLUMN path_lower TEXT;');
+      }
+      if (!fileColSet.has('basename_lower')) {
+        db.exec('ALTER TABLE files ADD COLUMN basename_lower TEXT;');
+      }
+      if (!fileColSet.has('stem_lower')) {
+        db.exec('ALTER TABLE files ADD COLUMN stem_lower TEXT;');
+      }
+
+      const linkColumns = db.prepare('PRAGMA table_info(links)').all() as Array<{ name: string }>;
+      const linkColSet = new Set(linkColumns.map((c) => c.name));
+      if (!linkColSet.has('target_path')) {
+        db.exec('ALTER TABLE links ADD COLUMN target_path TEXT;');
+      }
+      if (!linkColSet.has('target_path_lower')) {
+        db.exec('ALTER TABLE links ADD COLUMN target_path_lower TEXT;');
+      }
+      if (!linkColSet.has('target_ref_lower')) {
+        db.exec('ALTER TABLE links ADD COLUMN target_ref_lower TEXT;');
+      }
+      if (!linkColSet.has('target_key_lower')) {
+        db.exec('ALTER TABLE links ADD COLUMN target_key_lower TEXT;');
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_files_vector_sync ON files(vector_sync_status);
+        CREATE INDEX IF NOT EXISTS idx_files_path_lower ON files(path_lower);
+        CREATE INDEX IF NOT EXISTS idx_files_basename_lower ON files(basename_lower);
+        CREATE INDEX IF NOT EXISTS idx_files_stem_lower ON files(stem_lower);
+        CREATE INDEX IF NOT EXISTS idx_files_indexed_at ON files(indexed_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_links_target_path ON links(target_path);
+        CREATE INDEX IF NOT EXISTS idx_links_target_path_lower ON links(target_path_lower);
+        CREATE INDEX IF NOT EXISTS idx_links_target_ref_lower ON links(target_ref_lower);
+        CREATE INDEX IF NOT EXISTS idx_links_target_key_lower ON links(target_key_lower);
+      `);
+
+      // Backfill legacy rows once if upgrading an existing v1 database
+      const needsFileBackfill = Boolean(
+        db.prepare('SELECT 1 FROM files WHERE path_lower IS NULL OR canonical_path IS NULL LIMIT 1').get()
+      );
+      const needsLinkBackfill = Boolean(
+        db.prepare('SELECT 1 FROM links WHERE target_key_lower IS NULL OR target_ref_lower IS NULL LIMIT 1').get()
+      );
+      if (needsFileBackfill || needsLinkBackfill) {
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          if (needsFileBackfill) {
+            const legacyFiles = db
+              .prepare('SELECT path FROM files WHERE path_lower IS NULL OR canonical_path IS NULL')
+              .all() as Array<{ path: string }>;
+            const updateFileStmt = db.prepare(
+              'UPDATE files SET canonical_path = ?, path_lower = ?, basename_lower = ?, stem_lower = ? WHERE path = ?'
+            );
+            for (const row of legacyFiles) {
+              const canon = this.canonicalizeLookupPath(row.path);
+              const lowerPath = path.resolve(row.path).toLowerCase();
+              const baseLower = path.basename(row.path).toLowerCase();
+              const stemLower = path.basename(row.path, path.extname(row.path)).toLowerCase();
+              updateFileStmt.run(canon, lowerPath, baseLower, stemLower, row.path);
+            }
+          }
+          if (needsLinkBackfill) {
+            const legacyLinks = db
+              .prepare('SELECT id, target_ref, target_path FROM links WHERE target_key_lower IS NULL OR target_ref_lower IS NULL')
+              .all() as Array<{ id: number; target_ref: string; target_path: string | null }>;
+            const updateLinkStmt = db.prepare(
+              'UPDATE links SET target_path_lower = ?, target_ref_lower = ?, target_key_lower = ? WHERE id = ?'
+            );
+            for (const row of legacyLinks) {
+              updateLinkStmt.run(
+                row.target_path ? row.target_path.toLowerCase() : null,
+                this.extractCleanTrimmedLower(row.target_ref),
+                this.extractTargetKeyLower(row.target_ref),
+                row.id
+              );
+            }
+          }
+          db.exec('COMMIT');
+        } catch (err) {
+          try {
+            db.exec('ROLLBACK');
+          } catch {
+            // Ignore rollback failure after migration error
+          }
+          throw err;
+        }
+      }
+
+      db.exec('PRAGMA user_version = 2;');
     }
-    db.exec('CREATE INDEX IF NOT EXISTS idx_links_target_path ON links(target_path);');
 
     this.db = db;
   }
@@ -277,16 +430,19 @@ export class WorkspaceKnowledgeGraph {
     return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
   }
 
-  private isPathWithinPrefix(candidatePath: string, prefixPath: string): boolean {
-    const target = this.canonicalizeLookupPath(candidatePath).replace(/[\\/]+$/, '');
-    const prefix = this.canonicalizeLookupPath(prefixPath).replace(/[\\/]+$/, '');
-    if (!prefix) {
+  private canonicalizePrefixList(prefixes: readonly string[]): string[] {
+    return prefixes.map((p) => this.canonicalizeLookupPath(p).replace(/[\\/]+$/, ''));
+  }
+
+  private isCanonicalWithinPrefix(canonicalTarget: string, normalizedPrefix: string): boolean {
+    const target = canonicalTarget.replace(/[\\/]+$/, '');
+    if (!normalizedPrefix) {
       return target.startsWith('/');
     }
     return (
-      target === prefix ||
-      target.startsWith(`${prefix}/`) ||
-      target.startsWith(`${prefix}\\`)
+      target === normalizedPrefix ||
+      target.startsWith(`${normalizedPrefix}/`) ||
+      target.startsWith(`${normalizedPrefix}\\`)
     );
   }
 
@@ -304,41 +460,45 @@ export class WorkspaceKnowledgeGraph {
     if (trimmed.startsWith('./') || trimmed.startsWith('../')) {
       const sourceDir = path.dirname(sourcePath);
       const baseCandidate = path.resolve(sourceDir, trimmed);
-      const candidateExts = ['', '.md', '.markdown', '.ts', '.tsx', '.js', '.jsx', '.py', '.json'];
-      const lookupSql =
-        process.platform === 'win32'
-          ? 'SELECT path FROM files WHERE LOWER(path) = LOWER(?) LIMIT 1'
-          : 'SELECT path FROM files WHERE path = ? LIMIT 1';
-      for (const ext of candidateExts) {
-        const candidate = ext ? `${baseCandidate}${ext}` : baseCandidate;
-        const row = db.prepare(lookupSql).get(candidate) as
-          | { path: string }
-          | undefined;
-        if (row) {
-          return row.path;
-        }
+      const orderedCandidates: string[] = [];
+      for (const ext of RELATIVE_CANDIDATE_EXTS) {
+        orderedCandidates.push(ext ? `${baseCandidate}${ext}` : baseCandidate);
       }
-      // Also check index file inside directory import (`./utils` -> `./utils/index.ts`)
-      for (const indexFile of ['index.ts', 'index.tsx', 'index.js', 'index.md']) {
-        const candidate = path.join(baseCandidate, indexFile);
-        const row = db.prepare(lookupSql).get(candidate) as
-          | { path: string }
-          | undefined;
-        if (row) {
-          return row.path;
+      for (const indexFile of RELATIVE_INDEX_FILES) {
+        orderedCandidates.push(path.join(baseCandidate, indexFile));
+      }
+
+      const isWin = process.platform === 'win32';
+      const placeholders = orderedCandidates.map(() => '?').join(', ');
+      const sql = isWin
+        ? `SELECT path, path_lower FROM files WHERE path_lower IN (${placeholders})`
+        : `SELECT path FROM files WHERE path IN (${placeholders})`;
+      const queryParams = isWin ? orderedCandidates.map((c) => c.toLowerCase()) : orderedCandidates;
+      const rows = this.prepareCached(db, sql).all(...queryParams) as Array<{ path: string; path_lower?: string }>;
+      if (rows.length > 0) {
+        const hitMap = new Map<string, string>();
+        for (const r of rows) {
+          hitMap.set(isWin ? (r.path_lower ?? r.path.toLowerCase()) : r.path, r.path);
+        }
+        for (const cand of orderedCandidates) {
+          const hit = hitMap.get(isWin ? cand.toLowerCase() : cand);
+          if (hit) {
+            return hit;
+          }
         }
       }
       return baseCandidate;
     }
 
     if (kind === 'wikilink') {
-      const cleanedName = path.basename(trimmed).toLowerCase();
-      const allFiles = db.prepare('SELECT path FROM files').all() as Array<{ path: string }>;
-      for (const f of allFiles) {
-        const fileBase = path.basename(f.path).toLowerCase();
-        const fileStem = path.basename(f.path, path.extname(f.path)).toLowerCase();
-        if (fileBase === cleanedName || fileStem === cleanedName) {
-          return f.path;
+      const cleanedName = trimmed.replace(/\\/g, '/').split('/').pop()?.toLowerCase() ?? '';
+      if (cleanedName) {
+        const row = this.prepareCached(
+          db,
+          'SELECT path FROM files WHERE basename_lower = ? OR stem_lower = ? ORDER BY rowid ASC LIMIT 1'
+        ).get(cleanedName, cleanedName) as { path: string } | undefined;
+        if (row) {
+          return row.path;
         }
       }
     }
@@ -372,9 +532,10 @@ export class WorkspaceKnowledgeGraph {
 
   needsReindex(filePath: string, mtimeMs: number, size: number, sha256?: string): boolean {
     const db = this.getDb();
-    const row = db
-      .prepare('SELECT sha256, size, mtime_ms, vector_sync_status FROM files WHERE path = ?')
-      .get(filePath) as
+    const row = this.prepareCached(
+      db,
+      'SELECT sha256, size, mtime_ms, vector_sync_status FROM files WHERE path = ?'
+    ).get(filePath) as
       | { sha256: string; size: number; mtime_ms: number; vector_sync_status?: string }
       | undefined;
 
@@ -396,42 +557,48 @@ export class WorkspaceKnowledgeGraph {
     if (unique.length === 0) {
       return 0;
     }
-    return this.withTransaction((db) => {
-      const stmt = db.prepare("UPDATE files SET vector_sync_status = 'synced' WHERE path = ?");
+    const changed = this.withTransaction((db) => {
+      const stmt = this.prepareCached(db, "UPDATE files SET vector_sync_status = 'synced' WHERE path = ?");
       const caseStmt =
         process.platform === 'win32'
-          ? db.prepare("UPDATE files SET vector_sync_status = 'synced' WHERE LOWER(path) = LOWER(?)")
+          ? this.prepareCached(db, "UPDATE files SET vector_sync_status = 'synced' WHERE path_lower = ?")
           : null;
-      let changed = 0;
+      let updated = 0;
       for (const filePath of unique) {
         const res = stmt.run(filePath);
         let rowChanges = Number(res.changes ?? 0);
         if (rowChanges === 0 && caseStmt) {
-          rowChanges = Number(caseStmt.run(filePath).changes ?? 0);
+          rowChanges = Number(caseStmt.run(path.resolve(filePath).toLowerCase()).changes ?? 0);
         }
-        changed += rowChanges;
+        updated += rowChanges;
       }
-      return changed;
+      return updated;
     });
+    if (changed > 0) {
+      this.invalidateGraphSnapshot();
+    }
+    return changed;
   }
 
   getFilesWithPendingSync(limit: number = 1000): string[] {
     const db = this.getDb();
-    const rows = db
-      .prepare("SELECT path FROM files WHERE vector_sync_status != 'synced' LIMIT ?")
-      .all(limit) as Array<{ path: string }>;
+    const rows = this.prepareCached(
+      db,
+      "SELECT path FROM files WHERE vector_sync_status != 'synced' LIMIT ?"
+    ).all(limit) as Array<{ path: string }>;
     return rows.map((r) => r.path);
   }
 
   getPendingSyncCount(): number {
     const db = this.getDb();
-    const row = db
-      .prepare("SELECT COUNT(*) as cnt FROM files WHERE vector_sync_status != 'synced'")
-      .get() as { cnt: number } | undefined;
+    const row = this.prepareCached(
+      db,
+      "SELECT COUNT(*) as cnt FROM files WHERE vector_sync_status != 'synced'"
+    ).get() as { cnt: number } | undefined;
     return Number(row?.cnt ?? 0);
   }
 
-  upsertDocument(input: KnowledgeGraphUpsertInput): void {
+  private upsertDocumentInTx(db: NodeSqliteDatabase, input: KnowledgeGraphUpsertInput): void {
     const indexedAt = input.indexedAt ?? Date.now();
     const totalChars = input.chunks.reduce((sum, c) => sum + c.text.length, 0);
     const tokenEstimate = input.chunks.reduce((sum, c) => sum + Math.ceil(c.text.length / 4), 0);
@@ -439,92 +606,147 @@ export class WorkspaceKnowledgeGraph {
       input.sha256 ??
       computeBufferSha256(input.chunks.map((c) => c.text).join('\n'));
     const fileType = input.fileType ?? path.extname(input.filePath).toLowerCase().replace(/^\./, '');
+    const canonicalPath = this.canonicalizeLookupPath(input.filePath);
+    const pathLower = path.resolve(input.filePath).toLowerCase();
+    const basenameLower = path.basename(input.filePath).toLowerCase();
+    const stemLower = path.basename(input.filePath, path.extname(input.filePath)).toLowerCase();
 
-    this.withTransaction((db) => {
-      db.prepare('DELETE FROM chunks_fts WHERE file_path = ?').run(input.filePath);
-      db.prepare('DELETE FROM chunks WHERE file_path = ?').run(input.filePath);
-      db.prepare('DELETE FROM symbols WHERE file_path = ?').run(input.filePath);
-      db.prepare('DELETE FROM links WHERE source_path = ?').run(input.filePath);
+    const existing = Boolean(
+      this.prepareCached(db, 'SELECT 1 FROM files WHERE path = ? LIMIT 1').get(input.filePath)
+    );
+    if (existing) {
+      this.prepareCached(db, 'DELETE FROM chunks_fts WHERE file_path = ?').run(input.filePath);
+      this.prepareCached(db, 'DELETE FROM chunks WHERE file_path = ?').run(input.filePath);
+      this.prepareCached(db, 'DELETE FROM symbols WHERE file_path = ?').run(input.filePath);
+      this.prepareCached(db, 'DELETE FROM links WHERE source_path = ?').run(input.filePath);
+    }
 
-      db.prepare(`
-        INSERT INTO files (path, sha256, size, mtime_ms, file_type, chunk_count, token_estimate, indexed_at, vector_sync_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(path) DO UPDATE SET
-          sha256 = excluded.sha256,
-          size = excluded.size,
-          mtime_ms = excluded.mtime_ms,
-          file_type = excluded.file_type,
-          chunk_count = excluded.chunk_count,
-          token_estimate = excluded.token_estimate,
-          indexed_at = excluded.indexed_at,
-          vector_sync_status = excluded.vector_sync_status
-      `).run(
+    this.prepareCached(db, `
+      INSERT INTO files (
+        path, sha256, size, mtime_ms, file_type, chunk_count, token_estimate, indexed_at, vector_sync_status,
+        canonical_path, path_lower, basename_lower, stem_lower
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(path) DO UPDATE SET
+        sha256 = excluded.sha256,
+        size = excluded.size,
+        mtime_ms = excluded.mtime_ms,
+        file_type = excluded.file_type,
+        chunk_count = excluded.chunk_count,
+        token_estimate = excluded.token_estimate,
+        indexed_at = excluded.indexed_at,
+        vector_sync_status = excluded.vector_sync_status,
+        canonical_path = excluded.canonical_path,
+        path_lower = excluded.path_lower,
+        basename_lower = excluded.basename_lower,
+        stem_lower = excluded.stem_lower
+    `).run(
+      input.filePath,
+      computedSha,
+      input.size ?? totalChars,
+      Math.round(input.mtimeMs ?? indexedAt),
+      fileType || 'unknown',
+      input.chunks.length,
+      tokenEstimate,
+      indexedAt,
+      input.vectorSyncStatus ?? 'synced',
+      canonicalPath,
+      pathLower,
+      basenameLower,
+      stemLower
+    );
+
+    const insertChunk = this.prepareCached(db, `
+      INSERT OR REPLACE INTO chunks (id, file_path, chunk_index, start_char, end_char, start_line, end_line, heading, chunk_text, indexed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const insertFts = this.prepareCached(db, `
+      INSERT INTO chunks_fts (chunk_id, file_path, heading, chunk_text)
+      VALUES (?, ?, ?, ?)
+    `);
+
+    for (const chunk of input.chunks) {
+      const startLine = chunk.startLine ?? 1;
+      const endLine = chunk.endLine ?? startLine;
+      const heading = chunk.heading ?? path.basename(input.filePath);
+      insertChunk.run(
+        chunk.id,
         input.filePath,
-        computedSha,
-        input.size ?? totalChars,
-        Math.round(input.mtimeMs ?? indexedAt),
-        fileType || 'unknown',
-        input.chunks.length,
-        tokenEstimate,
-        indexedAt,
-        input.vectorSyncStatus ?? 'synced'
+        chunk.chunkIndex,
+        chunk.startChar,
+        chunk.endChar,
+        startLine,
+        endLine,
+        heading,
+        chunk.text,
+        indexedAt
       );
+      insertFts.run(chunk.id, input.filePath, heading, chunk.text);
+    }
 
-      const insertChunk = db.prepare(`
-        INSERT OR REPLACE INTO chunks (id, file_path, chunk_index, start_char, end_char, start_line, end_line, heading, chunk_text, indexed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      const insertFts = db.prepare(`
-        INSERT INTO chunks_fts (chunk_id, file_path, heading, chunk_text)
-        VALUES (?, ?, ?, ?)
-      `);
+    if (input.symbols && input.symbols.length > 0) {
+      const insertSymbol = this.prepareCached(
+        db,
+        'INSERT INTO symbols (file_path, symbol_name, kind, line_number) VALUES (?, ?, ?, ?)'
+      );
+      for (const sym of input.symbols) {
+        insertSymbol.run(input.filePath, sym.name, sym.kind, sym.lineNumber);
+      }
+    }
 
-      for (const chunk of input.chunks) {
-        const startLine = chunk.startLine ?? 1;
-        const endLine = chunk.endLine ?? startLine;
-        const heading = chunk.heading ?? path.basename(input.filePath);
-        insertChunk.run(
-          chunk.id,
+    if (input.links && input.links.length > 0) {
+      const insertLink = this.prepareCached(
+        db,
+        `INSERT INTO links (
+          source_path, target_ref, target_path, kind, line_number,
+          target_path_lower, target_ref_lower, target_key_lower
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const link of input.links) {
+        const targetPath = this.resolveLinkTargetPath(db, input.filePath, link.targetRef, link.kind);
+        insertLink.run(
           input.filePath,
-          chunk.chunkIndex,
-          chunk.startChar,
-          chunk.endChar,
-          startLine,
-          endLine,
-          heading,
-          chunk.text,
-          indexedAt
+          link.targetRef,
+          targetPath,
+          link.kind,
+          link.lineNumber,
+          targetPath ? targetPath.toLowerCase() : null,
+          this.extractCleanTrimmedLower(link.targetRef),
+          this.extractTargetKeyLower(link.targetRef)
         );
-        insertFts.run(chunk.id, input.filePath, heading, chunk.text);
       }
+    }
+  }
 
-      if (input.symbols && input.symbols.length > 0) {
-        const insertSymbol = db.prepare(
-          'INSERT INTO symbols (file_path, symbol_name, kind, line_number) VALUES (?, ?, ?, ?)'
-        );
-        for (const sym of input.symbols) {
-          insertSymbol.run(input.filePath, sym.name, sym.kind, sym.lineNumber);
-        }
-      }
+  upsertDocument(input: KnowledgeGraphUpsertInput): void {
+    this.withTransaction((db) => {
+      this.upsertDocumentInTx(db, input);
+    });
+    this.invalidateGraphSnapshot();
+  }
 
-      if (input.links && input.links.length > 0) {
-        const insertLink = db.prepare(
-          'INSERT INTO links (source_path, target_ref, target_path, kind, line_number) VALUES (?, ?, ?, ?, ?)'
-        );
-        for (const link of input.links) {
-          const targetPath = this.resolveLinkTargetPath(db, input.filePath, link.targetRef, link.kind);
-          insertLink.run(input.filePath, link.targetRef, targetPath, link.kind, link.lineNumber);
-        }
+  upsertDocumentsBatch(inputs: KnowledgeGraphUpsertInput[]): void {
+    if (inputs.length === 0) {
+      return;
+    }
+    this.withTransaction((db) => {
+      for (const item of inputs) {
+        this.upsertDocumentInTx(db, item);
       }
     });
+    this.invalidateGraphSnapshot();
   }
 
   removeFile(filePath: string): number {
-    return this.withTransaction((db) => {
-      db.prepare('DELETE FROM chunks_fts WHERE file_path = ?').run(filePath);
-      const info = db.prepare('DELETE FROM files WHERE path = ?').run(filePath);
+    const removed = this.withTransaction((db) => {
+      this.prepareCached(db, 'DELETE FROM chunks_fts WHERE file_path = ?').run(filePath);
+      const info = this.prepareCached(db, 'DELETE FROM files WHERE path = ?').run(filePath);
       return Number(info.changes ?? 0);
     });
+    if (removed > 0) {
+      this.invalidateGraphSnapshot();
+    }
+    return removed;
   }
 
   clear(): void {
@@ -537,6 +759,7 @@ export class WorkspaceKnowledgeGraph {
         DELETE FROM files;
       `);
     });
+    this.invalidateGraphSnapshot();
   }
 
   private buildScopeWhere(
@@ -798,7 +1021,7 @@ export class WorkspaceKnowledgeGraph {
 
   findBySymbol(symbolName: string, limit: number = 25): Array<{ filePath: string; symbolName: string; kind: string; lineNumber: number }> {
     const db = this.getDb();
-    const rows = db.prepare(`
+    const rows = this.prepareCached(db, `
       SELECT file_path, symbol_name, kind, line_number
       FROM symbols
       WHERE symbol_name LIKE ?
@@ -829,36 +1052,53 @@ export class WorkspaceKnowledgeGraph {
       return [];
     }
 
+    const cleanedLower = cleaned.toLowerCase();
     const baseWithExt = path.basename(cleaned).toLowerCase();
     const stemNoExt = path.basename(cleaned, path.extname(cleaned)).toLowerCase();
     const resolvedTarget = path.isAbsolute(cleaned) ? path.resolve(cleaned) : cleaned;
+    const resolvedLower = resolvedTarget.toLowerCase();
 
-    const rows = db.prepare(`
+    const rows = this.prepareCached(db, `
       SELECT source_path, target_ref, target_path, kind, line_number
-      FROM links
-      WHERE (target_path IS NOT NULL AND LOWER(target_path) = LOWER(?))
-         OR LOWER(target_ref) = LOWER(?)
-         OR (
-           kind = 'wikilink'
-           AND (
-             LOWER(TRIM(target_ref)) = ?
-             OR LOWER(TRIM(target_ref)) = ?
-             OR LOWER(TRIM(target_ref)) LIKE ?
-             OR LOWER(TRIM(target_ref)) LIKE ?
-           )
-         )
-         OR (
-           kind IN ('import', 'mdlink', 'markdown_link')
-           AND (
-             LOWER(target_ref) = ?
-             OR LOWER(target_ref) LIKE ?
-             OR LOWER(target_ref) LIKE ?
-           )
-         )
+      FROM (
+        SELECT id, source_path, target_ref, target_path, kind, line_number
+        FROM links
+        WHERE target_path_lower = ?
+        UNION
+        SELECT id, source_path, target_ref, target_path, kind, line_number
+        FROM links
+        WHERE target_ref_lower = ?
+        UNION
+        SELECT id, source_path, target_ref, target_path, kind, line_number
+        FROM links
+        WHERE target_key_lower IN (?, ?)
+          AND (
+            (
+              kind = 'wikilink'
+              AND (
+                target_ref_lower = ?
+                OR target_ref_lower = ?
+                OR target_ref_lower LIKE ?
+                OR target_ref_lower LIKE ?
+              )
+            )
+            OR (
+              kind IN ('import', 'mdlink', 'markdown_link')
+              AND (
+                target_ref_lower = ?
+                OR target_ref_lower LIKE ?
+                OR target_ref_lower LIKE ?
+              )
+            )
+          )
+      )
+      ORDER BY id ASC
       LIMIT ?
     `).all(
-      resolvedTarget,
-      cleaned,
+      resolvedLower,
+      cleanedLower,
+      baseWithExt,
+      stemNoExt,
       baseWithExt,
       stemNoExt,
       `${stemNoExt}#%`,
@@ -893,19 +1133,26 @@ export class WorkspaceKnowledgeGraph {
     }
 
     const db = this.getDb();
-    const indexedFiles = db.prepare('SELECT path FROM files').all() as Array<{ path: string }>;
+    const indexedFiles = this.prepareCached(db, 'SELECT path FROM files').all() as Array<{ path: string }>;
     const expandedTargets = new Set<string>();
 
-    for (const rawTarget of targetPaths) {
-      if (!rawTarget) continue;
-      const normTarget = this.normalizeLookupPath(rawTarget);
-      const prefix = normTarget.endsWith(path.sep) ? normTarget : `${normTarget}${path.sep}`;
-      expandedTargets.add(path.resolve(rawTarget));
+    const normalizedTargets = targetPaths
+      .filter(Boolean)
+      .map((rawTarget) => {
+        const normTarget = this.normalizeLookupPath(rawTarget);
+        const prefix = normTarget.endsWith(path.sep) ? normTarget : `${normTarget}${path.sep}`;
+        expandedTargets.add(path.resolve(rawTarget));
+        return { normTarget, prefix };
+      });
 
+    if (normalizedTargets.length > 0) {
       for (const f of indexedFiles) {
         const normFile = this.normalizeLookupPath(f.path);
-        if (normFile === normTarget || normFile.startsWith(prefix)) {
-          expandedTargets.add(f.path);
+        for (const t of normalizedTargets) {
+          if (normFile === t.normTarget || normFile.startsWith(t.prefix)) {
+            expandedTargets.add(f.path);
+            break;
+          }
         }
       }
     }
@@ -936,21 +1183,14 @@ export class WorkspaceKnowledgeGraph {
     return refs;
   }
 
-  private isWithinAllowedRoots(filePath: string, allowedRoots?: readonly string[]): boolean {
-    if (!allowedRoots || allowedRoots.length === 0) {
-      return true;
-    }
-    return allowedRoots.some((root) => this.isPathWithinPrefix(filePath, root));
-  }
-
   getInsights(allowedRoots?: readonly string[]): KnowledgeGraphInsights {
     const db = this.getDb();
-    const allFiles = db
-      .prepare(
-        'SELECT path, sha256, size, file_type, chunk_count, token_estimate, indexed_at FROM files ORDER BY indexed_at DESC'
-      )
-      .all() as Array<{
+    const allFiles = this.prepareCached(
+      db,
+      'SELECT path, canonical_path, sha256, size, file_type, chunk_count, token_estimate, indexed_at FROM files ORDER BY indexed_at DESC'
+    ).all() as Array<{
       path: string;
+      canonical_path: string | null;
       sha256: string;
       size: number;
       file_type: string;
@@ -959,11 +1199,21 @@ export class WorkspaceKnowledgeGraph {
       indexed_at: number;
     }>;
 
-    const visibleFiles = allFiles.filter(
-      (f) => !isSensitiveSecretFile(f.path).blocked && this.isWithinAllowedRoots(f.path, allowedRoots)
-    );
-
     const hasRootScope = Array.isArray(allowedRoots) && allowedRoots.length > 0;
+    const normalizedRoots = hasRootScope ? this.canonicalizePrefixList(allowedRoots!) : [];
+
+    const visibleFiles: typeof allFiles = [];
+    const canonByNorm = new Map<string, string>();
+    for (const f of allFiles) {
+      if (isSensitiveSecretFile(f.path).blocked) continue;
+      const canon = (f.canonical_path ?? this.canonicalizeLookupPath(f.path)).replace(/[\\/]+$/, '');
+      canonByNorm.set(this.normalizeLookupPath(f.path), canon);
+      if (hasRootScope && !normalizedRoots.some((root) => this.isCanonicalWithinPrefix(canon, root))) {
+        continue;
+      }
+      visibleFiles.push(f);
+    }
+
     const stats = hasRootScope
       ? {
           totalFiles: visibleFiles.length,
@@ -1000,9 +1250,10 @@ export class WorkspaceKnowledgeGraph {
     const totalWastedBytes = duplicateClusters.reduce((s, c) => s + c.wastedBytes, 0);
 
     const visiblePathSet = new Set(visibleFiles.map((f) => this.normalizeLookupPath(f.path)));
-    const allLinkRows = db
-      .prepare('SELECT source_path, target_ref FROM links')
-      .all() as Array<{ source_path: string; target_ref: string }>;
+    const allLinkRows = this.prepareCached(db, 'SELECT source_path, target_ref FROM links').all() as Array<{
+      source_path: string;
+      target_ref: string;
+    }>;
     const hubCounts = new Map<string, number>();
     for (const row of allLinkRows) {
       if (!visiblePathSet.has(this.normalizeLookupPath(row.source_path))) {
@@ -1012,12 +1263,11 @@ export class WorkspaceKnowledgeGraph {
       if (!ref || isSensitiveSecretFile(ref).blocked || ref.includes('..') || ref.includes('\0')) {
         continue;
       }
-      if (
-        hasRootScope &&
-        (path.isAbsolute(ref) || /^[A-Za-z]:[\\/]/.test(ref)) &&
-        !this.isWithinAllowedRoots(ref, allowedRoots)
-      ) {
-        continue;
+      if (hasRootScope && (path.isAbsolute(ref) || /^[A-Za-z]:[\\/]/.test(ref))) {
+        const knownCanon = canonByNorm.get(this.normalizeLookupPath(ref)) ?? this.canonicalizeLookupPath(ref);
+        if (!normalizedRoots.some((root) => this.isCanonicalWithinPrefix(knownCanon, root))) {
+          continue;
+        }
       }
       hubCounts.set(ref, (hubCounts.get(ref) ?? 0) + 1);
     }
@@ -1043,43 +1293,69 @@ export class WorkspaceKnowledgeGraph {
     };
   }
 
-  private buildCanonicalEdgeAdjacency(db: NodeSqliteDatabase): {
-    allFiles: Array<{ path: string; fileType: string; chunkCount: number }>;
-    byKey: Map<string, string>;
-    edges: WorkspaceGraphEdge[];
-    adj: Map<string, Set<string>>;
-  } {
-    const fileRows = db
-      .prepare('SELECT path, file_type, chunk_count FROM files ORDER BY path ASC')
-      .all() as Array<{ path: string; file_type: string; chunk_count: number }>;
+  private getOrBuildGraphSnapshot(db: NodeSqliteDatabase): GraphAdjacencySnapshot {
+    const dataVersion = this.readDataVersion(db);
+    if (
+      this.cachedAdjacency &&
+      this.cachedAdjacency.dataVersion === dataVersion &&
+      this.cachedAdjacency.localWriteEpoch === this.localWriteEpoch
+    ) {
+      return this.cachedAdjacency;
+    }
+
+    const fileRows = this.prepareCached(
+      db,
+      'SELECT path, canonical_path, file_type, chunk_count FROM files ORDER BY path ASC'
+    ).all() as Array<{ path: string; canonical_path: string | null; file_type: string; chunk_count: number }>;
 
     const byKey = new Map<string, string>();
+    const canonByKey = new Map<string, string>();
     const byBasename = new Map<string, string[]>();
     const byStem = new Map<string, string[]>();
+    const allFiles: Array<{ path: string; canonicalPath: string; fileType: string; chunkCount: number }> = [];
 
     for (const row of fileRows) {
       const key = this.normalizeLookupPath(row.path);
+      const canon = row.canonical_path ?? this.canonicalizeLookupPath(row.path);
       byKey.set(key, row.path);
+      canonByKey.set(key, canon);
+      allFiles.push({
+        path: row.path,
+        canonicalPath: canon,
+        fileType: row.file_type,
+        chunkCount: Number(row.chunk_count),
+      });
 
       const base = path.basename(row.path).toLowerCase();
-      const baseList = byBasename.get(base) ?? [];
+      let baseList = byBasename.get(base);
+      if (!baseList) {
+        baseList = [];
+        byBasename.set(base, baseList);
+      }
       baseList.push(row.path);
-      byBasename.set(base, baseList);
 
       const stem = path.basename(row.path, path.extname(row.path)).toLowerCase();
       if (stem) {
-        const stemList = byStem.get(stem) ?? [];
+        let stemList = byStem.get(stem);
+        if (!stemList) {
+          stemList = [];
+          byStem.set(stem, stemList);
+        }
         stemList.push(row.path);
-        byStem.set(stem, stemList);
       }
     }
 
-    const resolveEdgeTarget = (sourcePath: string, targetRef: string, targetPath: string | null, kind: string): string | null => {
+    const resolveEdgeTarget = (
+      sourcePath: string,
+      targetRef: string,
+      targetPath: string | null,
+      kind: string
+    ): string | null => {
       if (targetPath) {
         const hit = byKey.get(this.normalizeLookupPath(targetPath));
         if (hit) return hit;
-        for (const ext of ['.md', '.markdown', '.ts', '.tsx', '.js', '.jsx', '.py', '.json']) {
-          const extHit = byKey.get(this.normalizeLookupPath(`${targetPath}${ext}`));
+        for (let i = 1; i < RELATIVE_CANDIDATE_EXTS.length; i += 1) {
+          const extHit = byKey.get(this.normalizeLookupPath(`${targetPath}${RELATIVE_CANDIDATE_EXTS[i]}`));
           if (extHit) return extHit;
         }
       }
@@ -1089,7 +1365,7 @@ export class WorkspaceKnowledgeGraph {
 
       if (trimmed.startsWith('./') || trimmed.startsWith('../')) {
         const baseCand = path.resolve(path.dirname(sourcePath), trimmed);
-        for (const ext of ['', '.md', '.markdown', '.ts', '.tsx', '.js', '.jsx', '.py', '.json']) {
+        for (const ext of RELATIVE_CANDIDATE_EXTS) {
           const hit = byKey.get(this.normalizeLookupPath(ext ? `${baseCand}${ext}` : baseCand));
           if (hit) return hit;
         }
@@ -1114,19 +1390,23 @@ export class WorkspaceKnowledgeGraph {
       return null;
     };
 
-    const linkRows = db
-      .prepare('SELECT source_path, target_ref, target_path, kind, line_number FROM links')
-      .all() as Array<{
-        source_path: string;
-        target_ref: string;
-        target_path: string | null;
-        kind: string;
-        line_number: number;
-      }>;
+    const linkRows = this.prepareCached(
+      db,
+      'SELECT source_path, target_ref, target_path, kind, line_number FROM links'
+    ).all() as Array<{
+      source_path: string;
+      target_ref: string;
+      target_path: string | null;
+      kind: string;
+      line_number: number;
+    }>;
 
     const adj = new Map<string, Set<string>>();
     const edges: WorkspaceGraphEdge[] = [];
     const seenEdgeKeys = new Set<string>();
+    const inDeg = new Map<string, number>();
+    const outDeg = new Map<string, number>();
+    const linkDegree = new Map<string, number>();
 
     const addNeighbor = (a: string, b: string): void => {
       if (a === b) return;
@@ -1158,19 +1438,44 @@ export class WorkspaceKnowledgeGraph {
           kind: row.kind,
           lineNumber: Number(row.line_number),
         });
+        outDeg.set(canonicalSource, (outDeg.get(canonicalSource) ?? 0) + 1);
+        inDeg.set(canonicalTarget, (inDeg.get(canonicalTarget) ?? 0) + 1);
+        linkDegree.set(canonicalSource, (linkDegree.get(canonicalSource) ?? 0) + 1);
+        linkDegree.set(canonicalTarget, (linkDegree.get(canonicalTarget) ?? 0) + 1);
       }
     }
 
-    return {
-      allFiles: fileRows.map((r) => ({
-        path: r.path,
-        fileType: r.file_type,
-        chunkCount: Number(r.chunk_count),
-      })),
+    const symbolRows = this.prepareCached(
+      db,
+      'SELECT file_path, symbol_name FROM symbols ORDER BY line_number ASC'
+    ).all() as Array<{ file_path: string; symbol_name: string }>;
+    const topSymbolsByFile = new Map<string, string[]>();
+    for (const row of symbolRows) {
+      let list = topSymbolsByFile.get(row.file_path);
+      if (!list) {
+        list = [];
+        topSymbolsByFile.set(row.file_path, list);
+      }
+      if (list.length < 4 && !list.includes(row.symbol_name)) {
+        list.push(row.symbol_name);
+      }
+    }
+
+    const snapshot: GraphAdjacencySnapshot = {
+      dataVersion,
+      localWriteEpoch: this.localWriteEpoch,
+      allFiles,
       byKey,
+      canonByKey,
       edges,
       adj,
+      topSymbolsByFile,
+      inDeg,
+      outDeg,
+      linkDegree,
     };
+    this.cachedAdjacency = snapshot;
+    return snapshot;
   }
 
   /**
@@ -1192,7 +1497,7 @@ export class WorkspaceKnowledgeGraph {
     const excludeSeeds = options.excludeSeeds ?? true;
 
     const db = this.getDb();
-    const { byKey, adj } = this.buildCanonicalEdgeAdjacency(db);
+    const { byKey, adj } = this.getOrBuildGraphSnapshot(db);
 
     const seedMap = new Map<string, number>();
     const canonicalSeeds: string[] = [];
@@ -1271,33 +1576,27 @@ export class WorkspaceKnowledgeGraph {
 
   getWorkspaceGraphMap(rootPrefix?: string, maxNodes: number = 120): WorkspaceGraphMap {
     const db = this.getDb();
-    const { allFiles, edges } = this.buildCanonicalEdgeAdjacency(db);
+    const snapshot = this.getOrBuildGraphSnapshot(db);
+    const normalizedPrefix = rootPrefix
+      ? this.canonicalizeLookupPath(rootPrefix).replace(/[\\/]+$/, '')
+      : null;
 
-    const inRoot = (candidate: string): boolean => {
-      if (!rootPrefix) return true;
-      return this.isPathWithinPrefix(candidate, rootPrefix);
-    };
+    let scopedFiles = snapshot.allFiles;
+    let scopedEdges = snapshot.edges;
+    let inDeg = snapshot.inDeg;
+    let outDeg = snapshot.outDeg;
 
-    const scopedFiles = allFiles.filter((f) => inRoot(f.path));
-    const scopedSet = new Set(scopedFiles.map((f) => f.path));
-
-    const scopedEdges = edges.filter((e) => scopedSet.has(e.source) && scopedSet.has(e.target));
-    const inDeg = new Map<string, number>();
-    const outDeg = new Map<string, number>();
-    for (const edge of scopedEdges) {
-      outDeg.set(edge.source, (outDeg.get(edge.source) ?? 0) + 1);
-      inDeg.set(edge.target, (inDeg.get(edge.target) ?? 0) + 1);
-    }
-
-    const symbolRows = db
-      .prepare('SELECT file_path, symbol_name FROM symbols ORDER BY line_number ASC')
-      .all() as Array<{ file_path: string; symbol_name: string }>;
-    const symbolsByFile = new Map<string, string[]>();
-    for (const row of symbolRows) {
-      const list = symbolsByFile.get(row.file_path) ?? [];
-      if (list.length < 4 && !list.includes(row.symbol_name)) {
-        list.push(row.symbol_name);
-        symbolsByFile.set(row.file_path, list);
+    if (normalizedPrefix !== null) {
+      scopedFiles = snapshot.allFiles.filter((f) =>
+        this.isCanonicalWithinPrefix(f.canonicalPath, normalizedPrefix)
+      );
+      const scopedSet = new Set(scopedFiles.map((f) => f.path));
+      scopedEdges = snapshot.edges.filter((e) => scopedSet.has(e.source) && scopedSet.has(e.target));
+      inDeg = new Map<string, number>();
+      outDeg = new Map<string, number>();
+      for (const edge of scopedEdges) {
+        outDeg.set(edge.source, (outDeg.get(edge.source) ?? 0) + 1);
+        inDeg.set(edge.target, (inDeg.get(edge.target) ?? 0) + 1);
       }
     }
 
@@ -1309,7 +1608,7 @@ export class WorkspaceKnowledgeGraph {
         chunkCount: f.chunkCount,
         inDegree: inDeg.get(f.path) ?? 0,
         outDegree: outDeg.get(f.path) ?? 0,
-        topSymbols: symbolsByFile.get(f.path) ?? [],
+        topSymbols: snapshot.topSymbolsByFile.get(f.path) ?? [],
         folder: path.dirname(f.path),
       }))
       .sort((a, b) => (b.inDegree + b.outDegree) - (a.inDegree + a.outDegree) || a.name.localeCompare(b.name))
@@ -1326,39 +1625,21 @@ export class WorkspaceKnowledgeGraph {
 
   getSemanticCollections(rootPrefix?: string): WorkspaceCollectionGroup[] {
     const db = this.getDb();
-    const { allFiles, edges } = this.buildCanonicalEdgeAdjacency(db);
+    const snapshot = this.getOrBuildGraphSnapshot(db);
+    const canonPrefixRaw = rootPrefix ? this.canonicalizeLookupPath(rootPrefix) : null;
+    const normalizedPrefix = canonPrefixRaw !== null ? canonPrefixRaw.replace(/[\\/]+$/, '') : null;
 
-    const scopedFiles = allFiles.filter((f) => {
-      if (!rootPrefix) return true;
-      return this.isPathWithinPrefix(f.path, rootPrefix);
-    });
+    const scopedFiles =
+      normalizedPrefix !== null
+        ? snapshot.allFiles.filter((f) => this.isCanonicalWithinPrefix(f.canonicalPath, normalizedPrefix))
+        : snapshot.allFiles;
 
-    const symbolRows = db
-      .prepare('SELECT file_path, symbol_name FROM symbols ORDER BY line_number ASC')
-      .all() as Array<{ file_path: string; symbol_name: string }>;
-    const fileTopSymbols = new Map<string, string[]>();
-    for (const row of symbolRows) {
-      const arr = fileTopSymbols.get(row.file_path) ?? [];
-      if (arr.length < 3 && !arr.includes(row.symbol_name)) {
-        arr.push(row.symbol_name);
-        fileTopSymbols.set(row.file_path, arr);
-      }
-    }
-
-    const linkScore = new Map<string, number>();
-    for (const e of edges) {
-      linkScore.set(e.source, (linkScore.get(e.source) ?? 0) + 1);
-      linkScore.set(e.target, (linkScore.get(e.target) ?? 0) + 1);
-    }
-
+    const linkScore = snapshot.linkDegree;
     const groups = new Map<string, WorkspaceCollectionGroup>();
     for (const file of scopedFiles) {
       let topFolder = 'Workspace Root';
-      if (rootPrefix) {
-        const rel = path.relative(
-          this.canonicalizeLookupPath(rootPrefix),
-          this.canonicalizeLookupPath(file.path)
-        );
+      if (canonPrefixRaw !== null) {
+        const rel = path.relative(canonPrefixRaw, file.canonicalPath);
         const segments = rel.split(/[\\/]+/).filter(Boolean);
         topFolder = segments.length > 1 ? segments[0] : 'Workspace Root';
       } else {
@@ -1386,7 +1667,8 @@ export class WorkspaceKnowledgeGraph {
         groups.set(groupId, group);
       }
 
-      const syms = fileTopSymbols.get(file.path) ?? [];
+      const fullSyms = snapshot.topSymbolsByFile.get(file.path);
+      const syms = fullSyms && fullSyms.length > 3 ? fullSyms.slice(0, 3) : (fullSyms ?? []);
       group.files.push({
         path: file.path,
         name: path.basename(file.path),
@@ -1423,7 +1705,7 @@ export class WorkspaceKnowledgeGraph {
 
   getFileConnections(filePath: string): FileConnectionsSummary {
     const db = this.getDb();
-    const { byKey } = this.buildCanonicalEdgeAdjacency(db);
+    const { byKey } = this.getOrBuildGraphSnapshot(db);
     const canonical = byKey.get(this.normalizeLookupPath(filePath)) ?? path.resolve(filePath);
 
     const symWhere =
@@ -1431,13 +1713,15 @@ export class WorkspaceKnowledgeGraph {
     const linksWhere =
       process.platform === 'win32' ? 'LOWER(source_path) = LOWER(?)' : 'source_path = ?';
 
-    const symRows = db
-      .prepare(`SELECT symbol_name, kind, line_number FROM symbols WHERE ${symWhere} ORDER BY line_number ASC LIMIT 60`)
-      .all(canonical) as Array<{ symbol_name: string; kind: string; line_number: number }>;
+    const symRows = this.prepareCached(
+      db,
+      `SELECT symbol_name, kind, line_number FROM symbols WHERE ${symWhere} ORDER BY line_number ASC LIMIT 60`
+    ).all(canonical) as Array<{ symbol_name: string; kind: string; line_number: number }>;
 
-    const outRows = db
-      .prepare(`SELECT target_ref, target_path, kind, line_number FROM links WHERE ${linksWhere} ORDER BY line_number ASC LIMIT 60`)
-      .all(canonical) as Array<{ target_ref: string; target_path: string | null; kind: string; line_number: number }>;
+    const outRows = this.prepareCached(
+      db,
+      `SELECT target_ref, target_path, kind, line_number FROM links WHERE ${linksWhere} ORDER BY line_number ASC LIMIT 60`
+    ).all(canonical) as Array<{ target_ref: string; target_path: string | null; kind: string; line_number: number }>;
 
     const backlinks = this.findBacklinks(canonical, 50).map((b) => ({
       sourcePath: b.sourcePath,
@@ -1607,16 +1891,23 @@ export class WorkspaceKnowledgeGraph {
   listIndexedFilePaths(query?: string, rootPrefix?: string, limit: number = 100): string[] {
     const db = this.getDb();
     const clamped = Math.max(1, Math.min(500, Math.floor(limit)));
-    const rows = db
-      .prepare('SELECT path FROM files ORDER BY indexed_at DESC LIMIT 5000')
-      .all() as Array<{ path: string }>;
+    const rows = this.prepareCached(
+      db,
+      'SELECT path, canonical_path FROM files ORDER BY indexed_at DESC LIMIT 5000'
+    ).all() as Array<{ path: string; canonical_path: string | null }>;
 
     const qLower = query ? query.trim().toLowerCase() : '';
+    const normalizedRoot = rootPrefix
+      ? this.canonicalizeLookupPath(rootPrefix).replace(/[\\/]+$/, '')
+      : null;
 
     const results: string[] = [];
     for (const row of rows) {
-      if (rootPrefix && !this.isPathWithinPrefix(row.path, rootPrefix)) {
-        continue;
+      if (normalizedRoot !== null) {
+        const canon = (row.canonical_path ?? this.canonicalizeLookupPath(row.path)).replace(/[\\/]+$/, '');
+        if (!this.isCanonicalWithinPrefix(canon, normalizedRoot)) {
+          continue;
+        }
       }
       if (qLower && !row.path.toLowerCase().includes(qLower)) {
         continue;
@@ -1630,6 +1921,8 @@ export class WorkspaceKnowledgeGraph {
   }
 
   close(): void {
+    this.stmts.clear();
+    this.cachedAdjacency = null;
     if (this.db) {
       this.db.close();
       this.db = null;

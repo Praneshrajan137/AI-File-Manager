@@ -364,10 +364,7 @@ async function withVectorStoreCentroids(
 export async function getWorkspaceCollectionsData(input?: {
   rootPrefix?: string;
 }): Promise<WorkspaceCollectionGroup[]> {
-  const { map, fallbackGroups } = withKnowledgeGraph((kg) => ({
-    map: kg.getWorkspaceGraphMap(input?.rootPrefix, 500),
-    fallbackGroups: kg.getSemanticCollections(input?.rootPrefix),
-  }));
+  const map = withKnowledgeGraph((kg) => kg.getWorkspaceGraphMap(input?.rootPrefix, 500));
 
   if (map.nodes.length >= 2) {
     const centroids = await withVectorStoreCentroids(map.nodes.map((n) => n.path));
@@ -410,7 +407,7 @@ export async function getWorkspaceCollectionsData(input?: {
     }
   }
 
-  return fallbackGroups;
+  return withKnowledgeGraph((kg) => kg.getSemanticCollections(input?.rootPrefix));
 }
 
 export function getWorkspaceFileConnectionsData(filePath: string): FileConnectionsSummary {

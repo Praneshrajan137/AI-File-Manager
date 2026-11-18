@@ -18,11 +18,21 @@ import { ConfigManager } from '@shared/config';
  * 
  * ALL paths MUST be validated before ANY fs operation.
  */
+export interface CanonicalValidationContext {
+    dedupedForbidden: string[];
+    canonicalForbidden: Array<{ raw: string; norm: string }>;
+    canonicalRootsNorm: string[];
+    canonicalRootsRaw: string[];
+}
+
 export class PathValidator {
     private allowedRoot: string;
     private allowedRoots: string[];
     private lexicalAllowedRoots: string[];
+    private normalizedLexicalRoots: string[];
     private forbiddenPaths: string[];
+    private dedupedForbiddenPaths: string[];
+    private normalizedForbiddenPaths: string[];
     private maxPathLength: number;
 
     constructor(allowedRoots: string | string[]) {
@@ -37,6 +47,9 @@ export class PathValidator {
             : [this.stripTrailingSep(path.resolve(os.homedir()))];
         this.allowedRoot = this.allowedRoots[0];
         this.lexicalAllowedRoots = this.expandCanonicalAliases(this.allowedRoots);
+        this.normalizedLexicalRoots = Array.from(
+            new Set(this.lexicalAllowedRoots.map((root) => this.normalizeForCompare(root)))
+        );
         this.maxPathLength = this.resolveMaxPathLength();
 
         // Initialize OS-specific forbidden paths (including canonical aliases for OS 8.3/symlink equivalence)
@@ -44,6 +57,15 @@ export class PathValidator {
             this.stripTrailingSep(path.resolve(path.normalize(entry)))
         );
         this.forbiddenPaths = this.expandCanonicalAliases(baseForbidden);
+        const dedupMap = new Map<string, string>();
+        for (const entry of this.forbiddenPaths) {
+            const norm = this.normalizeForCompare(entry);
+            if (!dedupMap.has(norm)) {
+                dedupMap.set(norm, entry);
+            }
+        }
+        this.dedupedForbiddenPaths = Array.from(dedupMap.values());
+        this.normalizedForbiddenPaths = Array.from(dedupMap.keys());
     }
 
     /**
@@ -89,14 +111,19 @@ export class PathValidator {
         return process.platform === 'win32' ? clean.toLowerCase() : clean;
     }
 
-    private isWithinDirectory(candidatePath: string, rootPath: string): boolean {
-        const candidateNorm = this.normalizeForCompare(candidatePath);
-        const rootNorm = this.normalizeForCompare(rootPath);
+    private isNormalizedWithin(candidateNorm: string, rootNorm: string): boolean {
         if (candidateNorm === rootNorm) {
             return true;
         }
         const rootWithSep = rootNorm.endsWith(path.sep) ? rootNorm : rootNorm + path.sep;
         return candidateNorm.startsWith(rootWithSep);
+    }
+
+    private isWithinDirectory(candidatePath: string, rootPath: string): boolean {
+        return this.isNormalizedWithin(
+            this.normalizeForCompare(candidatePath),
+            this.normalizeForCompare(rootPath)
+        );
     }
 
     private decodeSafe(requestedPath: string): string {
@@ -258,8 +285,10 @@ export class PathValidator {
         }
 
         for (const candidate of pathsToCheckForbidden) {
-            for (const forbidden of this.forbiddenPaths) {
-                if (this.isWithinDirectory(candidate, forbidden)) {
+            const candidateNorm = this.normalizeForCompare(candidate);
+            for (let i = 0; i < this.normalizedForbiddenPaths.length; i += 1) {
+                if (this.isNormalizedWithin(candidateNorm, this.normalizedForbiddenPaths[i])) {
+                    const forbidden = this.dedupedForbiddenPaths[i];
                     SecurityLogger.error('Forbidden path access attempt', {
                         requestedPath,
                         resolvedPath: resolved,
@@ -275,18 +304,20 @@ export class PathValidator {
         }
 
         // Step 8: Ensure within at least one allowed root (supporting non-symlink OS short-path aliases)
-        let insideAllowedRoot = this.lexicalAllowedRoots.some((root) =>
-            this.isWithinDirectory(resolved, root)
+        const resolvedNorm = this.normalizeForCompare(resolved);
+        let insideAllowedRoot = this.normalizedLexicalRoots.some((rootNorm) =>
+            this.isNormalizedWithin(resolvedNorm, rootNorm)
         );
         if (!insideAllowedRoot) {
             const alias = getNonSymlinkAlias();
             if (alias) {
-                const hitsForbidden = this.forbiddenPaths.some((forbidden) =>
-                    this.isWithinDirectory(alias, forbidden)
+                const aliasNorm = this.normalizeForCompare(alias);
+                const hitsForbidden = this.normalizedForbiddenPaths.some((forbiddenNorm) =>
+                    this.isNormalizedWithin(aliasNorm, forbiddenNorm)
                 );
                 if (!hitsForbidden) {
-                    insideAllowedRoot = this.lexicalAllowedRoots.some((root) =>
-                        this.isWithinDirectory(alias, root)
+                    insideAllowedRoot = this.normalizedLexicalRoots.some((rootNorm) =>
+                        this.isNormalizedWithin(aliasNorm, rootNorm)
                     );
                 }
             }
@@ -437,9 +468,32 @@ export class PathValidator {
     }
 
     /**
-     * Validate path both lexically AND canonically (resolving symlinks & junctions).
+     * Resolve static forbidden/allowed root canonical boundaries once for reuse across a single batch.
      */
-    async validateCanonical(requestedPath: string): Promise<ValidationResult> {
+    async createCanonicalContext(): Promise<CanonicalValidationContext> {
+        const [canonicalForbiddenRaw, canonicalRootsRaw] = await Promise.all([
+            Promise.all(this.dedupedForbiddenPaths.map((p) => this.safeRealpathOrResolved(p))),
+            Promise.all(this.allowedRoots.map((root) => this.safeRealpathOrResolved(root))),
+        ]);
+        return {
+            dedupedForbidden: this.dedupedForbiddenPaths,
+            canonicalForbidden: canonicalForbiddenRaw.map((raw) => ({
+                raw,
+                norm: this.normalizeForCompare(raw),
+            })),
+            canonicalRootsRaw,
+            canonicalRootsNorm: canonicalRootsRaw.map((root) => this.normalizeForCompare(root)),
+        };
+    }
+
+    /**
+     * Validate a single path lexically and canonically against a pre-resolved root/forbidden context.
+     * Target path resolution is always performed live via fs.promises.realpath / lstat walk.
+     */
+    async validateCanonicalWithContext(
+        requestedPath: string,
+        context: CanonicalValidationContext
+    ): Promise<ValidationResult> {
         const lexical = this.validate(requestedPath);
         if (!lexical.valid) {
             return lexical;
@@ -461,36 +515,31 @@ export class PathValidator {
             };
         }
 
-        const canonicalForbidden = await Promise.all(
-            this.forbiddenPaths.map((p) => this.safeRealpathOrResolved(p))
-        );
-        for (const forbidden of canonicalForbidden) {
-            if (this.isWithinDirectory(canonicalTarget, forbidden)) {
+        const canonicalTargetNorm = this.normalizeForCompare(canonicalTarget);
+        for (const forbidden of context.canonicalForbidden) {
+            if (this.isNormalizedWithin(canonicalTargetNorm, forbidden.norm)) {
                 SecurityLogger.error('Canonical path resolves to forbidden path', {
                     requestedPath,
                     canonicalTarget,
-                    forbidden,
+                    forbidden: forbidden.raw,
                 });
                 return {
                     valid: false,
                     error: 'SYMLINK_ESCAPE',
-                    details: `Canonical target "${canonicalTarget}" escapes into forbidden path "${forbidden}"`,
+                    details: `Canonical target "${canonicalTarget}" escapes into forbidden path "${forbidden.raw}"`,
                 };
             }
         }
 
-        const canonicalRoots = await Promise.all(
-            this.allowedRoots.map((root) => this.safeRealpathOrResolved(root))
-        );
-        const insideCanonicalRoot = canonicalRoots.some((root) =>
-            this.isWithinDirectory(canonicalTarget, root)
+        const insideCanonicalRoot = context.canonicalRootsNorm.some((rootNorm) =>
+            this.isNormalizedWithin(canonicalTargetNorm, rootNorm)
         );
         if (!insideCanonicalRoot) {
             SecurityLogger.error('Symlink escape outside allowed roots blocked', {
                 requestedPath,
                 resolvedLexical,
                 canonicalTarget,
-                allowedRoots: canonicalRoots,
+                allowedRoots: context.canonicalRootsRaw,
             });
             return {
                 valid: false,
@@ -503,6 +552,42 @@ export class PathValidator {
             valid: true,
             canonicalPath: canonicalTarget,
         };
+    }
+
+    /**
+     * Validate path both lexically AND canonically (resolving symlinks & junctions).
+     */
+    async validateCanonical(requestedPath: string): Promise<ValidationResult> {
+        const context = await this.createCanonicalContext();
+        return this.validateCanonicalWithContext(requestedPath, context);
+    }
+
+    /**
+     * Validate a batch of paths canonically while resolving root/forbidden boundaries only once
+     * per call and bounding concurrent target symlink resolution.
+     */
+    async validateCanonicalBatch(
+        requestedPaths: readonly string[],
+        concurrency: number = 16
+    ): Promise<ValidationResult[]> {
+        if (requestedPaths.length === 0) {
+            return [];
+        }
+        const context = await this.createCanonicalContext();
+        const results = new Array<ValidationResult>(requestedPaths.length);
+        const workerCount = Math.max(1, Math.min(concurrency, requestedPaths.length));
+        let nextIndex = 0;
+
+        const runWorker = async (): Promise<void> => {
+            while (nextIndex < requestedPaths.length) {
+                const idx = nextIndex;
+                nextIndex += 1;
+                results[idx] = await this.validateCanonicalWithContext(requestedPaths[idx], context);
+            }
+        };
+
+        await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+        return results;
     }
 
     /**
