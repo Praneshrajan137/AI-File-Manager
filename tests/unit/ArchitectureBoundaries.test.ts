@@ -34,6 +34,8 @@ function layerOf(relPath: string): string {
   if (parts[1] === 'main') {
     if (parts[2] === 'handlers') return 'main/handlers';
     if (parts[2] === 'services') return 'main/services';
+    if (parts[2] === 'platform') return 'main/platform';
+    if (parts[2] === 'kernel') return 'main/kernel';
     if (parts[2] === 'dsa') return 'main/dsa';
     if (parts[2] === 'middleware') return 'main/middleware';
     return 'main/entry';
@@ -251,10 +253,10 @@ describe('Architecture Boundaries & Acyclicity Gates', () => {
           layerOf(e.to) === toLayer
       );
 
-    // Step 1 stripped AssetProtocol/Kernel -> securityMiddleware; Step 2 stripped WorkspaceKnowledgeGraph -> llm
+    // Step 1 stripped AssetProtocol/Kernel -> securityMiddleware; Step 2 stripped KG -> llm; Step 3 stripped mcp -> OperationJournal/AIOrganizerService
     expect(valueSeam('main/services', 'main/handlers').length).toBeLessThanOrEqual(1);
     expect(valueSeam('llm', 'main/services').length).toBeLessThanOrEqual(5);
-    expect(valueSeam('mcp', 'main/services').length).toBeLessThanOrEqual(5);
+    expect(valueSeam('mcp', 'main/services').length).toBeLessThanOrEqual(3);
     expect(valueSeam('main/services', 'llm').length).toBeLessThanOrEqual(17);
   });
 
@@ -278,7 +280,23 @@ describe('Architecture Boundaries & Acyclicity Gates', () => {
       const content = fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf-8');
       return count + (content.match(/\bnew PathValidator\(/g)?.length ?? 0);
     }, 0);
-    // Ratcheted from 10 down to <= 3 (VaultRootAuthority x1 + FileSystemService x2 pending Step 3/5 constructor injection)
+    // Ratcheted from 10 down to <= 3 (VaultRootAuthority x1 + FileSystemService x2 pending Step 5 DI)
     expect(newPathValidatorCount).toBeLessThanOrEqual(3);
+  });
+
+  it('keeps read-only WorkspaceMcpServer, OrganizerPlanner, and OperationJournal free of Electron runtime coupling', () => {
+    const mcpEdges = allInternalEdges.filter((e) => e.from === 'src/mcp/WorkspaceMcpServer.ts');
+    expect(mcpEdges.some((e) => e.to.endsWith('OperationJournal.ts'))).toBe(false);
+    expect(mcpEdges.some((e) => e.to.endsWith('AIOrganizerService.ts'))).toBe(false);
+    expect(mcpEdges.some((e) => e.to.startsWith('src/llm/'))).toBe(false);
+    expect(externalsByFile.get('src/mcp/WorkspaceMcpServer.ts') ?? []).not.toContain('electron');
+
+    const plannerEdges = allInternalEdges.filter(
+      (e) => e.from === 'src/main/platform/organizer/OrganizerPlanner.ts'
+    );
+    expect(plannerEdges.some((e) => e.to.endsWith('OperationJournal.ts'))).toBe(false);
+    expect(plannerEdges.some((e) => e.to.startsWith('src/llm/'))).toBe(false);
+
+    expect(externalsByFile.get('src/main/services/OperationJournal.ts') ?? []).not.toContain('electron');
   });
 });

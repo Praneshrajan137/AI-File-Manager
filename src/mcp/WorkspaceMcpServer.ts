@@ -19,8 +19,7 @@ import {
   resolveEffectiveAllowedRoots,
 } from '../main/platform/VaultRootAuthority';
 import { FileSystemService } from '../main/services/FileSystemService';
-import { OperationJournal } from '../main/services/OperationJournal';
-import { AIOrganizerService } from '../main/services/AIOrganizerService';
+import { OrganizerPlanner } from '../main/platform/organizer/OrganizerPlanner';
 import { WorkspaceKnowledgeGraph } from '../main/services/WorkspaceKnowledgeGraph';
 import { isSensitiveSecretFile, redactFileRangeLines, redactSensitiveText } from '../shared/security/SecretGuard';
 import { OrganizeStrategy } from '../shared/contracts';
@@ -287,7 +286,7 @@ function asClampedInt(value: unknown, fallback: number, min: number, max: number
 export class WorkspaceMcpServer {
   private readonly validator: PathValidator;
   private readonly fsService: FileSystemService;
-  private readonly organizer: AIOrganizerService;
+  private readonly organizer: OrganizerPlanner;
   private graph: WorkspaceKnowledgeGraph | null;
   private ownsGraph: boolean;
   private readonly graphDbPath?: string;
@@ -306,12 +305,6 @@ export class WorkspaceMcpServer {
     this.validator = VaultRootAuthority.getInstance().createScopedValidator(roots);
     this.fsService = new FileSystemService(roots);
 
-    const journal = new OperationJournal({
-      vaultDir: options.vaultDir ?? path.join(os.tmpdir(), 'privatevault-mcp-readonly-vault'),
-      validator: this.validator,
-      fileSystemService: this.fsService,
-    });
-
     if (options.knowledgeGraph) {
       this.graph = options.knowledgeGraph;
       this.ownsGraph = false;
@@ -323,9 +316,8 @@ export class WorkspaceMcpServer {
       this.ownsGraph = false;
     }
 
-    this.organizer = new AIOrganizerService({
+    this.organizer = new OrganizerPlanner({
       validator: this.validator,
-      operationJournal: journal,
       findImpactForPaths: (paths): ReturnType<WorkspaceKnowledgeGraph['findImpactForPaths']> => {
         const g = this.getGraph();
         return g ? g.findImpactForPaths(paths) : [];
