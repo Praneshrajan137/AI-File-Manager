@@ -124,6 +124,7 @@ async function verifyPackagedElectronBoot(executablePath) {
   const appDataDir = path.join(tmpDir, 'AppData', 'Roaming');
   const localAppDataDir = path.join(tmpDir, 'AppData', 'Local');
   const reportFile = path.join(tmpDir, 'smoke-report.json');
+  const traceFile = path.join(tmpDir, 'smoke-trace.log');
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.mkdirSync(appDataDir, { recursive: true });
   fs.mkdirSync(localAppDataDir, { recursive: true });
@@ -132,6 +133,8 @@ async function verifyPackagedElectronBoot(executablePath) {
     '--smoke-packaged-boot',
     `--user-data-dir=${userDataDir}`,
     `--smoke-report-file=${reportFile}`,
+    `--smoke-trace-file=${traceFile}`,
+    '--enable-logging=stderr',
     '--disable-gpu',
     ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
   ];
@@ -143,6 +146,8 @@ async function verifyPackagedElectronBoot(executablePath) {
         env: {
           ...process.env,
           ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
+          ELECTRON_ENABLE_LOGGING: '1',
+          ELECTRON_ENABLE_STACK_DUMPING: '1',
           HOME: tmpDir,
           USERPROFILE: tmpDir,
           APPDATA: appDataDir,
@@ -168,9 +173,12 @@ async function verifyPackagedElectronBoot(executablePath) {
       child.once('exit', (code, signal) => {
         clearTimeout(timer);
         if (code !== 0) {
+          const trace = fs.existsSync(traceFile)
+            ? fs.readFileSync(traceFile, 'utf-8')
+            : '<no-trace-written>';
           reject(
             new Error(
-              `Packaged binary exited code=${code} signal=${signal}\nstdout=${stdout}\nstderr=${stderr}`
+              `Packaged binary exited code=${code} signal=${signal}\ntrace=\n${trace}\nstdout=${stdout}\nstderr=${stderr}`
             )
           );
           return;

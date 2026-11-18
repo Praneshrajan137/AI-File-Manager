@@ -50,6 +50,24 @@ if (typeof protocol?.registerSchemesAsPrivileged === 'function') {
   protocol.registerSchemesAsPrivileged([getPrivilegedSchemeConfig()]);
 }
 
+const isSmokePackagedBoot = process.argv.includes('--smoke-packaged-boot');
+const smokeTraceArg = process.argv.find((arg) => arg.startsWith('--smoke-trace-file='));
+const smokeTraceFile = smokeTraceArg ? smokeTraceArg.slice('--smoke-trace-file='.length) : null;
+
+function recordSmokeTrace(step: string, extra?: string): void {
+  if (!isSmokePackagedBoot || !smokeTraceFile) {
+    return;
+  }
+  try {
+    const line = extra ? `${step}: ${extra}\n` : `${step}\n`;
+    fsSync.appendFileSync(smokeTraceFile, line, 'utf-8');
+  } catch {
+    // Ignore trace write errors
+  }
+}
+
+recordSmokeTrace('01:module-loaded', `packaged=${String(app?.isPackaged)} pid=${process.pid}`);
+
 /**
  * Reference to main application window.
  * Kept at module level to prevent garbage collection.
@@ -135,7 +153,16 @@ function initializeSystems(): void {
 }
 
 // Initialize systems before app is ready
-initializeSystems();
+try {
+  initializeSystems();
+  recordSmokeTrace('02:systems-initialized');
+} catch (err) {
+  recordSmokeTrace(
+    '02-err:systems-failed',
+    err instanceof Error ? err.stack || err.message : String(err)
+  );
+  throw err;
+}
 
 /**
  * Create the main application window with security-hardened settings.
@@ -310,6 +337,7 @@ export async function updateWatchPath(newPath: string): Promise<void> {
  * Called when Electron has finished initialization.
  */
 app.whenReady().then(async () => {
+  recordSmokeTrace('03:app-ready');
   const logger = getLogger();
   logger.info('Electron app ready, registering IPC handlers and creating window');
 
@@ -320,8 +348,13 @@ app.whenReady().then(async () => {
     const { getRegisteredChannels, registerAllHandlers } = await import('./handlers/ipcHandlers');
     registerAllHandlers();
     registeredChannelsCount = getRegisteredChannels().length;
+    recordSmokeTrace('04:handlers-registered', `channels=${registeredChannelsCount}`);
     logger.info('All IPC handlers registered successfully');
   } catch (error) {
+    recordSmokeTrace(
+      '04-err:handlers-failed',
+      error instanceof Error ? error.stack || error.message : String(error)
+    );
     logger.error('Failed to register IPC handlers', {
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
@@ -332,19 +365,23 @@ app.whenReady().then(async () => {
 
   registerVaultAssetProtocol();
   configureSessionSecurity();
+  recordSmokeTrace('05:security-configured');
 
   if (process.argv.includes('--smoke-packaged-boot')) {
     const reportArg = process.argv.find((arg) => arg.startsWith('--smoke-report-file='));
     const reportFile = reportArg ? reportArg.slice('--smoke-report-file='.length) : null;
     try {
+      recordSmokeTrace('06:smoke-sqlite-start');
       // Verify built-in node:sqlite and LanceDB bind cleanly inside packaged ASAR/unpacked bundle
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
       const memDb = new DatabaseSync(':memory:');
       memDb.exec('CREATE VIRTUAL TABLE t USING fts5(body); INSERT INTO t VALUES (\'ok\');');
       memDb.close();
+      recordSmokeTrace('07:smoke-lancedb-start');
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       require('@lancedb/lancedb');
+      recordSmokeTrace('08:smoke-lancedb-ok');
       const modelCacheDir = resolveDefaultModelCacheDir();
       const mcpEntryPath = resolvePackagedMcpEntryPath(__dirname);
       const smokePayload = {
@@ -358,6 +395,7 @@ app.whenReady().then(async () => {
       if (reportFile) {
         fsSync.writeFileSync(reportFile, JSON.stringify(smokePayload, null, 2), 'utf-8');
       }
+      recordSmokeTrace('09:smoke-complete');
       process.stdout.write(`[SMOKE_PACKAGED_OK] ${JSON.stringify(smokePayload)}\n`);
       await Promise.allSettled([
         resetReactiveWorkspaceKernel(),
@@ -365,7 +403,8 @@ app.whenReady().then(async () => {
       ]);
       app.exit(0);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = err instanceof Error ? err.stack || err.message : String(err);
+      recordSmokeTrace('09-err:smoke-catch', msg);
       if (reportFile) {
         fsSync.writeFileSync(reportFile, JSON.stringify({ ok: false, error: msg }), 'utf-8');
       }
