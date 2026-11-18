@@ -93,61 +93,72 @@ export class FileSystemService implements IFileSystemService {
         try {
             // Read directory with file types
             const entries = await fs.readdir(canonicalDir, { withFileTypes: true });
-            const fileNodes: FileNode[] = [];
+            const fileNodes = new Array<FileNode | null>(entries.length);
+            const hasAnySymlink = entries.some(
+                (entry) => typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink()
+            );
+            const canonicalCtx = hasAnySymlink ? await this.validator.createCanonicalContext() : null;
+            const workerCount = Math.max(1, Math.min(READ_DIR_CONCURRENCY, entries.length));
+            let nextIdx = 0;
 
-            for (let i = 0; i < entries.length; i += READ_DIR_CONCURRENCY) {
-                const batch = entries.slice(i, i + READ_DIR_CONCURRENCY);
-                const settled = await Promise.all(
-                    batch.map(async (entry): Promise<FileNode | null> => {
-                        const fullPath = path.join(canonicalDir, entry.name);
-                        try {
-                            if (typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink()) {
-                                const canonicalCheck = await this.validator.validateCanonical(fullPath);
-                                if (!canonicalCheck.valid) {
-                                    SecurityLogger.warn('Skipping directory entry with symlink escape', {
-                                        path: fullPath,
-                                        reason: canonicalCheck.error,
-                                    });
-                                    return null;
-                                }
+            const runStatWorker = async (): Promise<void> => {
+                while (nextIdx < entries.length) {
+                    const idx = nextIdx;
+                    nextIdx += 1;
+                    const entry = entries[idx];
+                    const fullPath = path.join(canonicalDir, entry.name);
+                    try {
+                        const isSym = typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink();
+                        if (isSym) {
+                            const canonicalCheck = canonicalCtx
+                                ? await this.validator.validateCanonicalWithContext(fullPath, canonicalCtx)
+                                : await this.validator.validateCanonical(fullPath);
+                            if (!canonicalCheck.valid) {
+                                SecurityLogger.warn('Skipping directory entry with symlink escape', {
+                                    path: fullPath,
+                                    reason: canonicalCheck.error,
+                                });
+                                fileNodes[idx] = null;
+                                continue;
                             }
-                            const stats = await fs.stat(fullPath);
-                            const isDir = entry.isDirectory() || (typeof stats.isDirectory === 'function' && stats.isDirectory());
-                            return {
-                                path: fullPath,
-                                name: entry.name,
-                                isDirectory: isDir,
-                                size: stats.size,
-                                modified: stats.mtimeMs,
-                                extension: this.getExtension(entry.name),
-                                mimeType: this.getMimeType(entry.name),
-                                isHidden: this.isHidden(entry.name),
-                                isSymbolicLink:
-                                    typeof entry.isSymbolicLink === 'function'
-                                        ? entry.isSymbolicLink()
-                                        : false,
-                            };
-                        } catch (statError: unknown) {
-                            FileSystemLogger.warn('Failed to stat file', {
-                                path: fullPath,
-                                error: statError instanceof Error ? statError.message : String(statError),
-                            });
-                            return null;
                         }
-                    })
-                );
-
-                for (const node of settled) {
-                    if (node) {
-                        fileNodes.push(node);
+                        const stats = await fs.stat(fullPath);
+                        const isDir = entry.isDirectory() || (typeof stats.isDirectory === 'function' && stats.isDirectory());
+                        fileNodes[idx] = {
+                            path: fullPath,
+                            name: entry.name,
+                            isDirectory: isDir,
+                            size: stats.size,
+                            modified: stats.mtimeMs,
+                            extension: this.getExtension(entry.name),
+                            mimeType: this.getMimeType(entry.name),
+                            isHidden: this.isHidden(entry.name),
+                            isSymbolicLink: isSym,
+                        };
+                    } catch (statError: unknown) {
+                        FileSystemLogger.warn('Failed to stat file', {
+                            path: fullPath,
+                            error: statError instanceof Error ? statError.message : String(statError),
+                        });
+                        fileNodes[idx] = null;
                     }
+                }
+            };
+
+            if (entries.length > 0) {
+                await Promise.all(Array.from({ length: workerCount }, () => runStatWorker()));
+            }
+            const compactNodes: FileNode[] = [];
+            for (const node of fileNodes) {
+                if (node) {
+                    compactNodes.push(node);
                 }
             }
 
-            this.dirCache.put(cacheKey, fileNodes);
+            this.dirCache.put(cacheKey, compactNodes);
             this.syncCacheTelemetry();
 
-            return fileNodes.map((entry) => ({ ...entry }));
+            return compactNodes.map((entry) => ({ ...entry }));
         } catch (error: unknown) {
             throw this.wrapError(error, dirPath);
         }

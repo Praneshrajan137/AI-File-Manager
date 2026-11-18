@@ -106,7 +106,7 @@ async function handleReadDirectory(
   const files = await service.readDirectory(input.path);
 
   kernel.warmDirectory(files);
-  await kernel.activateDirectory(input.path);
+  kernel.scheduleActivateDirectory(input.path);
 
   FileSystemLogger.info('Directory read successful', {
     path: input.path,

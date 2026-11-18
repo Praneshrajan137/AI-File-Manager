@@ -183,13 +183,9 @@ export class DirectoryScanner {
     }
 
     /**
-     * Recursive directory scan implementation.
-     * 
-     * @param dirPath - Current directory
-     * @param results - Accumulator for results
-     * @param options - Scan options
-     * @param currentDepth - Current recursion depth
-     * @param onFile - Optional callback for each file
+     * Bounded-parallel BFS/DFS directory traversal implementation.
+     * Resolves exclusions once per scan, skips redundant realpath checks on non-symlinks,
+     * and dispatches directory reads in deterministic FIFO order up to CONCURRENCY = 8.
      */
     private async scanRecursive(
         dirPath: string,
@@ -200,99 +196,148 @@ export class DirectoryScanner {
         excludedDirsSet?: Set<string>,
         visitedDirs: Set<string> = new Set<string>()
     ): Promise<void> {
-        // Check for cancellation (BUG FIX: Proper error handling)
-        if (options.signal?.aborted) {
-            const error: FileSystemError = {
-                code: 'UNKNOWN',
-                message: 'Scan aborted by user',
-                path: dirPath,
-            };
-            throw error;
-        }
+        const checkAborted = (atPath: string): void => {
+            if (options.signal?.aborted) {
+                const error: FileSystemError = {
+                    code: 'UNKNOWN',
+                    message: 'Scan aborted by user',
+                    path: atPath,
+                };
+                throw error;
+            }
+        };
 
-        // Check max depth
+        checkAborted(dirPath);
+
         if (options.maxDepth !== undefined && currentDepth >= options.maxDepth) {
             return;
         }
 
-        const canonicalDir = await fs.realpath(dirPath).catch(() => path.resolve(dirPath));
-        const visitKey = process.platform === 'win32' ? canonicalDir.toLowerCase() : canonicalDir;
-        if (visitedDirs.has(visitKey)) {
-            return;
+        const effectiveExcludedDirs = excludedDirsSet ?? this.resolveExcludedDirsSet(options);
+        const rootCanonical = await fs.realpath(dirPath).catch(() => path.resolve(dirPath));
+        const normKey = (p: string): string => (process.platform === 'win32' ? p.toLowerCase() : p);
+
+        interface ScanQueueItem {
+            dir: string;
+            canonicalHint: string;
+            depth: number;
+            isSymlink: boolean;
         }
-        visitedDirs.add(visitKey);
 
-        try {
-            // Read directory contents
-            const entries = await this.fileSystemService.readDirectory(dirPath);
-            // Resolve exclusion config once per scan invocation rather than per directory entry
-            const effectiveExcludedDirs = excludedDirsSet ?? this.resolveExcludedDirsSet(options);
+        const queue: ScanQueueItem[] = [
+            { dir: dirPath, canonicalHint: rootCanonical, depth: currentDepth, isSymlink: false },
+        ];
+        let head = 0;
+        let inFlight = 0;
+        let fatalError: unknown = null;
+        const SCAN_CONCURRENCY = 8;
 
-            for (const entry of entries) {
-                // Check for cancellation again
-                if (options.signal?.aborted) {
-                    const error: FileSystemError = {
-                        code: 'UNKNOWN',
-                        message: 'Scan aborted by user',
-                        path: dirPath,
-                    };
-                    throw error;
+        const formatErrMsg = (error: unknown): string =>
+            error instanceof Error
+                ? error.message
+                : error && typeof error === 'object' && 'message' in error
+                  ? String((error as { message: unknown }).message)
+                  : String(error);
+
+        await new Promise<void>((resolve, reject) => {
+            const finishIfDone = (): void => {
+                if (fatalError !== null && inFlight === 0) {
+                    reject(fatalError);
+                    return;
+                }
+                if (inFlight === 0 && head >= queue.length) {
+                    resolve();
+                }
+            };
+
+            const pump = (): void => {
+                if (fatalError !== null) {
+                    finishIfDone();
+                    return;
                 }
 
-                // Apply filters
-                if (!this.matchesFilters(entry, options, effectiveExcludedDirs)) {
-                    continue;
-                }
-
-                // Add to results
-                results.push(entry);
-
-                // Notify progress
-                if (onFile) {
-                    onFile(entry);
-                }
-
-                // Recurse into subdirectories
-                if (entry.isDirectory && options.recursive) {
-                    try {
-                        await this.scanRecursive(
-                            entry.path,
-                            results,
-                            options,
-                            currentDepth + 1,
-                            onFile,
-                            effectiveExcludedDirs,
-                            visitedDirs
-                        );
-                    } catch (error: unknown) {
-                        // Skip errors if requested
-                        if (!options.skipErrors) {
-                            throw error;
-                        }
-                        // Otherwise, log and continue
-                        const msg =
-                            error instanceof Error
-                                ? error.message
-                                : error && typeof error === 'object' && 'message' in error
-                                  ? String((error as { message: unknown }).message)
-                                  : String(error);
-                        FileSystemLogger.warn(`Skipping directory ${entry.path}`, { reason: msg });
+                while (inFlight < SCAN_CONCURRENCY && head < queue.length && fatalError === null) {
+                    if (options.signal?.aborted) {
+                        fatalError = {
+                            code: 'UNKNOWN',
+                            message: 'Scan aborted by user',
+                            path: queue[head]?.dir ?? dirPath,
+                        } as FileSystemError;
+                        break;
                     }
+
+                    const item = queue[head];
+                    head += 1;
+                    if (options.maxDepth !== undefined && item.depth >= options.maxDepth) {
+                        continue;
+                    }
+
+                    const runItem = async (): Promise<void> => {
+                        const canonicalDir = item.isSymlink
+                            ? await fs.realpath(item.dir).catch(() => path.resolve(item.dir))
+                            : item.canonicalHint;
+                        const visitKey = normKey(canonicalDir);
+                        if (visitedDirs.has(visitKey)) {
+                            return;
+                        }
+                        visitedDirs.add(visitKey);
+
+                        let entries: FileNode[];
+                        try {
+                            entries = await this.fileSystemService.readDirectory(item.dir);
+                        } catch (error: unknown) {
+                            if (!options.skipErrors) {
+                                throw error;
+                            }
+                            FileSystemLogger.warn(`Error reading ${item.dir}`, { reason: formatErrMsg(error) });
+                            return;
+                        }
+
+                        if (options.signal?.aborted) {
+                            checkAborted(item.dir);
+                        }
+
+                        for (const entry of entries) {
+                            if (!this.matchesFilters(entry, options, effectiveExcludedDirs)) {
+                                continue;
+                            }
+                            results.push(entry);
+                            if (onFile) {
+                                onFile(entry);
+                            }
+                            if (
+                                entry.isDirectory &&
+                                options.recursive &&
+                                (options.maxDepth === undefined || item.depth + 1 < options.maxDepth)
+                            ) {
+                                queue.push({
+                                    dir: entry.path,
+                                    canonicalHint: path.join(canonicalDir, entry.name),
+                                    depth: item.depth + 1,
+                                    isSymlink: Boolean(entry.isSymbolicLink),
+                                });
+                            }
+                        }
+                    };
+
+                    inFlight += 1;
+                    void runItem()
+                        .catch((err: unknown) => {
+                            if (fatalError === null) {
+                                fatalError = err;
+                            }
+                        })
+                        .finally(() => {
+                            inFlight -= 1;
+                            pump();
+                        });
                 }
-            }
-        } catch (error: unknown) {
-            if (!options.skipErrors) {
-                throw error;
-            }
-            // Log and continue
-            const msg =
-                error instanceof Error
-                    ? error.message
-                    : error && typeof error === 'object' && 'message' in error
-                      ? String((error as { message: unknown }).message)
-                      : String(error);
-            FileSystemLogger.warn(`Error reading ${dirPath}`, { reason: msg });
-        }
+
+                finishIfDone();
+            };
+
+            pump();
+        });
     }
 
     /**

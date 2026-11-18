@@ -66,6 +66,8 @@ export class ReactiveWorkspaceKernel {
   private draining: Promise<void> | null = null;
   private drainAgainRequested = false;
   private watchTransition: Promise<void> = Promise.resolve();
+  private watchActivationSeq = 0;
+  private watchScheduleTimer: NodeJS.Timeout | null = null;
   private closed = false;
   private totalProcessed = 0;
   private totalCoalesced = 0;
@@ -227,14 +229,53 @@ export class ReactiveWorkspaceKernel {
   }
 
   /**
+   * Non-blocking folder watch scheduling with latest-wins coalescing (`watchActivationSeq` + 60ms debounce).
+   * Used by interactive `FS:READ_DIR` so directory reads & UI paint never contend with Chokidar attach/stop on Windows libuv.
+   */
+  scheduleActivateDirectory(dirPath: string): void {
+    if (this.closed) {
+      return;
+    }
+    const seq = ++this.watchActivationSeq;
+    if (this.watchScheduleTimer) {
+      clearTimeout(this.watchScheduleTimer);
+      this.watchScheduleTimer = null;
+    }
+    this.watchScheduleTimer = setTimeout(() => {
+      this.watchScheduleTimer = null;
+      if (!this.closed && seq === this.watchActivationSeq) {
+        void this.activateDirectoryWithSeq(dirPath, seq).catch(() => undefined);
+      }
+    }, 60);
+    if (typeof this.watchScheduleTimer.unref === 'function') {
+      this.watchScheduleTimer.unref();
+    }
+  }
+
+  /**
    * Switch active non-recursive directory watch safely inside a serialized queue.
    */
   async activateDirectory(dirPath: string): Promise<void> {
     if (this.closed) {
       return;
     }
+    if (this.watchScheduleTimer) {
+      clearTimeout(this.watchScheduleTimer);
+      this.watchScheduleTimer = null;
+    }
+    const seq = ++this.watchActivationSeq;
+    await this.activateDirectoryWithSeq(dirPath, seq);
+  }
+
+  private async activateDirectoryWithSeq(dirPath: string, seq: number): Promise<void> {
+    if (this.closed || seq !== this.watchActivationSeq) {
+      return;
+    }
 
     const validation = await this.fileSystemService.validateCanonicalPath(dirPath);
+    if (this.closed || seq !== this.watchActivationSeq) {
+      return;
+    }
     if (!validation.valid || !validation.canonicalPath) {
       FileSystemLogger.warn('Skipping watch on unvalidated directory', {
         path: dirPath,
@@ -246,7 +287,7 @@ export class ReactiveWorkspaceKernel {
     const normalized = path.normalize(validation.canonicalPath);
 
     this.watchTransition = this.watchTransition.then(async () => {
-      if (this.closed) {
+      if (this.closed || seq !== this.watchActivationSeq) {
         return;
       }
 
@@ -267,6 +308,9 @@ export class ReactiveWorkspaceKernel {
       try {
         if (this.fileWatcher.isWatching()) {
           await this.fileWatcher.stop();
+        }
+        if (this.closed || seq !== this.watchActivationSeq) {
+          return;
         }
 
         await this.fileWatcher.start(normalized, this.defaultWatchOptions);
@@ -828,6 +872,11 @@ export class ReactiveWorkspaceKernel {
 
   async shutdown(): Promise<void> {
     this.closed = true;
+    this.watchActivationSeq += 1;
+    if (this.watchScheduleTimer) {
+      clearTimeout(this.watchScheduleTimer);
+      this.watchScheduleTimer = null;
+    }
     if (this.drainTimer) {
       clearTimeout(this.drainTimer);
       this.drainTimer = null;

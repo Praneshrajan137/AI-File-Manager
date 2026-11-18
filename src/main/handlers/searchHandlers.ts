@@ -127,55 +127,81 @@ class SearchService {
       const normKey = (p: string): string =>
         process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
 
-      // STRATEGY 1: Bounded recursive subtree scan (depth <= 4, max 200 dirs, max 100 hits)
+      // STRATEGY 1: Bounded concurrent recursive subtree scan (depth <= 4, max 200 dirs, max 100 hits)
       const excludedDirs = new Set(DEFAULT_EXCLUDED_DIRS.map((d) => d.toLowerCase()));
       const visitedDirs = new Set<string>();
       const dirQueue: Array<{ dir: string; depth: number }> = [{ dir: searchRoot, depth: 0 }];
+      let queueHead = 0;
       let scannedDirs = 0;
+      let inFlight = 0;
+      const BFS_CONCURRENCY = 8;
 
       try {
-        while (dirQueue.length > 0 && scannedDirs < 200 && fileNodes.length < 100) {
-          const current = dirQueue.shift()!;
-          const visitKey = normKey(current.dir);
-          if (visitedDirs.has(visitKey)) {
-            continue;
-          }
-          visitedDirs.add(visitKey);
-          scannedDirs += 1;
-
-          let entries: FileNode[] = [];
-          try {
-            entries = await this.fileSystemService.readDirectory(current.dir, {
-              bypassCache: true,
-            });
-          } catch {
-            continue;
-          }
-
-          for (const file of entries) {
-            if (isSensitiveSecretFile(file.path).blocked) {
-              continue;
-            }
-            if (file.name.toLowerCase().includes(queryLower)) {
-              const key = normKey(file.path);
-              if (!seenResultKeys.has(key)) {
-                seenResultKeys.add(key);
-                fileNodes.push(file);
-                if (fileNodes.length >= 100) {
-                  break;
-                }
-              }
-            }
-            if (
-              file.isDirectory &&
-              !file.isSymbolicLink &&
-              current.depth < 4 &&
-              !excludedDirs.has(file.name.toLowerCase())
+        await new Promise<void>((resolve) => {
+          const pump = (): void => {
+            while (
+              inFlight < BFS_CONCURRENCY &&
+              queueHead < dirQueue.length &&
+              scannedDirs < 200 &&
+              fileNodes.length < 100
             ) {
-              dirQueue.push({ dir: file.path, depth: current.depth + 1 });
+              const current = dirQueue[queueHead];
+              queueHead += 1;
+              const visitKey = normKey(current.dir);
+              if (visitedDirs.has(visitKey)) {
+                continue;
+              }
+              visitedDirs.add(visitKey);
+              scannedDirs += 1;
+              inFlight += 1;
+
+              void this.fileSystemService
+                .readDirectory(current.dir)
+                .then((entries) => {
+                  if (fileNodes.length >= 100) {
+                    return;
+                  }
+                  for (const file of entries) {
+                    if (isSensitiveSecretFile(file.path).blocked) {
+                      continue;
+                    }
+                    if (file.name.toLowerCase().includes(queryLower)) {
+                      const key = normKey(file.path);
+                      if (!seenResultKeys.has(key)) {
+                        seenResultKeys.add(key);
+                        fileNodes.push(file);
+                        if (fileNodes.length >= 100) {
+                          break;
+                        }
+                      }
+                    }
+                    if (
+                      file.isDirectory &&
+                      !file.isSymbolicLink &&
+                      current.depth < 4 &&
+                      !excludedDirs.has(file.name.toLowerCase())
+                    ) {
+                      dirQueue.push({ dir: file.path, depth: current.depth + 1 });
+                    }
+                  }
+                })
+                .catch(() => undefined)
+                .finally(() => {
+                  inFlight -= 1;
+                  pump();
+                });
             }
-          }
-        }
+
+            if (
+              inFlight === 0 &&
+              (queueHead >= dirQueue.length || scannedDirs >= 200 || fileNodes.length >= 100)
+            ) {
+              resolve();
+            }
+          };
+
+          pump();
+        });
       } catch (error) {
         IPCLogger.warn('Failed recursive directory search', {
           searchRoot,
@@ -186,9 +212,8 @@ class SearchService {
       // STRATEGY 2: Merge PathTrie deep/warmed matches when under cap
       if (fileNodes.length < 100) {
         const candidatePaths = this.pathTrie.autocomplete(query.trim(), 100);
-        const lowerCandidates = this.pathTrie.autocomplete(queryLower, 100);
         const substringCandidates = this.pathTrie.searchSubstring(queryLower, 100);
-        const allCandidates = [...new Set([...candidatePaths, ...lowerCandidates, ...substringCandidates])];
+        const allCandidates = [...new Set([...candidatePaths, ...substringCandidates])];
 
         // Filter candidates that belong under searchRoot, aren't SecretGuard-blocked, and match query
         const filteredPaths = allCandidates.filter((candidate) => {
@@ -205,44 +230,55 @@ class SearchService {
           );
         });
 
-        // Convert to FileNode objects
-        for (const filePath of filteredPaths) {
-          if (fileNodes.length >= 100) {
-            break;
-          }
-          try {
-            const stats = await this.fileSystemService.getStats(filePath);
+        const remainingQuota = 100 - fileNodes.length;
+        const statCandidates = filteredPaths.slice(0, Math.min(filteredPaths.length, remainingQuota * 2));
+        const statNodes = new Array<FileNode | null>(statCandidates.length).fill(null);
+        const STAT_CONCURRENCY = 16;
+        let nextStatIdx = 0;
 
-            const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || filePath;
-            const extension = fileName.includes('.')
-              ? fileName.split('.').pop() || ''
-              : '';
+        const runStatWorker = async (): Promise<void> => {
+          while (nextStatIdx < statCandidates.length) {
+            const idx = nextStatIdx;
+            nextStatIdx += 1;
+            const filePath = statCandidates[idx];
+            try {
+              const stats = await this.fileSystemService.getStats(filePath);
+              const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || filePath;
+              const extension = fileName.includes('.')
+                ? fileName.split('.').pop() || ''
+                : '';
 
-            const key = normKey(filePath);
-            if (seenResultKeys.has(key)) {
-              continue;
+              statNodes[idx] = {
+                path: filePath,
+                name: fileName,
+                isDirectory: stats.isDirectory,
+                size: stats.size,
+                modified: stats.modified,
+                extension,
+                mimeType: this.getMimeType(extension),
+                isHidden: fileName.startsWith('.'),
+              };
+            } catch (error) {
+              IPCLogger.debug('Failed to stat search result', {
+                path: filePath,
+                error: error instanceof Error ? error.message : String(error),
+              });
             }
-            seenResultKeys.add(key);
-
-            const fileNode: FileNode = {
-              path: filePath,
-              name: fileName,
-              isDirectory: stats.isDirectory,
-              size: stats.size,
-              modified: stats.modified,
-              extension,
-              mimeType: this.getMimeType(extension),
-              isHidden: fileName.startsWith('.'),
-            };
-
-            fileNodes.push(fileNode);
-          } catch (error) {
-            // Skip files we can't stat
-            IPCLogger.debug('Failed to stat search result', {
-              path: filePath,
-              error: error instanceof Error ? error.message : String(error),
-            });
           }
+        };
+
+        if (statCandidates.length > 0) {
+          const workerCount = Math.min(STAT_CONCURRENCY, statCandidates.length);
+          await Promise.all(Array.from({ length: workerCount }, () => runStatWorker()));
+        }
+
+        for (const node of statNodes) {
+          if (!node) continue;
+          if (fileNodes.length >= 100) break;
+          const key = normKey(node.path);
+          if (seenResultKeys.has(key)) continue;
+          seenResultKeys.add(key);
+          fileNodes.push(node);
         }
       }
 

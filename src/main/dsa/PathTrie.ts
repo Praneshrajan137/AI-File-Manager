@@ -17,6 +17,21 @@ export interface FuzzySearchMatch {
     score: number;
 }
 
+function computeCharMask(text: string): number {
+    let mask = 0;
+    for (let i = 0; i < text.length; i += 1) {
+        mask |= 1 << (text.charCodeAt(i) & 31);
+    }
+    return mask;
+}
+
+function popcount32(n: number): number {
+    let x = n | 0;
+    x = x - ((x >>> 1) & 0x55555555);
+    x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
+    return (((x + (x >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+}
+
 /**
  * PathTrie - Prefix tree for O(L) file path search & basename lookup.
  * 
@@ -28,8 +43,14 @@ export interface FuzzySearchMatch {
 export class PathTrie {
     private root: TrieNode;
     private basenameRoot: BasenameTrieNode;
-    private indexedEntries = new Map<string, { basename: string; stem: string; path: string }>();
+    private indexedEntries = new Map<
+        string,
+        { basename: string; stem: string; path: string; stemMask: number; baseMask: number }
+    >();
     private totalCount = 0;
+    private dpRowPrev2 = new Int32Array(256);
+    private dpRowPrev1 = new Int32Array(256);
+    private dpRowCurr = new Int32Array(256);
 
     constructor() {
         this.root = {
@@ -100,10 +121,14 @@ export class PathTrie {
             this.insertBasename(basename, canonicalKey, metadata.filePath);
             const dotIdx = basename.lastIndexOf('.');
             const stem = dotIdx > 0 ? basename.slice(0, dotIdx) : basename;
+            const baseMask = computeCharMask(basename);
+            const stemMask = stem === basename ? baseMask : computeCharMask(stem);
             this.indexedEntries.set(canonicalKey, {
                 basename,
                 stem,
                 path: metadata.filePath,
+                stemMask,
+                baseMask,
             });
         }
     }
@@ -367,28 +392,14 @@ export class PathTrie {
         }
 
         const matches: string[] = [];
-        const walk = (node: TrieNode): void => {
-            if (matches.length >= maxResults) {
-                return;
-            }
-            if (node.isEndOfPath && node.metadata) {
-                const fileName = path.basename(node.metadata.filePath).toLowerCase();
-                if (fileName.includes(needle)) {
-                    matches.push(node.metadata.filePath);
-                    if (matches.length >= maxResults) {
-                        return;
-                    }
-                }
-            }
-            for (const child of node.children.values()) {
-                walk(child);
+        for (const entry of this.indexedEntries.values()) {
+            if (entry.basename.includes(needle)) {
+                matches.push(entry.path);
                 if (matches.length >= maxResults) {
-                    return;
+                    break;
                 }
             }
-        };
-
-        walk(this.root);
+        }
         return matches;
     }
 
@@ -557,6 +568,8 @@ export class PathTrie {
             return [];
         }
 
+        const useBasenameTarget = needle.includes('.');
+        const needleMask = computeCharMask(needle);
         const scored: FuzzySearchMatch[] = [];
         for (const entry of this.indexedEntries.values()) {
             const target = entry.basename;
@@ -575,32 +588,52 @@ export class PathTrie {
                 continue;
             }
 
-            const compareTarget = needle.includes('.') ? target : stem;
+            const compareTarget = useBasenameTarget ? target : stem;
             if (Math.abs(compareTarget.length - needle.length) <= maxDistance) {
-                const dist = this.boundedDamerauLevenshtein(needle, compareTarget, maxDistance);
-                if (dist <= maxDistance) {
-                    const norm = 1 - dist / Math.max(needle.length, compareTarget.length, 1);
-                    scored.push({ path: entry.path, score: Number((0.65 * norm).toFixed(4)) });
+                const targetMask = useBasenameTarget ? entry.baseMask : entry.stemMask;
+                const lowerBound = Math.max(
+                    popcount32(needleMask & ~targetMask),
+                    popcount32(targetMask & ~needleMask)
+                );
+                if (lowerBound <= maxDistance) {
+                    const dist = this.boundedDamerauLevenshtein(needle, compareTarget, maxDistance);
+                    if (dist <= maxDistance) {
+                        const norm = 1 - dist / Math.max(needle.length, compareTarget.length, 1);
+                        scored.push({ path: entry.path, score: Number((0.65 * norm).toFixed(4)) });
+                    }
                 }
                 continue;
             }
 
             if (compareTarget.length > needle.length && needle.length >= 4) {
-                const sameLenPrefix = compareTarget.slice(0, needle.length);
-                const plusOnePrefix = compareTarget.slice(0, needle.length + 1);
-                const dist = Math.min(
-                    this.boundedDamerauLevenshtein(needle, sameLenPrefix, maxDistance),
-                    this.boundedDamerauLevenshtein(needle, plusOnePrefix, maxDistance)
-                );
-                if (dist <= maxDistance) {
-                    const norm = 1 - dist / Math.max(needle.length, 1);
-                    scored.push({ path: entry.path, score: Number((0.6 * norm).toFixed(4)) });
+                const targetMask = useBasenameTarget ? entry.baseMask : entry.stemMask;
+                if (popcount32(needleMask & ~targetMask) <= maxDistance) {
+                    const sameLenPrefix = compareTarget.slice(0, needle.length);
+                    const plusOnePrefix = compareTarget.slice(0, needle.length + 1);
+                    const dist = Math.min(
+                        this.boundedDamerauLevenshtein(needle, sameLenPrefix, maxDistance),
+                        this.boundedDamerauLevenshtein(needle, plusOnePrefix, maxDistance)
+                    );
+                    if (dist <= maxDistance) {
+                        const norm = 1 - dist / Math.max(needle.length, 1);
+                        scored.push({ path: entry.path, score: Number((0.6 * norm).toFixed(4)) });
+                    }
                 }
             }
         }
 
         scored.sort((a, b) => b.score - a.score || a.path.length - b.path.length);
         return scored.slice(0, maxResults);
+    }
+
+    private ensureDpCapacity(needed: number): void {
+        if (needed <= this.dpRowCurr.length) {
+            return;
+        }
+        const nextSize = Math.max(needed, this.dpRowCurr.length * 2);
+        this.dpRowPrev2 = new Int32Array(nextSize);
+        this.dpRowPrev1 = new Int32Array(nextSize);
+        this.dpRowCurr = new Int32Array(nextSize);
     }
 
     private boundedDamerauLevenshtein(a: string, b: string, maxDist: number): number {
@@ -610,31 +643,48 @@ export class PathTrie {
         if (m === 0) return n;
         if (n === 0) return m;
 
-        const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
-        for (let i = 0; i <= m; i++) dp[i][0] = i;
-        for (let j = 0; j <= n; j++) dp[0][j] = j;
+        this.ensureDpCapacity(n + 1);
+        let prev2 = this.dpRowPrev2;
+        let prev1 = this.dpRowPrev1;
+        let curr = this.dpRowCurr;
 
-        for (let i = 1; i <= m; i++) {
-            let rowMin = maxDist + 1;
-            for (let j = 1; j <= n; j++) {
-                const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-                let val = Math.min(
-                    dp[i - 1][j] + 1,
-                    dp[i][j - 1] + 1,
-                    dp[i - 1][j - 1] + cost
-                );
-                if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
-                    val = Math.min(val, dp[i - 2][j - 2] + 1);
+        for (let j = 0; j <= n; j += 1) {
+            prev1[j] = j;
+        }
+
+        for (let i = 1; i <= m; i += 1) {
+            curr[0] = i;
+            let rowMin = i;
+            const chA = a.charCodeAt(i - 1);
+            const prevChA = i > 1 ? a.charCodeAt(i - 2) : -1;
+
+            for (let j = 1; j <= n; j += 1) {
+                const chB = b.charCodeAt(j - 1);
+                const cost = chA === chB ? 0 : 1;
+                let val = prev1[j] + 1;
+                const ins = curr[j - 1] + 1;
+                if (ins < val) val = ins;
+                const sub = prev1[j - 1] + cost;
+                if (sub < val) val = sub;
+
+                if (i > 1 && j > 1 && chA === b.charCodeAt(j - 2) && prevChA === chB) {
+                    const trans = prev2[j - 2] + 1;
+                    if (trans < val) val = trans;
                 }
-                dp[i][j] = val;
+                curr[j] = val;
                 if (val < rowMin) rowMin = val;
             }
             if (rowMin > maxDist) {
                 return maxDist + 1;
             }
+
+            const tmp = prev2;
+            prev2 = prev1;
+            prev1 = curr;
+            curr = tmp;
         }
 
-        return dp[m][n];
+        return prev1[n];
     }
 
     /**
