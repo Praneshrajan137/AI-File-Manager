@@ -1342,4 +1342,79 @@ export interface FileConnectionsSummary {
   associativeNeighbors: AssociativeBoostResult[];
 }
 
+export const MAX_PERSISTED_TRACE_RECORDS = 200;
+
+export interface ExtractedSymbol {
+  name: string;
+  kind: 'function' | 'class' | 'interface' | 'type' | 'const' | 'heading';
+  lineNumber: number;
+}
+
+export interface ExtractedLink {
+  targetRef: string;
+  kind: 'wikilink' | 'mdlink' | 'import';
+  lineNumber: number;
+}
+
+export interface StructuralChunk extends TextChunk {
+  startLine: number;
+  endLine: number;
+  heading: string;
+  contextHeader?: string;
+}
+
+export interface KnowledgeGraphChunkRecord {
+  id: string;
+  filePath: string;
+  chunkIndex: number;
+  startChar: number;
+  endChar: number;
+  startLine: number;
+  endLine: number;
+  heading: string;
+  chunkText: string;
+  indexedAt: number;
+  bm25Score: number;
+}
+
+export interface DuplicateCluster {
+  sha256: string;
+  files: string[];
+  fileSize: number;
+  wastedBytes: number;
+}
+
+export interface KnowledgeGraphInsights {
+  totalFiles: number;
+  totalChunks: number;
+  totalTokens: number;
+  lastIndexed: number;
+  duplicateClusters: DuplicateCluster[];
+  totalWastedBytes: number;
+  topHubs: Array<{ targetRef: string; backlinkCount: number }>;
+  recentFiles: Array<{ path: string; fileType: string; chunkCount: number; indexedAt: number }>;
+}
+
+export interface KnowledgeGraphUpsertInput {
+  filePath: string;
+  sha256?: string;
+  size?: number;
+  mtimeMs?: number;
+  fileType?: string;
+  indexedAt?: number;
+  vectorSyncStatus?: 'pending' | 'synced';
+  chunks: Array<{
+    id: string;
+    chunkIndex: number;
+    text: string;
+    startChar: number;
+    endChar: number;
+    startLine?: number;
+    endLine?: number;
+    heading?: string;
+  }>;
+  symbols?: ExtractedSymbol[];
+  links?: ExtractedLink[];
+}
+
 

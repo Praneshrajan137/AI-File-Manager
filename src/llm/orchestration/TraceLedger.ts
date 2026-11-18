@@ -11,13 +11,14 @@ import {
   AgentTerminationReason,
   AgentTraceStep,
   CopilotQueryMode,
+  MAX_PERSISTED_TRACE_RECORDS,
   PersistedAgentTraceRecord,
   RetrievalSource,
 } from '../../shared/contracts';
 import { redactSensitiveText } from '../../shared/security/SecretGuard';
 
 export const AGENT_ORCHESTRATOR_PROMPT_VERSION = 'copilot-orchestrator-v2';
-export const MAX_PERSISTED_TRACE_RECORDS = 200;
+export { MAX_PERSISTED_TRACE_RECORDS };
 
 function redactUnknownArgs(raw: Record<string, unknown>): Record<string, unknown> {
   const sanitized: Record<string, unknown> = {};

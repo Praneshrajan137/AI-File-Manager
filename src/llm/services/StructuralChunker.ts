@@ -1,24 +1,11 @@
 import * as path from 'path';
-import { TextChunk } from '../../shared/contracts';
+import {
+  ExtractedLink,
+  ExtractedSymbol,
+  StructuralChunk,
+} from '../../shared/contracts';
 
-export interface ExtractedSymbol {
-  name: string;
-  kind: 'function' | 'class' | 'interface' | 'type' | 'const' | 'heading';
-  lineNumber: number;
-}
-
-export interface ExtractedLink {
-  targetRef: string;
-  kind: 'wikilink' | 'mdlink' | 'import';
-  lineNumber: number;
-}
-
-export interface StructuralChunk extends TextChunk {
-  startLine: number;
-  endLine: number;
-  heading: string;
-  contextHeader?: string;
-}
+export type { ExtractedLink, ExtractedSymbol, StructuralChunk };
 
 export interface ChunkingOptions {
   maxTokens?: number;

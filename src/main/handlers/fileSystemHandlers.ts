@@ -24,7 +24,7 @@ import {
 } from '@main/kernel/FsCommandCoordinator';
 import { getOperationJournal, resetOperationJournal } from '../services/OperationJournal';
 import { buildBatchMarkdownLinkRepairSteps } from '../services/MarkdownLinkRepair';
-import { checkWorkspaceGraphImpact } from './llmHandlers';
+import { checkGraphImpactSqlite } from '@main/platform/storage/LinkSymbolGraphStore';
 import {
   BatchTransferResult,
   BatchTransferStep,
@@ -211,7 +211,7 @@ async function handleMove(
     action: 'move',
     buildLinkRepairSteps: async (src, dst) => {
       try {
-        const impact = await checkWorkspaceGraphImpact([src]);
+        const impact = checkGraphImpactSqlite([src]);
         const mdRefs = impact.references.filter((r) => r.isMarkdownLink);
         return buildBatchMarkdownLinkRepairSteps([{ source: src, destination: dst }], mdRefs);
       } catch (repairErr: unknown) {

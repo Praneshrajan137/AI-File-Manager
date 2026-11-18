@@ -251,11 +251,20 @@ describe('Architecture Boundaries & Acyclicity Gates', () => {
           layerOf(e.to) === toLayer
       );
 
-    // Step 1 stripped AssetProtocol -> securityMiddleware and ReactiveWorkspaceKernel -> securityMiddleware
+    // Step 1 stripped AssetProtocol/Kernel -> securityMiddleware; Step 2 stripped WorkspaceKnowledgeGraph -> llm
     expect(valueSeam('main/services', 'main/handlers').length).toBeLessThanOrEqual(1);
     expect(valueSeam('llm', 'main/services').length).toBeLessThanOrEqual(5);
     expect(valueSeam('mcp', 'main/services').length).toBeLessThanOrEqual(5);
-    expect(valueSeam('main/services', 'llm').length).toBeLessThanOrEqual(19);
+    expect(valueSeam('main/services', 'llm').length).toBeLessThanOrEqual(17);
+  });
+
+  it('keeps fileSystemHandlers free of llmHandlers / LanceDB / ONNX imports', () => {
+    const fsEdges = allInternalEdges.filter((e) => e.from === 'src/main/handlers/fileSystemHandlers.ts');
+    expect(fsEdges.some((e) => e.to.endsWith('llmHandlers.ts'))).toBe(false);
+    expect(fsEdges.some((e) => e.to.endsWith('LlmWorkspaceService.ts'))).toBe(false);
+    const fsExternals = externalsByFile.get('src/main/handlers/fileSystemHandlers.ts') ?? [];
+    expect(fsExternals).not.toContain('@lancedb/lancedb');
+    expect(fsExternals).not.toContain('@huggingface/transformers');
   });
 
   it('enforces single mutation-sync authority in fileSystemHandlers and bounded PathValidator ownership', () => {
