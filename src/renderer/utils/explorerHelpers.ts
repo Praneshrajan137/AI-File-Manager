@@ -20,22 +20,24 @@ export function toFileNodeStub(filePath: string, files: FileNode[]): FileNode {
   };
 }
 
+const SHARED_NAME_COLLATOR = new Intl.Collator();
+
 export function sortFileNodes(
   files: FileNode[],
   sortBy: SortCriteria,
   sortDirection: SortDirection
 ): FileNode[] {
+  const direction = sortDirection === 'asc' ? 1 : -1;
   return [...files].sort((a, b) => {
-    const direction = sortDirection === 'asc' ? 1 : -1;
     switch (sortBy) {
       case 'name':
-        return a.name.localeCompare(b.name) * direction;
+        return SHARED_NAME_COLLATOR.compare(a.name, b.name) * direction;
       case 'size':
         return (a.size - b.size) * direction;
       case 'modified':
         return (a.modified - b.modified) * direction;
       case 'type':
-        return a.extension.localeCompare(b.extension) * direction;
+        return SHARED_NAME_COLLATOR.compare(a.extension, b.extension) * direction;
       default:
         return 0;
     }

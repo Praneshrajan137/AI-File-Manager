@@ -81,6 +81,8 @@ export interface IpcChannelMetric {
   calls: number;
   errors: number;
   avgDurationMs: number;
+  p95DurationMs?: number;
+  maxDurationMs?: number;
   lastCalledAt: number | null;
 }
 

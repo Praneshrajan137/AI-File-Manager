@@ -18,6 +18,7 @@ import {
 
 interface FileGridProps {
   files: FileNode[];
+  preSortedFiles?: FileNode[];
   selectedFiles: string[];
   onFileClick: (file: FileNode, e?: SelectionModifiers) => void;
   onFileDoubleClick: (file: FileNode) => void;
@@ -37,6 +38,7 @@ interface FileGridProps {
 
 export const FileGrid: React.FC<FileGridProps> = ({
   files,
+  preSortedFiles,
   selectedFiles,
   onFileClick,
   onFileDoubleClick,
@@ -62,9 +64,11 @@ export const FileGrid: React.FC<FileGridProps> = ({
   const [isExternalDragOver, setIsExternalDragOver] = useState(false);
 
   const sortedFiles = useMemo(
-    () => sortFileNodes(files, sortBy, sortDirection),
-    [files, sortBy, sortDirection]
+    () => preSortedFiles ?? sortFileNodes(files, sortBy, sortDirection),
+    [files, preSortedFiles, sortBy, sortDirection]
   );
+
+  const selectedFileSet = useMemo(() => new Set(selectedFiles), [selectedFiles]);
 
   const gridGeom = useMemo(
     () => computeGridGeometry(containerWidth, containerHeight, sortedFiles.length, 156, 148),
@@ -102,6 +106,7 @@ export const FileGrid: React.FC<FileGridProps> = ({
     () => ({
       sortedFiles,
       selectedFiles,
+      selectedFileSet,
       activePath,
       dropTargetPath,
       columnCount: gridGeom.columnCount,
@@ -122,6 +127,7 @@ export const FileGrid: React.FC<FileGridProps> = ({
       onFileClick,
       onFileContextMenu,
       onFileDoubleClick,
+      selectedFileSet,
       selectedFiles,
       setFocusedPath,
       sortedFiles,

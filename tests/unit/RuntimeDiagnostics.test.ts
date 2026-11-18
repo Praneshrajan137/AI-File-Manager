@@ -48,6 +48,8 @@ describe('RuntimeDiagnostics & ConfigManager M1 invariants', () => {
     expect(snapshot.ipc.totalCalls).toBe(2);
     expect(snapshot.ipc.totalErrors).toBe(1);
     expect(snapshot.ipc.channels[0].avgDurationMs).toBe(8);
+    expect(snapshot.ipc.channels[0].p95DurationMs).toBe(12);
+    expect(snapshot.ipc.channels[0].maxDurationMs).toBe(12);
   });
 
   it('honors FILE_MANAGER_ALLOWED_ROOTS strictly in test/E2E environments', () => {

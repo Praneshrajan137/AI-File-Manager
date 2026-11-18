@@ -1,4 +1,4 @@
-import React, { Suspense } from 'react';
+import React, { Suspense, useMemo } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { FileGrid } from '../FileExplorer/FileGrid';
 import { SelectionActionBar } from '../FileExplorer/SelectionActionBar';
@@ -71,13 +71,28 @@ export const SpatialWorkspacePane: React.FC<SpatialWorkspacePaneProps> = ({
   onFocusNodeInChat,
   onAskSelectionInChat,
 }) => {
-  const selectedNodes = explorer.selectedFiles
-    .map((p) => files.find((f) => f.path === p))
-    .filter((f): f is FileNode => Boolean(f));
-  const selectedTotalBytes = selectedNodes.reduce(
-    (sum, item) => sum + (item.isDirectory ? 0 : item.size),
-    0
-  );
+  const fileByPath = useMemo(() => {
+    const map = new Map<string, FileNode>();
+    for (let i = 0; i < files.length; i += 1) {
+      map.set(files[i].path, files[i]);
+    }
+    return map;
+  }, [files]);
+
+  const { selectedNodes, selectedTotalBytes } = useMemo(() => {
+    const nodes: FileNode[] = [];
+    let totalBytes = 0;
+    for (let i = 0; i < explorer.selectedFiles.length; i += 1) {
+      const match = fileByPath.get(explorer.selectedFiles[i]);
+      if (match) {
+        nodes.push(match);
+        if (!match.isDirectory) {
+          totalBytes += match.size;
+        }
+      }
+    }
+    return { selectedNodes: nodes, selectedTotalBytes: totalBytes };
+  }, [explorer.selectedFiles, fileByPath]);
   const canPreviewSingle = selectedNodes.length === 1 && !selectedNodes[0].isDirectory;
   const canRenameSingle = selectedNodes.length === 1;
   const canCopyToSplitPane =
@@ -122,6 +137,7 @@ export const SpatialWorkspacePane: React.FC<SpatialWorkspacePaneProps> = ({
             >
               <FileGrid
                 files={files}
+                preSortedFiles={explorer.orderedFiles}
                 selectedFiles={explorer.selectedFiles}
                 onFileClick={explorer.handleFileClick}
                 onFileDoubleClick={(f): void => {

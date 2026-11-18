@@ -13,10 +13,15 @@ import {
 import { CACHE_CAPACITY, MAX_CACHE_MEMORY, RING_BUFFER_CAPACITY } from '@shared/contracts';
 import { resolveDefaultModelCacheDir, resolvePackagedMcpEntryPath } from '@shared/config';
 
+const CHANNEL_SAMPLE_WINDOW = 64;
+
 interface MutableChannelCounter {
   calls: number;
   errors: number;
   totalDurationMs: number;
+  maxDurationMs: number;
+  recentDurations: number[];
+  sampleCursor: number;
   lastCalledAt: number | null;
 }
 
@@ -240,17 +245,30 @@ export class RuntimeDiagnostics {
   }
 
   recordIpcCall(channel: string, durationMs: number, succeeded: boolean): void {
+    const cleanDuration = Number.isFinite(durationMs) && durationMs >= 0 ? durationMs : 0;
     const existing = this.ipcCounters.get(channel) ?? {
       calls: 0,
       errors: 0,
       totalDurationMs: 0,
+      maxDurationMs: 0,
+      recentDurations: [],
+      sampleCursor: 0,
       lastCalledAt: null,
     };
     existing.calls += 1;
     if (!succeeded) {
       existing.errors += 1;
     }
-    existing.totalDurationMs += durationMs;
+    existing.totalDurationMs += cleanDuration;
+    if (cleanDuration > existing.maxDurationMs) {
+      existing.maxDurationMs = cleanDuration;
+    }
+    if (existing.recentDurations.length < CHANNEL_SAMPLE_WINDOW) {
+      existing.recentDurations.push(cleanDuration);
+    } else {
+      existing.recentDurations[existing.sampleCursor] = cleanDuration;
+      existing.sampleCursor = (existing.sampleCursor + 1) % CHANNEL_SAMPLE_WINDOW;
+    }
     existing.lastCalledAt = Date.now();
     this.ipcCounters.set(channel, existing);
   }
@@ -263,12 +281,23 @@ export class RuntimeDiagnostics {
     for (const [channel, counter] of this.ipcCounters.entries()) {
       totalCalls += counter.calls;
       totalErrors += counter.errors;
+      let p95DurationMs = 0;
+      if (counter.recentDurations.length > 0) {
+        const sorted = [...counter.recentDurations].sort((a, b) => a - b);
+        const idx = Math.min(
+          sorted.length - 1,
+          Math.max(0, Math.ceil(sorted.length * 0.95) - 1)
+        );
+        p95DurationMs = Number(sorted[idx].toFixed(2));
+      }
       channels.push({
         channel,
         calls: counter.calls,
         errors: counter.errors,
         avgDurationMs:
           counter.calls > 0 ? Number((counter.totalDurationMs / counter.calls).toFixed(2)) : 0,
+        p95DurationMs,
+        maxDurationMs: Number(counter.maxDurationMs.toFixed(2)),
         lastCalledAt: counter.lastCalledAt,
       });
     }

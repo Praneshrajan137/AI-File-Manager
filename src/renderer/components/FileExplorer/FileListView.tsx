@@ -12,7 +12,7 @@ export const FileListRow: React.FC<ListChildComponentProps<SharedVirtualItemData
 }) => {
   const item = data.sortedFiles[index];
   if (!item) return null;
-  const selected = data.selectedFiles.includes(item.path);
+  const selected = data.selectedFileSet.has(item.path);
   const isActive = data.activePath === item.path;
 
   return (

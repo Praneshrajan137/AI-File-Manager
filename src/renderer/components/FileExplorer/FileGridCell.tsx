@@ -9,6 +9,7 @@ import { extractDraggedPaths } from '@renderer/utils/explorerHelpers';
 export interface SharedVirtualItemData {
   sortedFiles: FileNode[];
   selectedFiles: string[];
+  selectedFileSet: ReadonlySet<string>;
   activePath: string | null;
   dropTargetPath: string | null;
   columnCount: number;
@@ -35,7 +36,7 @@ export const FileGridCell: React.FC<GridChildComponentProps<SharedVirtualItemDat
   const file = data.sortedFiles[idx];
   if (!file) return null;
 
-  const selected = data.selectedFiles.includes(file.path);
+  const selected = data.selectedFileSet.has(file.path);
   const isActive = data.activePath === file.path;
   const isDropTarget = file.isDirectory && data.dropTargetPath === file.path;
   const { icon: Icon, colorClass } = getFileIconWithColor(file);
