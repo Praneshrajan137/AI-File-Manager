@@ -13,6 +13,7 @@ import {
     RING_BUFFER_CAPACITY,
 } from '@shared/contracts';
 import { CanonicalValidationContext, PathValidator } from './PathValidator';
+import { VaultRootAuthority } from '@main/platform/VaultRootAuthority';
 import { LRUCache } from '@main/dsa/LRUCache';
 import { RingBuffer } from '@main/dsa/RingBuffer';
 import { RuntimeDiagnostics } from './RuntimeDiagnostics';
@@ -58,7 +59,7 @@ export class FileSystemService implements IFileSystemService {
             throw new Error('Allowed root directory cannot be empty');
         }
 
-        this.validator = new PathValidator(roots);
+        this.validator = VaultRootAuthority.getInstance().createScopedValidator(roots);
         this.dirCache = new LRUCache<FileNode[]>(CACHE_CAPACITY, {
             maxBytes: Math.floor(MAX_CACHE_MEMORY / 2),
             sizeOf: estimateFileNodesBytes,
@@ -697,7 +698,7 @@ export class FileSystemService implements IFileSystemService {
         if (roots.length === 0) {
             throw new Error('Allowed root directory cannot be empty');
         }
-        this.validator = new PathValidator(roots);
+        this.validator = VaultRootAuthority.getInstance().createScopedValidator(roots);
         this.clearCache();
     }
 

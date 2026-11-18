@@ -8,12 +8,12 @@
 
 import * as path from 'path';
 import { RetrievalResult, RetrievalSource } from '../../shared/contracts';
-import { WorkspaceKnowledgeGraph } from '../../main/services/WorkspaceKnowledgeGraph';
+import type { IGraphAssociativePort } from '../ports/IntelligencePorts';
 
 export interface OfflineSynthesisInput {
   query: string;
   retrievalResult: RetrievalResult;
-  knowledgeGraph?: WorkspaceKnowledgeGraph | null;
+  knowledgeGraph?: IGraphAssociativePort | null;
   maxSources?: number;
 }
 

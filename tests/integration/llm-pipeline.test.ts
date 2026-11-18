@@ -12,6 +12,14 @@ import { ContextManager } from '../../src/llm/services/ContextManager';
 import { LLMMetrics, MetricOperation } from '../../src/llm/services/LLMMetrics';
 import { RuntimeDiagnostics } from '../../src/main/services/RuntimeDiagnostics';
 import { ReactiveWorkspaceKernel } from '../../src/main/services/ReactiveWorkspaceKernel';
+import { WorkspaceKnowledgeGraph } from '../../src/main/services/WorkspaceKnowledgeGraph';
+
+function makeVectorStore(): VectorStore {
+    return new VectorStore({
+        knowledgeGraphFactory: (kgPath) => new WorkspaceKnowledgeGraph(kgPath),
+        diagnosticsSink: RuntimeDiagnostics.getInstance(),
+    });
+}
 import http from 'http';
 import path from 'path';
 import os from 'os';
@@ -105,7 +113,7 @@ Cook for 8-10 minutes until al dente.`;
 
         // Initialize services
         const dbPath = path.join(testDir, 'vectordb');
-        vectorStore = new VectorStore();
+        vectorStore = makeVectorStore();
         await vectorStore.initialize(dbPath);
 
         embeddingModel = new EmbeddingModel() as jest.Mocked<EmbeddingModel>;
@@ -240,7 +248,7 @@ Cook for 8-10 minutes until al dente.`;
     describe('Error Handling', () => {
         it('should handle empty database gracefully', async () => {
             const emptyDbPath = path.join(testDir, 'empty-db-' + Date.now());
-            const emptyStore = new VectorStore();
+            const emptyStore = makeVectorStore();
             await emptyStore.initialize(emptyDbPath);
 
             const emptyRetrieval = new RetrievalService(emptyStore, embeddingModel);
@@ -295,7 +303,7 @@ Cook for 8-10 minutes until al dente.`;
         it('should delete prior chunks on re-index without duplicating rows and remove on delete', async () => {
             const dedicatedDir = path.join(testDir, `dedup-${Date.now()}`);
             await fs.mkdir(dedicatedDir, { recursive: true });
-            const dedicatedStore = new VectorStore();
+            const dedicatedStore = makeVectorStore();
             await dedicatedStore.initialize(path.join(dedicatedDir, 'db'));
             const dedicatedIndexer = new IndexingService(embeddingModel, dedicatedStore);
 
@@ -351,7 +359,7 @@ Cook for 8-10 minutes until al dente.`;
                 'utf-8'
             );
 
-            const hybridStore = new VectorStore();
+            const hybridStore = makeVectorStore();
             await hybridStore.initialize(path.join(hybridDir, 'db'));
             const hybridIndexer = new IndexingService(embeddingModel, hybridStore);
             const hybridRetrieval = new RetrievalService(hybridStore, embeddingModel);
@@ -403,13 +411,13 @@ Cook for 8-10 minutes until al dente.`;
             );
 
             LLMMetrics.getInstance().clear();
-            const firstStore = new VectorStore();
+            const firstStore = makeVectorStore();
             await firstStore.initialize(dbPath);
             const firstIndexer = new IndexingService(embeddingModel, firstStore);
             await firstIndexer.indexFiles([persistFile, longFile]);
 
             // Reopen VectorStore from disk in a fresh instance to verify lexical rebuild
-            const reopenedStore = new VectorStore();
+            const reopenedStore = makeVectorStore();
             await reopenedStore.initialize(dbPath);
             const lexicalHits = reopenedStore.searchLexical('TOKEN_PERSIST_ZETA', 5);
             expect(lexicalHits.length).toBe(1);
@@ -518,7 +526,7 @@ Cook for 8-10 minutes until al dente.`;
             const dbPath = path.join(testDir, `kernel-rag-db-${Date.now()}`);
             await fs.mkdir(watchWorkspace, { recursive: true });
 
-            const kernelStore = new VectorStore();
+            const kernelStore = makeVectorStore();
             await kernelStore.initialize(dbPath);
             const kernelIndexer = new IndexingService(embeddingModel, kernelStore);
 

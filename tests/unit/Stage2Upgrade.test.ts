@@ -7,8 +7,18 @@ import {
     _resetTransformersCacheForTesting,
     loadFeatureExtractionPipeline,
 } from '../../src/llm/models/transformersLoader';
-import { VectorStore } from '../../src/llm/services/VectorStore';
+import { VectorStore, VectorStoreOptions } from '../../src/llm/services/VectorStore';
+import { WorkspaceKnowledgeGraph } from '../../src/main/services/WorkspaceKnowledgeGraph';
+import { RuntimeDiagnostics } from '../../src/main/services/RuntimeDiagnostics';
 import { FileContentExtractor } from '../../src/llm/services/FileContentExtractor';
+
+function makeVectorStore(opts: Partial<VectorStoreOptions> = {}): VectorStore {
+    return new VectorStore({
+        knowledgeGraphFactory: (kgPath) => new WorkspaceKnowledgeGraph(kgPath),
+        diagnosticsSink: RuntimeDiagnostics.getInstance(),
+        ...opts,
+    });
+}
 
 describe('Stage 2 (M8) Runtime & AI Stack Upgrades', () => {
     let tmpDir: string;
@@ -78,7 +88,7 @@ describe('Stage 2 (M8) Runtime & AI Stack Upgrades', () => {
 
         it('resets pre-M8 legacy tables lacking vector-meta.json and surfaces migration notice', async () => {
             const dbPath = path.join(tmpDir, 'lance-legacy');
-            const initialStore = new VectorStore();
+            const initialStore = makeVectorStore();
             await initialStore.initialize(dbPath);
             await initialStore.addChunks(sampleChunks, sampleEmbeddings, '/vault/legacy.md');
             await initialStore.flushPendingRecords();
@@ -86,7 +96,7 @@ describe('Stage 2 (M8) Runtime & AI Stack Upgrades', () => {
             // Simulate pre-M8 workspace index that lacks vector-meta.json
             await fs.unlink(path.join(dbPath, 'vector-meta.json'));
 
-            const upgradedStore = new VectorStore();
+            const upgradedStore = makeVectorStore();
             await upgradedStore.initialize(dbPath);
 
             const notice = upgradedStore.getMigrationNotice();
@@ -104,13 +114,13 @@ describe('Stage 2 (M8) Runtime & AI Stack Upgrades', () => {
 
         it('resets existing vectors when switching embedding models when autoResetOnMismatch=true', async () => {
             const dbPath = path.join(tmpDir, 'lance-switch');
-            const oldStore = new VectorStore({ modelId: 'Xenova/all-MiniLM-L6-v2' });
+            const oldStore = makeVectorStore({ modelId: 'Xenova/all-MiniLM-L6-v2' });
             await oldStore.initialize(dbPath);
             await oldStore.addChunks(sampleChunks, sampleEmbeddings, '/vault/old.md');
             await oldStore.flushPendingRecords();
             expect((await oldStore.getStats()).totalChunks).toBe(1);
 
-            const newStore = new VectorStore({ modelId: DEFAULT_EMBEDDING_MODEL });
+            const newStore = makeVectorStore({ modelId: DEFAULT_EMBEDDING_MODEL });
             await newStore.initialize(dbPath);
 
             const notice = newStore.getMigrationNotice();
@@ -122,12 +132,12 @@ describe('Stage 2 (M8) Runtime & AI Stack Upgrades', () => {
 
         it('preserves existing vectors when autoResetOnMismatch=false while still flagging needsReindex', async () => {
             const dbPath = path.join(tmpDir, 'lance-preserve');
-            const oldStore = new VectorStore({ modelId: 'Xenova/all-MiniLM-L6-v2' });
+            const oldStore = makeVectorStore({ modelId: 'Xenova/all-MiniLM-L6-v2' });
             await oldStore.initialize(dbPath);
             await oldStore.addChunks(sampleChunks, sampleEmbeddings, '/vault/keep.md');
             await oldStore.flushPendingRecords();
 
-            const passiveStore = new VectorStore({
+            const passiveStore = makeVectorStore({
                 modelId: DEFAULT_EMBEDDING_MODEL,
                 autoResetOnMismatch: false,
             });

@@ -335,7 +335,9 @@ describe('Stage 4 (M10): Spatial UI, vault-asset:// Protocol, Citation Reader & 
 
       // Regression check: creating an empty LanceDB table for the first time must preserve
       // any pre-existing SQLite knowledge graph data (as triggered on boot by LLM:INDEX_STATUS).
-      const bootStore = new VectorStore();
+      const bootStore = new VectorStore({
+        knowledgeGraphFactory: (kgPath) => new WorkspaceKnowledgeGraph(kgPath),
+      });
       await bootStore.initialize(vectorDbDir);
       expect(bootStore.getKnowledgeGraph()?.getStats().totalFiles).toBe(2);
       await bootStore.close();

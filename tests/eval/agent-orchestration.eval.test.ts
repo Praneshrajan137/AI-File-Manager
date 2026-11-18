@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { WorkspaceReActAgent, WorkspaceReActAgentDeps } from '../../src/llm/agent/WorkspaceReActAgent';
+import { LocalModelTransport } from '../../src/llm/services/LocalModelTransport';
 import { AIOrganizerService } from '../../src/main/services/AIOrganizerService';
 import { FileSystemService } from '../../src/main/services/FileSystemService';
 import { OperationJournal } from '../../src/main/services/OperationJournal';
@@ -483,6 +484,13 @@ describe('Frontier Agent Orchestration, MAST Fault Injection & Stage 3/4 Evals',
         ollamaUrl: 'http://127.0.0.1:11434',
         model: 'qwen2.5-coder:7b',
         fetchFn: organizerFetch,
+        completeChat: (msgs, opts) =>
+          new LocalModelTransport({
+            provider: 'ollama',
+            baseUrl: 'http://127.0.0.1:11434',
+            model: 'qwen2.5-coder:7b',
+            fetchImpl: organizerFetch,
+          }).completeChat(msgs, opts),
       });
 
       const plan = await organizer.proposeOrganizationPlan({

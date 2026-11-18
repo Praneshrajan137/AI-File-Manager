@@ -5,6 +5,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { clusterDocumentsByVector } from '../../src/llm/services/SemanticClustering';
 import { VectorStore } from '../../src/llm/services/VectorStore';
+import { WorkspaceKnowledgeGraph } from '../../src/main/services/WorkspaceKnowledgeGraph';
 import { PathValidator } from '../../src/main/services/PathValidator';
 import { FileSystemService } from '../../src/main/services/FileSystemService';
 import { OperationJournal } from '../../src/main/services/OperationJournal';
@@ -79,7 +80,10 @@ describe('Stage 2: Genuine Vector Semantic Clustering, Centroids & Loopback Enfo
 
   it('aggregates real LanceDB multi-chunk embeddings into L2-normalized document centroids', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pv-stage2-vec-'));
-    const store = new VectorStore({ modelId: 'Xenova/bge-small-en-v1.5' });
+    const store = new VectorStore({
+      modelId: 'Xenova/bge-small-en-v1.5',
+      knowledgeGraphFactory: (kgPath) => new WorkspaceKnowledgeGraph(kgPath),
+    });
     try {
       await store.initialize(tmpDir);
       const docA = path.join(tmpDir, 'alpha.md');
@@ -159,6 +163,7 @@ describe('Stage 2: Genuine Vector Semantic Clustering, Centroids & Loopback Enfo
       const vectorOrganizer = new AIOrganizerService({
         validator,
         operationJournal: journal,
+        clusterVectors: (items) => clusterDocumentsByVector(items, { maxClusters: 6 }).groups,
         getDocumentVectors: async () =>
           new Map<string, number[]>([
             [f1, makeBasisVector(384, 5, 6, 0.01)],

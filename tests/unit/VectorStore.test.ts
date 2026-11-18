@@ -4,11 +4,21 @@
  * Tests for LanceDB wrapper for semantic search.
  * These are integration-style tests that use the real LanceDB.
  */
-import { VectorStore } from '../../src/llm/services/VectorStore';
+import { VectorStore, VectorStoreOptions } from '../../src/llm/services/VectorStore';
+import { WorkspaceKnowledgeGraph } from '../../src/main/services/WorkspaceKnowledgeGraph';
+import { RuntimeDiagnostics } from '../../src/main/services/RuntimeDiagnostics';
 import { TextChunk, Embedding } from '../../src/shared/contracts';
 import path from 'path';
 import os from 'os';
 import fs from 'fs/promises';
+
+function makeVectorStore(extra: Partial<VectorStoreOptions> = {}): VectorStore {
+    return new VectorStore({
+        knowledgeGraphFactory: (kgPath) => new WorkspaceKnowledgeGraph(kgPath),
+        diagnosticsSink: RuntimeDiagnostics.getInstance(),
+        ...extra,
+    });
+}
 
 describe('VectorStore', () => {
     let store: VectorStore;
@@ -17,7 +27,7 @@ describe('VectorStore', () => {
     beforeAll(async () => {
         // Create unique temp directory for tests
         testDbPath = path.join(os.tmpdir(), `test-vectordb-${Date.now()}`);
-        store = new VectorStore();
+        store = makeVectorStore();
         await store.initialize(testDbPath);
     }, 30000); // 30 second timeout for initialization
 
@@ -40,7 +50,7 @@ describe('VectorStore', () => {
     describe('initialize()', () => {
         it('should create database at specified path', async () => {
             const newPath = path.join(os.tmpdir(), `test-vectordb-init-${Date.now()}`);
-            const newStore = new VectorStore();
+            const newStore = makeVectorStore();
 
             await expect(newStore.initialize(newPath)).resolves.not.toThrow();
 
@@ -263,7 +273,7 @@ describe('VectorStore', () => {
         it('flushes buffered chunks on close(), tracks SQLite outbox sync state, and retrieves scoped hits beyond 250 files', async () => {
             const isolatedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'vs-outbox-test-'));
             try {
-                const s1 = new VectorStore();
+                const s1 = makeVectorStore();
                 await s1.initialize(isolatedDir);
 
                 const docPath = path.join(isolatedDir, 'note.md');
@@ -283,7 +293,7 @@ describe('VectorStore', () => {
                 // Graceful close flushes <50 buffered chunks to LanceDB & marks SQLite synced
                 await s1.close();
 
-                const s2 = new VectorStore();
+                const s2 = makeVectorStore();
                 await s2.initialize(isolatedDir);
                 expect(s2.getKnowledgeGraph()?.getPendingSyncCount()).toBe(0);
                 expect(s2.needsReindex(docPath, meta.mtimeMs, meta.size, meta.sha256)).toBe(false);

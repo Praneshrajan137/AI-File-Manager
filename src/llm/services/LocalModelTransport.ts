@@ -48,14 +48,14 @@ export interface ChatCompletionOptions {
   tools?: unknown[];
 }
 
-function getElectronNetFetch(): typeof fetch | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const electronMod = require('electron') as { net?: { fetch?: typeof fetch } };
-    return typeof electronMod?.net?.fetch === 'function' ? electronMod.net.fetch : null;
-  } catch {
-    return null;
-  }
+let registeredDefaultFetch: typeof fetch | null = null;
+
+/**
+ * Registers the host-provided HTTP fetch implementation (e.g., Electron `net.fetch`
+ * injected by `main/entry` at startup) without coupling `llm/` to `electron`.
+ */
+export function registerDefaultLocalFetchTransport(fetchFn: typeof fetch | null): void {
+  registeredDefaultFetch = fetchFn;
 }
 
 export function assertLoopbackLocalUrl(rawUrl: string): string {
@@ -130,9 +130,8 @@ export class LocalModelTransport {
     if (this.customFetch) {
       return this.customFetch(url, safeInit);
     }
-    const netFetch = getElectronNetFetch();
-    if (netFetch) {
-      return netFetch(url, safeInit);
+    if (registeredDefaultFetch) {
+      return registeredDefaultFetch(url, safeInit);
     }
     if (typeof globalThis.fetch === 'function') {
       return globalThis.fetch(url, safeInit);

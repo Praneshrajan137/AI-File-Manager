@@ -31,6 +31,7 @@ import {
   WorkspaceReActAgent,
 } from '@llm/agent/WorkspaceReActAgent';
 import { formatUntrustedWorkspaceData } from '@llm/services/ContextManager';
+import { LocalModelTransport } from '@llm/services/LocalModelTransport';
 import {
   AIOrganizerService,
   computeFileSha256,
@@ -439,6 +440,13 @@ describe('Stage 5 (M11): Bounded ReAct Copilot, @folder/@selection Scope & Trans
         ollamaUrl: 'http://127.0.0.1:11434',
         model: 'llama3.2',
         fetchFn,
+        completeChat: (msgs, opts) =>
+          new LocalModelTransport({
+            provider: 'ollama',
+            baseUrl: 'http://127.0.0.1:11434',
+            model: 'llama3.2',
+            fetchImpl: fetchFn,
+          }).completeChat(msgs, opts),
       });
       return { organizer, journal, validator };
     }
@@ -701,6 +709,13 @@ describe('Stage 5 (M11): Bounded ReAct Copilot, @folder/@selection Scope & Trans
         ollamaUrl: 'http://127.0.0.1:11434',
         model: 'llama3.2',
         fetchFn: relLlmFetch,
+        completeChat: (msgs, opts) =>
+          new LocalModelTransport({
+            provider: 'ollama',
+            baseUrl: 'http://127.0.0.1:11434',
+            model: 'llama3.2',
+            fetchImpl: relLlmFetch,
+          }).completeChat(msgs, opts),
         notifyMutation: (type, filePath) => events.push({ type, path: filePath }),
       });
 

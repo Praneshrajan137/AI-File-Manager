@@ -84,6 +84,8 @@ export class RuntimeDiagnostics {
     indexedFiles: 0,
     lexicalDocs: 0,
     pendingBuffer: 0,
+    tierAStatus: 'uninitialized',
+    tierBStatus: 'uninitialized',
   };
 
   private llm: LlmPipelineDiagnostics = {

@@ -260,11 +260,20 @@ describe('Architecture Boundaries & Acyclicity Gates', () => {
           layerOf(e.to) === toLayer
       );
 
-    // Step 1 stripped AssetProtocol/Kernel -> securityMiddleware; Step 2 stripped KG -> llm; Step 3 stripped mcp -> OperationJournal/AIOrganizerService
-    expect(valueSeam('main/services', 'main/handlers').length).toBeLessThanOrEqual(1);
-    expect(valueSeam('llm', 'main/services').length).toBeLessThanOrEqual(5);
+    // Step 1 stripped AssetProtocol/Kernel -> securityMiddleware; Step 2 stripped KG -> llm; Step 3 stripped mcp -> OperationJournal/AIOrganizerService; Step 5 stripped llm <-> main/services (except 1 temporary Step-5 shim edge deleted in Step 6)
+    expect(valueSeam('main/services', 'main/handlers')).toEqual([]);
+    expect(valueSeam('llm', 'main/services')).toEqual([]);
+    expect(valueSeam('llm', 'main/platform')).toEqual([]);
+    expect(valueSeam('llm', 'main/entry')).toEqual([]);
     expect(valueSeam('mcp', 'main/services').length).toBeLessThanOrEqual(3);
-    expect(valueSeam('main/services', 'llm').length).toBeLessThanOrEqual(17);
+    expect(valueSeam('main/services', 'llm').length).toBeLessThanOrEqual(1);
+
+    const llmElectronViolations = relFiles.filter(
+      (relPath) =>
+        relPath.startsWith('src/llm/') &&
+        (externalsByFile.get(relPath) ?? []).includes('electron')
+    );
+    expect(llmElectronViolations).toEqual([]);
   });
 
   it('keeps fileSystemHandlers free of llmHandlers / LanceDB / ONNX imports', () => {
@@ -287,8 +296,8 @@ describe('Architecture Boundaries & Acyclicity Gates', () => {
       const content = fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf-8');
       return count + (content.match(/\bnew PathValidator\(/g)?.length ?? 0);
     }, 0);
-    // Ratcheted from 10 down to <= 3 (VaultRootAuthority x1 + FileSystemService x2 pending Step 5 DI)
-    expect(newPathValidatorCount).toBeLessThanOrEqual(3);
+    // Ratcheted from 10 down to <= 1 (sole owner: VaultRootAuthority)
+    expect(newPathValidatorCount).toBeLessThanOrEqual(1);
   });
 
   it('keeps read-only WorkspaceMcpServer, OrganizerPlanner, and OperationJournal free of Electron runtime coupling', () => {

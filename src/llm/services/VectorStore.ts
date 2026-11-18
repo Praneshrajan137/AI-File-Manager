@@ -14,6 +14,7 @@ import * as lancedb from '@lancedb/lancedb';
 import {
     DEFAULT_EMBEDDING_MODEL,
     IVectorStore,
+    KnowledgeGraphChunkRecord,
     TextChunk,
     VectorRecord,
     Embedding,
@@ -22,11 +23,11 @@ import {
     SearchScopeFilter,
 } from '../../shared/contracts';
 import {
-    KnowledgeGraphChunkRecord,
-    WorkspaceKnowledgeGraph,
-} from '../../main/services/WorkspaceKnowledgeGraph';
+    IDiagnosticsSink,
+    IGraphIndexPort,
+    NOOP_DIAGNOSTICS_SINK,
+} from '../ports/IntelligencePorts';
 import { ExtractedLink, ExtractedSymbol } from './StructuralChunker';
-import { RuntimeDiagnostics } from '../../main/services/RuntimeDiagnostics';
 import { LLMLogger } from '../../shared/logging';
 import { atomicWriteFile } from '../../shared/utils/atomicFs';
 import fs from 'fs/promises';
@@ -63,7 +64,9 @@ export interface VectorStoreOptions {
     modelId?: string;
     dimensions?: number;
     autoResetOnMismatch?: boolean;
-    knowledgeGraph?: WorkspaceKnowledgeGraph;
+    knowledgeGraph?: IGraphIndexPort;
+    knowledgeGraphFactory?: (sqliteDbPath: string) => IGraphIndexPort;
+    diagnosticsSink?: IDiagnosticsSink;
     enableKnowledgeGraph?: boolean;
 }
 
@@ -101,9 +104,11 @@ export class VectorStore implements IVectorStore {
     private readonly EMBEDDING_DIM: number;
     private readonly modelId: string;
     private readonly autoResetOnMismatch: boolean;
-    private readonly injectedKnowledgeGraph?: WorkspaceKnowledgeGraph;
+    private readonly injectedKnowledgeGraph?: IGraphIndexPort;
+    private readonly knowledgeGraphFactory?: (sqliteDbPath: string) => IGraphIndexPort;
+    private readonly diagnostics: IDiagnosticsSink;
     private readonly enableKnowledgeGraph: boolean;
-    private knowledgeGraph: WorkspaceKnowledgeGraph | null = null;
+    private knowledgeGraph: IGraphIndexPort | null = null;
     private ownsKnowledgeGraph = false;
     private migrationNotice: VectorMigrationNotice;
 
@@ -119,6 +124,8 @@ export class VectorStore implements IVectorStore {
         this.EMBEDDING_DIM = options.dimensions ?? 384;
         this.autoResetOnMismatch = options.autoResetOnMismatch ?? true;
         this.injectedKnowledgeGraph = options.knowledgeGraph;
+        this.knowledgeGraphFactory = options.knowledgeGraphFactory;
+        this.diagnostics = options.diagnosticsSink ?? NOOP_DIAGNOSTICS_SINK;
         this.enableKnowledgeGraph = options.enableKnowledgeGraph ?? true;
         this.knowledgeGraph = options.knowledgeGraph ?? null;
         this.migrationNotice = {
@@ -200,8 +207,8 @@ export class VectorStore implements IVectorStore {
                 if (this.injectedKnowledgeGraph) {
                     this.knowledgeGraph = this.injectedKnowledgeGraph;
                     this.ownsKnowledgeGraph = false;
-                } else {
-                    this.knowledgeGraph = new WorkspaceKnowledgeGraph(
+                } else if (this.knowledgeGraphFactory) {
+                    this.knowledgeGraph = this.knowledgeGraphFactory(
                         path.join(dbPath, KNOWLEDGE_GRAPH_FILENAME)
                     );
                     this.ownsKnowledgeGraph = true;
@@ -258,7 +265,7 @@ export class VectorStore implements IVectorStore {
                 lastIndexed: 0,
             };
 
-            RuntimeDiagnostics.getInstance().setVectorStoreStats({
+            this.diagnostics.setVectorStoreStats({
                 initialized: true,
                 totalChunks: kgStats.totalChunks,
                 indexedFiles: kgStats.totalFiles,
@@ -341,7 +348,7 @@ export class VectorStore implements IVectorStore {
         }
     }
 
-    getKnowledgeGraph(): WorkspaceKnowledgeGraph | null {
+    getKnowledgeGraph(): IGraphIndexPort | null {
         return this.knowledgeGraph;
     }
 
@@ -431,9 +438,8 @@ export class VectorStore implements IVectorStore {
 
             const kgStats = this.knowledgeGraph?.getStats();
             const outboxPending = this.knowledgeGraph?.getPendingSyncCount() ?? this.filesPendingReplace.size;
-            const diagnostics = RuntimeDiagnostics.getInstance();
-            diagnostics.setVectorOutboxPending(outboxPending);
-            diagnostics.setVectorStoreStats({
+            this.diagnostics.setVectorOutboxPending?.(outboxPending);
+            this.diagnostics.setVectorStoreStats({
                 initialized: true,
                 totalChunks: kgStats?.totalChunks ?? this.pendingRecords.length,
                 indexedFiles: kgStats?.totalFiles ?? 0,
@@ -511,9 +517,8 @@ export class VectorStore implements IVectorStore {
 
             const kgStats = this.knowledgeGraph?.getStats();
             const outboxPending = this.knowledgeGraph?.getPendingSyncCount() ?? 0;
-            const diagnostics = RuntimeDiagnostics.getInstance();
-            diagnostics.setVectorOutboxPending(outboxPending);
-            diagnostics.setVectorStoreStats({
+            this.diagnostics.setVectorOutboxPending?.(outboxPending);
+            this.diagnostics.setVectorStoreStats({
                 initialized: true,
                 totalChunks: kgStats?.totalChunks ?? 0,
                 indexedFiles: kgStats?.totalFiles ?? 0,
@@ -944,11 +949,10 @@ export class VectorStore implements IVectorStore {
                 }
 
                 const kgStats = this.knowledgeGraph?.getStats();
-                const diagnostics = RuntimeDiagnostics.getInstance();
-                diagnostics.setVectorOutboxPending(
+                this.diagnostics.setVectorOutboxPending?.(
                     this.knowledgeGraph?.getPendingSyncCount() ?? this.filesPendingReplace.size
                 );
-                diagnostics.setVectorStoreStats({
+                this.diagnostics.setVectorStoreStats({
                     initialized: true,
                     totalChunks: kgStats?.totalChunks ?? 0,
                     indexedFiles: kgStats?.totalFiles ?? 0,
@@ -979,7 +983,7 @@ export class VectorStore implements IVectorStore {
                 const count = await this.table!.countRows();
 
                 if (count === 0) {
-                    RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                    this.diagnostics.setVectorStoreStats({
                         initialized: true,
                         totalChunks: 0,
                         indexedFiles: 0,
@@ -998,7 +1002,7 @@ export class VectorStore implements IVectorStore {
                 const kgStats = this.knowledgeGraph?.getStats();
                 if (kgStats && kgStats.totalChunks > 0) {
                     const indexSize = kgStats.totalChunks * (this.EMBEDDING_DIM * 4 + 200);
-                    RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                    this.diagnostics.setVectorStoreStats({
                         initialized: true,
                         totalChunks: kgStats.totalChunks,
                         indexedFiles: kgStats.totalFiles,
@@ -1017,7 +1021,7 @@ export class VectorStore implements IVectorStore {
 
                 // Fallback without loading table into memory when KnowledgeGraph is disabled
                 const estimatedSize = count * (this.EMBEDDING_DIM * 4 + 200);
-                RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                this.diagnostics.setVectorStoreStats({
                     initialized: true,
                     totalChunks: count,
                     indexedFiles: 0,
@@ -1054,7 +1058,7 @@ export class VectorStore implements IVectorStore {
                 await this.db!.dropTable(this.TABLE_NAME);
                 await this.createTable();
 
-                RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                this.diagnostics.setVectorStoreStats({
                     initialized: true,
                     totalChunks: 0,
                     indexedFiles: 0,

@@ -29,7 +29,7 @@ import {
 } from '../../shared/contracts';
 import { ConfigManager, resolveDefaultModelCacheDir } from '../../shared/config';
 import { LLMLogger } from '../../shared/logging';
-import { RuntimeDiagnostics } from '../../main/services/RuntimeDiagnostics';
+import { IDiagnosticsSink, NOOP_DIAGNOSTICS_SINK } from '../ports/IntelligencePorts';
 import {
     DEFAULT_RERANKER_MODEL,
     TransformersDevice,
@@ -47,6 +47,7 @@ export interface EmbeddingWorkerPoolOptions {
     allowRemoteModels?: boolean;
     cacheDir?: string;
     abortGraceMs?: number;
+    diagnosticsSink?: IDiagnosticsSink;
 }
 
 export interface EmbeddingRequestOptions {
@@ -134,6 +135,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
     private readonly allowRemoteModels: boolean;
     private readonly cacheDir: string;
     private readonly abortGraceMs: number;
+    private readonly diagnostics: IDiagnosticsSink;
     private activeExecutionProvider: string = 'cpu';
     private supportedDevices: string[] = ['cpu'];
 
@@ -165,6 +167,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
         this.allowRemoteModels = options.allowRemoteModels ?? configuredAllowRemoteModels;
         this.cacheDir = options.cacheDir || resolveDefaultModelCacheDir();
         this.abortGraceMs = Math.max(10, options.abortGraceMs ?? 5000);
+        this.diagnostics = options.diagnosticsSink ?? NOOP_DIAGNOSTICS_SINK;
     }
 
     getExecutionProvider(): string {
@@ -358,7 +361,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                 if (Array.isArray(response.supportedDevices) && response.supportedDevices.length > 0) {
                     this.supportedDevices = response.supportedDevices;
                 }
-                RuntimeDiagnostics.getInstance().setVectorStoreStats({
+                this.diagnostics.setVectorStoreStats({
                     activeExecutionProvider: this.activeExecutionProvider,
                     supportedDevices: this.supportedDevices,
                 });
@@ -461,7 +464,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                 requestId,
                 abortGraceMs: this.abortGraceMs,
             });
-            RuntimeDiagnostics.getInstance().recordWorkerRestart();
+            this.diagnostics.recordWorkerRestart?.();
             void deadWorker.terminate().catch(() => undefined);
 
             if (!this.terminating && (this.highQueue.length > 0 || this.lowQueue.length > 0)) {

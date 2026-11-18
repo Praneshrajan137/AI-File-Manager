@@ -27,23 +27,27 @@ import {
   OrganizerLlmBatchSuggestion,
   OrganizerPlanner,
   OrganizerVectorClusterGroup,
+  OrganizerVectorClusterInput,
   pathExistsOnDisk,
 } from '@main/platform/organizer/OrganizerPlanner';
+import { formatUntrustedWorkspaceData } from '@shared/pure/promptFence';
 
 export { computeFileSha256 };
-import { formatUntrustedWorkspaceData } from '../../llm/services/promptFence';
-import { LocalLLMProvider, LocalModelTransport } from '../../llm/services/LocalModelTransport';
-import { clusterDocumentsByVector } from '../../llm/services/SemanticClustering';
 
 const ORGANIZER_IO_CONCURRENCY = 16;
 const ORGANIZER_LLM_BATCH_SIZE = 35;
 const ORGANIZER_MAX_LLM_BATCHES = 5;
 const ORGANIZER_LLM_TIMEOUT_MS = 8000;
 
+export type OrganizerChatMessage = {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+};
+
 export interface AIOrganizerServiceDeps {
   validator: PathValidator;
   operationJournal: OperationJournal;
-  provider?: LocalLLMProvider;
+  provider?: 'ollama' | 'openai_compatible';
   ollamaUrl?: string;
   model?: string;
   fetchFn?: typeof fetch;
@@ -51,6 +55,11 @@ export interface AIOrganizerServiceDeps {
   notifyMutation?: (type: 'create' | 'change' | 'unlink', filePath: string) => void;
   getDocumentVectors?: (filePaths: string[], canonicalRoot: string) => Promise<Map<string, number[]>>;
   embedTexts?: (texts: string[]) => Promise<number[][]>;
+  clusterVectors?: (items: OrganizerVectorClusterInput[]) => OrganizerVectorClusterGroup[];
+  completeChat?: (
+    messages: OrganizerChatMessage[],
+    options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal }
+  ) => Promise<{ content?: string }>;
 }
 
 export class AIOrganizerService {
@@ -64,10 +73,9 @@ export class AIOrganizerService {
       findImpactForPaths: deps.findImpactForPaths,
       getDocumentVectors: deps.getDocumentVectors,
       embedTexts: deps.embedTexts,
-      clusterVectors: (items): OrganizerVectorClusterGroup[] =>
-        clusterDocumentsByVector(items, { maxClusters: 6 }).groups,
+      clusterVectors: deps.clusterVectors,
       suggestWithLlm:
-        deps.ollamaUrl && deps.model
+        deps.completeChat || (deps.ollamaUrl && deps.model)
           ? (llmInput): Promise<{
               suggestions: Map<string, OrganizerLlmBatchSuggestion> | null;
               batchCount: number;
@@ -401,15 +409,16 @@ export class AIOrganizerService {
     let degradedReason: string | undefined;
 
     try {
+      if (!this.deps.completeChat) {
+        return {
+          suggestions: null,
+          batchCount: 0,
+          degradedReason: 'Local LLM transport unavailable; classified files using deterministic rules.',
+        };
+      }
+      const completeChat = this.deps.completeChat;
       const maxBatchFiles = ORGANIZER_LLM_BATCH_SIZE * ORGANIZER_MAX_LLM_BATCHES;
       const queued = input.files.slice(0, maxBatchFiles);
-
-      const transport = new LocalModelTransport({
-        provider: this.deps.provider ?? 'ollama',
-        baseUrl: this.deps.ollamaUrl,
-        model: this.deps.model,
-        fetchImpl: this.deps.fetchFn,
-      });
 
       for (let offset = 0; offset < queued.length; offset += ORGANIZER_LLM_BATCH_SIZE) {
         const batch = queued.slice(offset, offset + ORGANIZER_LLM_BATCH_SIZE);
@@ -434,7 +443,7 @@ export class AIOrganizerService {
         );
 
         try {
-          const completion = await transport.completeChat(
+          const completion = await completeChat(
             [
               {
                 role: 'system',

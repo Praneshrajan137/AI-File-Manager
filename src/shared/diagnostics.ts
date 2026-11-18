@@ -47,6 +47,8 @@ export interface RingBufferPreviewDiagnostics {
   cacheHits: number;
 }
 
+export type IntelligenceTierStatus = 'uninitialized' | 'ready' | 'degraded' | 'unavailable';
+
 export interface VectorStoreDiagnostics {
   initialized: boolean;
   totalChunks: number;
@@ -58,6 +60,9 @@ export interface VectorStoreDiagnostics {
   migrationReason?: string;
   activeExecutionProvider?: string;
   supportedDevices?: string[];
+  tierAStatus?: IntelligenceTierStatus;
+  tierBStatus?: IntelligenceTierStatus;
+  tierBError?: string;
 }
 
 export interface LlmPipelineDiagnostics {

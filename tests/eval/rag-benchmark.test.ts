@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { VectorStore } from '../../src/llm/services/VectorStore';
+import { WorkspaceKnowledgeGraph } from '../../src/main/services/WorkspaceKnowledgeGraph';
 import { IndexingService } from '../../src/llm/services/IndexingService';
 import { RetrievalService } from '../../src/llm/services/RetrievalService';
 import { ContextManager } from '../../src/llm/services/ContextManager';
@@ -246,7 +247,10 @@ describe('Stage 3 RAG 35-Query Evaluation Benchmark (Hybrid LanceDB + FTS5 BM25 
     const dbDir = path.join(tmpDir, 'vectordb');
     await fs.mkdir(vaultDir, { recursive: true });
 
-    vectorStore = new VectorStore({ modelId: 'eval-deterministic-v1' });
+    vectorStore = new VectorStore({
+      modelId: 'eval-deterministic-v1',
+      knowledgeGraphFactory: (kgPath) => new WorkspaceKnowledgeGraph(kgPath),
+    });
     await vectorStore.initialize(dbDir);
 
     const embedder = new DeterministicEvalEmbeddingModel();

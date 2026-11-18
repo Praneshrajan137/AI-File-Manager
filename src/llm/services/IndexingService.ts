@@ -11,6 +11,7 @@
  * 
  * @implements IIndexingService
  */
+import * as crypto from 'crypto';
 import fs from 'fs/promises';
 import {
     IIndexingService,
@@ -22,9 +23,12 @@ import {
 import { VectorStore } from './VectorStore';
 import { FileContentExtractor } from './FileContentExtractor';
 import { StructuralChunker } from './StructuralChunker';
-import { computeBufferSha256 } from '../../main/services/WorkspaceKnowledgeGraph';
 import { LLMMetrics, MetricOperation } from './LLMMetrics';
 import { isSensitiveSecretFile } from '../../shared/security/SecretGuard';
+
+function computeBufferSha256(content: string | Buffer): string {
+    return crypto.createHash('sha256').update(content).digest('hex');
+}
 
 export interface IndexFileOptions {
     forceReindex?: boolean;
