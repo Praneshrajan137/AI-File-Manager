@@ -9,7 +9,7 @@ import {
   UndoRedoResult,
 } from '@shared/contracts';
 import { resolveDefaultTrashVaultDir as resolveSharedTrashVaultDir } from '@shared/config';
-import { PathValidator } from './PathValidator';
+import { CanonicalValidationContext, PathValidator } from './PathValidator';
 import { FileSystemService } from './FileSystemService';
 import { getReactiveWorkspaceKernel, hasActiveReactiveWorkspaceKernel } from './ReactiveWorkspaceKernel';
 import { RuntimeDiagnostics } from './RuntimeDiagnostics';
@@ -102,6 +102,7 @@ export class OperationJournal {
   private readonly payloadsDir: string;
   private readonly journalFile: string;
   private readonly walFile: string;
+  private readonly walJournalFile: string;
   private readonly maxHistory: number;
   private readonly maxVaultBytes: number;
   private readonly maxVaultAgeMs: number;
@@ -120,6 +121,7 @@ export class OperationJournal {
     this.payloadsDir = path.join(this.vaultDir, 'payloads');
     this.journalFile = path.join(this.vaultDir, 'journal.json');
     this.walFile = path.join(this.vaultDir, 'wal-pending.json');
+    this.walJournalFile = path.join(this.vaultDir, 'wal-pending.jsonl');
     this.maxHistory = Math.max(10, options.maxHistory ?? DEFAULT_MAX_HISTORY);
     this.maxVaultBytes = options.maxVaultBytes ?? DEFAULT_MAX_VAULT_BYTES;
     this.maxVaultAgeMs = options.maxVaultAgeMs ?? DEFAULT_MAX_VAULT_AGE_MS;
@@ -197,11 +199,13 @@ export class OperationJournal {
   }
 
   private async removeWalFileIgnoreEnoent(): Promise<void> {
-    try {
-      await fs.unlink(this.walFile);
-    } catch (error: unknown) {
-      if (getFsErrorCode(error) !== 'ENOENT') {
-        throw error;
+    for (const target of [this.walJournalFile, this.walFile]) {
+      try {
+        await fs.unlink(target);
+      } catch (error: unknown) {
+        if (getFsErrorCode(error) !== 'ENOENT') {
+          throw error;
+        }
       }
     }
   }
@@ -215,11 +219,13 @@ export class OperationJournal {
     const rollbackFailures: BatchRollbackFailureDetail[] = [];
     const remainingRecords: OperationRecord[] = [];
     const diagnostics = RuntimeDiagnostics.getInstance();
+    const validatorCtx = await this.validator.createCanonicalContext();
+    const fsCtx = await this.fileSystemService.createCanonicalContext();
 
     for (const child of [...completed].reverse()) {
       this.suppressWatchPathsForStep([child.sourcePath, child.destinationPath]);
       try {
-        await this.undoSingleRecordUnlocked(child);
+        await this.undoSingleRecordUnlocked(child, validatorCtx, fsCtx);
       } catch (rbErr: unknown) {
         diagnostics.recordWalRollbackFailure();
         const detail = rbErr instanceof Error ? rbErr.message : String(rbErr);
@@ -235,29 +241,51 @@ export class OperationJournal {
     return { rollbackFailures, remainingRecords };
   }
 
-  private async recoverPendingWal(): Promise<boolean> {
-    let raw: string;
-    try {
-      raw = await fs.readFile(this.walFile, 'utf-8');
-    } catch (error: unknown) {
-      if (getFsErrorCode(error) === 'ENOENT') {
-        return false;
+  private parseNdjsonWal(raw: string): Partial<WalPendingState> | null {
+    const lines = raw.split(/\r?\n/);
+    interface WalHeaderLine {
+      batchId?: string;
+      description?: string;
+      status?: string;
+      startedAt?: number;
+    }
+    let header: WalHeaderLine | null = null;
+    const completed: OperationRecord[] = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      } catch {
+        // Incomplete trailing line from mid-write crash stops cleanly after recovering prior committed lines
+        if (!header) {
+          throw new Error('Corrupt NDJSON WAL header line');
+        }
+        break;
       }
-      throw error;
+
+      if (parsed.type === 'header') {
+        header = parsed as WalHeaderLine;
+      } else if (parsed.type === 'step' && parsed.record && typeof parsed.record === 'object') {
+        completed.push(parsed.record as OperationRecord);
+      }
     }
 
-    let wal: Partial<WalPendingState>;
-    try {
-      wal = JSON.parse(raw) as Partial<WalPendingState>;
-    } catch (parseErr: unknown) {
-      FileSystemLogger.error('Corrupt pending WAL file encountered during startup recovery', {
-        walFile: this.walFile,
-        error: parseErr instanceof Error ? parseErr.message : String(parseErr),
-      });
-      await this.removeWalFileIgnoreEnoent().catch(() => undefined);
-      return false;
+    if (!header) {
+      return null;
     }
+    return {
+      batchId: header.batchId,
+      description: header.description,
+      status: header.status === 'pending' ? 'pending' : 'rollback_failed',
+      startedAt: header.startedAt,
+      completed,
+    };
+  }
 
+  private async recoverSingleWalPayload(wal: Partial<WalPendingState>): Promise<boolean> {
     if (wal.status !== 'pending') {
       return false;
     }
@@ -294,8 +322,46 @@ export class OperationJournal {
       });
     }
 
-    await this.removeWalFileIgnoreEnoent();
     return true;
+  }
+
+  private async recoverPendingWal(): Promise<boolean> {
+    let recoveredAny = false;
+
+    // 1. Recover fast append-only NDJSON WAL (`wal-pending.jsonl`) if present
+    try {
+      const rawJsonl = await fs.readFile(this.walJournalFile, 'utf-8');
+      const wal = this.parseNdjsonWal(rawJsonl);
+      if (wal && (await this.recoverSingleWalPayload(wal))) {
+        recoveredAny = true;
+      }
+    } catch (error: unknown) {
+      if (getFsErrorCode(error) !== 'ENOENT') {
+        FileSystemLogger.error('Corrupt pending NDJSON WAL encountered during startup recovery', {
+          walFile: this.walJournalFile,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // 2. Recover legacy full-state WAL (`wal-pending.json`) if present
+    try {
+      const raw = await fs.readFile(this.walFile, 'utf-8');
+      const wal = JSON.parse(raw) as Partial<WalPendingState>;
+      if (await this.recoverSingleWalPayload(wal)) {
+        recoveredAny = true;
+      }
+    } catch (error: unknown) {
+      if (getFsErrorCode(error) !== 'ENOENT') {
+        FileSystemLogger.error('Corrupt pending WAL file encountered during startup recovery', {
+          walFile: this.walFile,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    await this.removeWalFileIgnoreEnoent().catch(() => undefined);
+    return recoveredAny;
   }
 
   private async evictExpiredRecords(): Promise<boolean> {
@@ -344,15 +410,23 @@ export class OperationJournal {
     return ErrorFactory.createFileSystemError(code, targetPath, undefined, { details });
   }
 
-  private async validateCanonicalOrThrow(targetPath: string): Promise<string> {
-    const check = await this.validator.validateCanonical(targetPath);
+  private async validateCanonicalOrThrow(
+    targetPath: string,
+    canonicalContext?: CanonicalValidationContext
+  ): Promise<string> {
+    const check = canonicalContext
+      ? await this.validator.validateCanonicalWithContext(targetPath, canonicalContext)
+      : await this.validator.validateCanonical(targetPath);
     if (!check.valid) {
       throw this.toValidationError(targetPath, check.error, check.details);
     }
     return check.canonicalPath ?? path.resolve(targetPath);
   }
 
-  private async resolveLinkAwareTarget(targetPath: string): Promise<{
+  private async resolveLinkAwareTarget(
+    targetPath: string,
+    canonicalContext?: CanonicalValidationContext
+  ): Promise<{
     resolvedPath: string;
     isSymlink: boolean;
     lstatInfo: Awaited<ReturnType<typeof fs.lstat>>;
@@ -382,7 +456,7 @@ export class OperationJournal {
       };
     }
 
-    const canonicalPath = await this.validateCanonicalOrThrow(targetPath);
+    const canonicalPath = await this.validateCanonicalOrThrow(targetPath, canonicalContext);
     return { resolvedPath: canonicalPath, isSymlink: false, lstatInfo };
   }
 
@@ -633,10 +707,15 @@ export class OperationJournal {
   private async performSingleMoveUnlocked(
     source: string,
     destination: string,
-    opType: 'move' | 'rename'
+    opType: 'move' | 'rename',
+    validatorContext?: CanonicalValidationContext,
+    fsContext?: CanonicalValidationContext
   ): Promise<{ success: boolean; newPath: string; operationId: string; record: OperationRecord }> {
-    const { resolvedPath: resolvedSource, isSymlink, lstatInfo } = await this.resolveLinkAwareTarget(source);
-    const canonicalDest = await this.validateCanonicalOrThrow(destination);
+    const { resolvedPath: resolvedSource, isSymlink, lstatInfo } = await this.resolveLinkAwareTarget(
+      source,
+      validatorContext
+    );
+    const canonicalDest = await this.validateCanonicalOrThrow(destination, validatorContext);
 
     let result: { success: boolean; newPath: string };
     if (isSymlink) {
@@ -646,7 +725,7 @@ export class OperationJournal {
       this.fileSystemService.invalidatePath(canonicalDest);
       result = { success: true, newPath: canonicalDest };
     } else {
-      result = await this.fileSystemService.move(resolvedSource, canonicalDest);
+      result = await this.fileSystemService.move(resolvedSource, canonicalDest, fsContext);
     }
 
     const id = randomUUID();
@@ -780,6 +859,42 @@ export class OperationJournal {
     });
   }
 
+  private normalizeDisjointKey(targetPath: string): string {
+    const resolved = path.resolve(targetPath);
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  }
+
+  private areDisjointMovePairs(pairs: ReadonlyArray<{ src: string; dst: string }>): boolean {
+    if (pairs.length <= 8) {
+      return false;
+    }
+    const allEndpoints = new Set<string>();
+    for (const pair of pairs) {
+      const sKey = this.normalizeDisjointKey(pair.src);
+      const dKey = this.normalizeDisjointKey(pair.dst);
+      if (sKey === dKey || allEndpoints.has(sKey) || allEndpoints.has(dKey)) {
+        return false;
+      }
+      allEndpoints.add(sKey);
+      allEndpoints.add(dKey);
+    }
+
+    for (const pair of pairs) {
+      for (const endpoint of [pair.src, pair.dst]) {
+        let cur = path.dirname(path.resolve(endpoint));
+        for (let depth = 0; depth < 32; depth += 1) {
+          if (allEndpoints.has(this.normalizeDisjointKey(cur))) {
+            return false;
+          }
+          const parent = path.dirname(cur);
+          if (parent === cur) break;
+          cur = parent;
+        }
+      }
+    }
+    return true;
+  }
+
   /**
    * Execute multiple move/rename/delete operations as a single atomic journal entry.
    * Rolls back all completed child steps in reverse order if any step fails.
@@ -804,17 +919,114 @@ export class OperationJournal {
       const completed: OperationRecord[] = [];
       let totalSize = 0;
 
-      const walState: WalPendingState = {
+      const headerLine = `${JSON.stringify({
+        type: 'header',
         batchId,
         description,
         status: 'pending',
         startedAt,
-        completed,
+      })}\n`;
+      await atomicWriteFile(this.walJournalFile, headerLine, { ensureDir: true });
+
+      const walHandle = await fs.open(this.walJournalFile, 'a');
+      let walWriteChain: Promise<unknown> = Promise.resolve();
+      const appendWalStep = (record: OperationRecord): Promise<void> => {
+        const line = `${JSON.stringify({ type: 'step', record })}\n`;
+        const next = walWriteChain.then(() => walHandle.write(line, undefined, 'utf-8'));
+        walWriteChain = next.catch(() => undefined);
+        return next.then(() => undefined);
       };
-      await this.writeWalState(walState);
+      const closeWalHandle = async (): Promise<void> => {
+        await walWriteChain.catch(() => undefined);
+        await walHandle.close().catch(() => undefined);
+      };
+
+      const validatorCtx = await this.validator.createCanonicalContext();
+      const fsCtx = await this.fileSystemService.createCanonicalContext();
 
       try {
-        for (const step of steps) {
+        let idx = 0;
+        while (idx < steps.length) {
+          const step = steps[idx];
+          if (step.type === 'move' || step.type === 'rename') {
+            // Collect contiguous move/rename slice and run disjoint bulk moves concurrently
+            let endIdx = idx + 1;
+            while (
+              endIdx < steps.length &&
+              (steps[endIdx].type === 'move' || steps[endIdx].type === 'rename')
+            ) {
+              endIdx += 1;
+            }
+            const slice = steps.slice(idx, endIdx) as Array<
+              Extract<BatchOperationStep, { type: 'move' | 'rename' }>
+            >;
+            const disjoint = this.areDisjointMovePairs(
+              slice.map((s) => ({ src: s.source, dst: s.destination }))
+            );
+
+            if (disjoint) {
+              const MOVE_WAVE_SIZE = 8;
+              for (let waveStart = 0; waveStart < slice.length; waveStart += MOVE_WAVE_SIZE) {
+                const wave = slice.slice(waveStart, waveStart + MOVE_WAVE_SIZE);
+                const settled = await Promise.allSettled(
+                  wave.map(async (s) => {
+                    this.suppressWatchPathsForStep([s.source, s.destination]);
+                    return this.performSingleMoveUnlocked(
+                      s.source,
+                      s.destination,
+                      s.type,
+                      validatorCtx,
+                      fsCtx
+                    );
+                  })
+                );
+
+                let firstWaveError: unknown = null;
+                let waveChunk = '';
+                for (const outcome of settled) {
+                  if (outcome.status === 'fulfilled') {
+                    const rec = outcome.value.record;
+                    completed.push(rec);
+                    totalSize += rec.size;
+                    waveChunk += `${JSON.stringify({ type: 'step', record: rec })}\n`;
+                  } else if (firstWaveError === null) {
+                    firstWaveError = outcome.reason;
+                  }
+                }
+
+                if (waveChunk.length > 0) {
+                  const nextWrite = walWriteChain.then(() =>
+                    walHandle.write(waveChunk, undefined, 'utf-8')
+                  );
+                  walWriteChain = nextWrite.catch(() => undefined);
+                  await nextWrite;
+                }
+
+                if (firstWaveError !== null) {
+                  throw firstWaveError;
+                }
+              }
+              idx = endIdx;
+              continue;
+            }
+
+            for (const s of slice) {
+              this.suppressWatchPathsForStep([s.source, s.destination]);
+              const res = await this.performSingleMoveUnlocked(
+                s.source,
+                s.destination,
+                s.type,
+                validatorCtx,
+                fsCtx
+              );
+              completed.push(res.record);
+              totalSize += res.record.size;
+              await appendWalStep(res.record);
+            }
+            idx = endIdx;
+            continue;
+          }
+
           if (step.type === 'delete') {
             this.suppressWatchPathsForStep([step.path]);
             const mode = step.mode ?? 'vault';
@@ -826,14 +1038,14 @@ export class OperationJournal {
             if (res.record) {
               completed.push(res.record);
               totalSize += res.record.size;
-              await this.writeWalState(walState);
+              await appendWalStep(res.record);
             }
           } else if (step.type === 'create_dir') {
             this.suppressWatchPathsForStep([step.path]);
-            const canonicalDir = await this.validateCanonicalOrThrow(step.path);
+            const canonicalDir = await this.validateCanonicalOrThrow(step.path, validatorCtx);
             if (!(await this.pathExists(canonicalDir))) {
               await this.fileSystemService.createDirectory(canonicalDir);
-              completed.push({
+              const dirRec: OperationRecord = {
                 id: randomUUID(),
                 type: 'create_dir',
                 timestamp: Date.now(),
@@ -842,15 +1054,16 @@ export class OperationJournal {
                 size: 0,
                 undoable: true,
                 description: `Create folder ${path.basename(canonicalDir)}`,
-              });
-              await this.writeWalState(walState);
+              };
+              completed.push(dirRec);
+              await appendWalStep(dirRec);
             }
           } else if (step.type === 'copy') {
             this.suppressWatchPathsForStep([step.source, step.destination]);
             const res = await this.performSingleCopyUnlocked(step.source, step.destination);
             completed.push(res.record);
             totalSize += res.record.size;
-            await this.writeWalState(walState);
+            await appendWalStep(res.record);
           } else if (step.type === 'edit_links') {
             this.suppressWatchPathsForStep([step.filePath]);
             const res = await this.performSingleEditLinksUnlocked(
@@ -859,20 +1072,12 @@ export class OperationJournal {
               step.nextContent
             );
             completed.push(res.record);
-            await this.writeWalState(walState);
-          } else {
-            this.suppressWatchPathsForStep([step.source, step.destination]);
-            const res = await this.performSingleMoveUnlocked(
-              step.source,
-              step.destination,
-              step.type
-            );
-            completed.push(res.record);
-            totalSize += res.record.size;
-            await this.writeWalState(walState);
+            await appendWalStep(res.record);
           }
+          idx += 1;
         }
       } catch (err) {
+        await closeWalHandle();
         const { rollbackFailures, remainingRecords } =
           await this.rollbackCompletedStepsUnlocked(completed);
 
@@ -910,6 +1115,8 @@ export class OperationJournal {
         await this.removeWalFileIgnoreEnoent();
         throw err;
       }
+
+      await closeWalHandle();
 
       const batchRecord: OperationRecord = {
         id: batchId,
@@ -969,15 +1176,75 @@ export class OperationJournal {
   }
 
   private async undoSingleRecordUnlocked(
-    record: OperationRecord
+    record: OperationRecord,
+    validatorContext?: CanonicalValidationContext,
+    fsContext?: CanonicalValidationContext
   ): Promise<{ updatedRecord: OperationRecord; restoredPath: string }> {
     if (record.type === 'batch') {
-      const children = record.children ?? [];
-      const reversedUpdated: OperationRecord[] = [];
-      for (const child of [...children].reverse()) {
-        const res = await this.undoSingleRecordUnlocked(child);
-        reversedUpdated.unshift(res.updatedRecord);
+      const childrenReversed = [...(record.children ?? [])].reverse();
+      const reversedUpdated = new Array<OperationRecord>(childrenReversed.length);
+      const batchValidatorCtx = validatorContext ?? (await this.validator.createCanonicalContext());
+      const batchFsCtx = fsContext ?? (await this.fileSystemService.createCanonicalContext());
+
+      let idx = 0;
+      while (idx < childrenReversed.length) {
+        const current = childrenReversed[idx];
+        if ((current.type === 'move' || current.type === 'rename') && !current.isSymlink) {
+          let endIdx = idx + 1;
+          while (
+            endIdx < childrenReversed.length &&
+            (childrenReversed[endIdx].type === 'move' || childrenReversed[endIdx].type === 'rename') &&
+            !childrenReversed[endIdx].isSymlink
+          ) {
+            endIdx += 1;
+          }
+          const slice = childrenReversed.slice(idx, endIdx);
+          const disjoint =
+            slice.every((c) => Boolean(c.destinationPath)) &&
+            this.areDisjointMovePairs(
+              slice.map((c) => ({ src: c.destinationPath!, dst: c.sourcePath }))
+            );
+
+          if (disjoint) {
+            let cursor = 0;
+            let firstError: unknown = null;
+            const UNDO_CONCURRENCY = 8;
+            const runUndoWorker = async (): Promise<void> => {
+              while (cursor < slice.length && firstError === null) {
+                const localOffset = cursor;
+                cursor += 1;
+                const item = slice[localOffset];
+                try {
+                  const res = await this.undoSingleRecordUnlocked(
+                    item,
+                    batchValidatorCtx,
+                    batchFsCtx
+                  );
+                  reversedUpdated[idx + localOffset] = res.updatedRecord;
+                } catch (err: unknown) {
+                  if (firstError === null) {
+                    firstError = err;
+                  }
+                }
+              }
+            };
+            await Promise.all(
+              Array.from({ length: Math.min(UNDO_CONCURRENCY, slice.length) }, () => runUndoWorker())
+            );
+            if (firstError !== null) {
+              throw firstError;
+            }
+            idx = endIdx;
+            continue;
+          }
+        }
+
+        const res = await this.undoSingleRecordUnlocked(current, batchValidatorCtx, batchFsCtx);
+        reversedUpdated[idx] = res.updatedRecord;
+        idx += 1;
       }
+
+      reversedUpdated.reverse();
       return {
         updatedRecord: { ...record, children: reversedUpdated },
         restoredPath: reversedUpdated[0]?.sourcePath ?? record.sourcePath,
@@ -1018,7 +1285,7 @@ export class OperationJournal {
           { details: 'Deleted item payload is no longer present in staging vault' }
         );
       }
-      const canonicalTarget = await this.validateCanonicalOrThrow(record.sourcePath);
+      const canonicalTarget = await this.validateCanonicalOrThrow(record.sourcePath, validatorContext);
       if (await this.pathExists(canonicalTarget)) {
         throw ErrorFactory.createFileSystemError(
           'ALREADY_EXISTS',
@@ -1045,14 +1312,15 @@ export class OperationJournal {
         throw ErrorFactory.createFileSystemError('UNKNOWN', record.sourcePath);
       }
       const { resolvedPath: resolvedCurrent, isSymlink } = await this.resolveLinkAwareTarget(
-        record.destinationPath
+        record.destinationPath,
+        validatorContext
       );
       const parentOriginalCheck = record.isSymlink
         ? await this.validator.validateParentCanonicalForLink(record.sourcePath)
         : null;
       const canonicalOriginal = parentOriginalCheck?.valid && parentOriginalCheck.canonicalLinkPath
         ? parentOriginalCheck.canonicalLinkPath
-        : await this.validateCanonicalOrThrow(record.sourcePath);
+        : await this.validateCanonicalOrThrow(record.sourcePath, validatorContext);
 
       if (await this.pathExists(canonicalOriginal)) {
         throw ErrorFactory.createFileSystemError(
@@ -1069,7 +1337,7 @@ export class OperationJournal {
         this.fileSystemService.invalidatePath(resolvedCurrent);
         this.fileSystemService.invalidatePath(canonicalOriginal);
       } else {
-        await this.fileSystemService.move(resolvedCurrent, canonicalOriginal);
+        await this.fileSystemService.move(resolvedCurrent, canonicalOriginal, fsContext);
       }
 
       return {
@@ -1082,7 +1350,7 @@ export class OperationJournal {
       if (!record.destinationPath) {
         throw ErrorFactory.createFileSystemError('UNKNOWN', record.sourcePath);
       }
-      const canonicalCopied = await this.validateCanonicalOrThrow(record.destinationPath);
+      const canonicalCopied = await this.validateCanonicalOrThrow(record.destinationPath, validatorContext);
       const vaultPayloadPath = path.join(
         this.payloadsDir,
         `${record.id}-copy-${path.basename(canonicalCopied)}`
@@ -1098,7 +1366,7 @@ export class OperationJournal {
     }
 
     if (record.type === 'edit_links') {
-      const canonicalFile = await this.validateCanonicalOrThrow(record.sourcePath);
+      const canonicalFile = await this.validateCanonicalOrThrow(record.sourcePath, validatorContext);
       if (record.previousContent !== undefined) {
         await this.fileSystemService.writeFile(canonicalFile, record.previousContent);
       }
@@ -1109,7 +1377,7 @@ export class OperationJournal {
     }
 
     // create_file / create_dir -> move into staging vault so Redo preserves content
-    const canonicalCreated = await this.validateCanonicalOrThrow(record.sourcePath);
+    const canonicalCreated = await this.validateCanonicalOrThrow(record.sourcePath, validatorContext);
     const vaultPayloadPath = path.join(
       this.payloadsDir,
       `${record.id}-redo-${path.basename(canonicalCreated)}`
@@ -1126,15 +1394,74 @@ export class OperationJournal {
   }
 
   private async redoSingleRecordUnlocked(
-    record: OperationRecord
+    record: OperationRecord,
+    validatorContext?: CanonicalValidationContext,
+    fsContext?: CanonicalValidationContext
   ): Promise<{ updatedRecord: OperationRecord; restoredPath: string }> {
     if (record.type === 'batch') {
       const children = record.children ?? [];
-      const updatedChildren: OperationRecord[] = [];
-      for (const child of children) {
-        const res = await this.redoSingleRecordUnlocked(child);
-        updatedChildren.push(res.updatedRecord);
+      const updatedChildren = new Array<OperationRecord>(children.length);
+      const batchValidatorCtx = validatorContext ?? (await this.validator.createCanonicalContext());
+      const batchFsCtx = fsContext ?? (await this.fileSystemService.createCanonicalContext());
+
+      let idx = 0;
+      while (idx < children.length) {
+        const current = children[idx];
+        if ((current.type === 'move' || current.type === 'rename') && !current.isSymlink) {
+          let endIdx = idx + 1;
+          while (
+            endIdx < children.length &&
+            (children[endIdx].type === 'move' || children[endIdx].type === 'rename') &&
+            !children[endIdx].isSymlink
+          ) {
+            endIdx += 1;
+          }
+          const slice = children.slice(idx, endIdx);
+          const disjoint =
+            slice.every((c) => Boolean(c.destinationPath)) &&
+            this.areDisjointMovePairs(
+              slice.map((c) => ({ src: c.sourcePath, dst: c.destinationPath! }))
+            );
+
+          if (disjoint) {
+            let cursor = 0;
+            let firstError: unknown = null;
+            const REDO_CONCURRENCY = 8;
+            const runRedoWorker = async (): Promise<void> => {
+              while (cursor < slice.length && firstError === null) {
+                const localOffset = cursor;
+                cursor += 1;
+                const item = slice[localOffset];
+                try {
+                  const res = await this.redoSingleRecordUnlocked(
+                    item,
+                    batchValidatorCtx,
+                    batchFsCtx
+                  );
+                  updatedChildren[idx + localOffset] = res.updatedRecord;
+                } catch (err: unknown) {
+                  if (firstError === null) {
+                    firstError = err;
+                  }
+                }
+              }
+            };
+            await Promise.all(
+              Array.from({ length: Math.min(REDO_CONCURRENCY, slice.length) }, () => runRedoWorker())
+            );
+            if (firstError !== null) {
+              throw firstError;
+            }
+            idx = endIdx;
+            continue;
+          }
+        }
+
+        const res = await this.redoSingleRecordUnlocked(current, batchValidatorCtx, batchFsCtx);
+        updatedChildren[idx] = res.updatedRecord;
+        idx += 1;
       }
+
       return {
         updatedRecord: { ...record, children: updatedChildren },
         restoredPath: updatedChildren[updatedChildren.length - 1]?.destinationPath ?? record.sourcePath,
@@ -1158,7 +1485,7 @@ export class OperationJournal {
         };
       }
 
-      const canonicalTarget = await this.validateCanonicalOrThrow(record.sourcePath);
+      const canonicalTarget = await this.validateCanonicalOrThrow(record.sourcePath, validatorContext);
       const vaultPayloadPath = path.join(
         this.payloadsDir,
         `${record.id}-${path.basename(canonicalTarget)}`
@@ -1177,14 +1504,15 @@ export class OperationJournal {
         throw ErrorFactory.createFileSystemError('UNKNOWN', record.sourcePath);
       }
       const { resolvedPath: resolvedSrc, isSymlink } = await this.resolveLinkAwareTarget(
-        record.sourcePath
+        record.sourcePath,
+        validatorContext
       );
       const parentDstCheck = record.isSymlink
         ? await this.validator.validateParentCanonicalForLink(record.destinationPath)
         : null;
       const canonicalDst = parentDstCheck?.valid && parentDstCheck.canonicalLinkPath
         ? parentDstCheck.canonicalLinkPath
-        : await this.validateCanonicalOrThrow(record.destinationPath);
+        : await this.validateCanonicalOrThrow(record.destinationPath, validatorContext);
 
       if (await this.pathExists(canonicalDst)) {
         throw ErrorFactory.createFileSystemError(
@@ -1201,7 +1529,7 @@ export class OperationJournal {
         this.fileSystemService.invalidatePath(resolvedSrc);
         this.fileSystemService.invalidatePath(canonicalDst);
       } else {
-        await this.fileSystemService.move(resolvedSrc, canonicalDst);
+        await this.fileSystemService.move(resolvedSrc, canonicalDst, fsContext);
       }
 
       return {
@@ -1214,7 +1542,7 @@ export class OperationJournal {
       if (!record.destinationPath) {
         throw ErrorFactory.createFileSystemError('UNKNOWN', record.sourcePath);
       }
-      const canonicalDst = await this.validateCanonicalOrThrow(record.destinationPath);
+      const canonicalDst = await this.validateCanonicalOrThrow(record.destinationPath, validatorContext);
       if (await this.pathExists(canonicalDst)) {
         throw ErrorFactory.createFileSystemError(
           'UNKNOWN',
@@ -1236,7 +1564,7 @@ export class OperationJournal {
     }
 
     if (record.type === 'edit_links') {
-      const canonicalFile = await this.validateCanonicalOrThrow(record.sourcePath);
+      const canonicalFile = await this.validateCanonicalOrThrow(record.sourcePath, validatorContext);
       if (record.nextContent !== undefined) {
         await this.fileSystemService.writeFile(canonicalFile, record.nextContent);
       }
@@ -1246,7 +1574,7 @@ export class OperationJournal {
       };
     }
 
-    const canonicalTarget = await this.validateCanonicalOrThrow(record.sourcePath);
+    const canonicalTarget = await this.validateCanonicalOrThrow(record.sourcePath, validatorContext);
     if (record.vaultPayloadPath && (await this.pathExists(record.vaultPayloadPath))) {
       await this.movePathAtomicOrCrossDevice(
         record.vaultPayloadPath,

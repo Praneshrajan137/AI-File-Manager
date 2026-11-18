@@ -101,7 +101,36 @@ interface CandidateFileEntry {
   depth: number;
 }
 
-export async function computeFileSha256(filePath: string): Promise<string> {
+const FAST_HASH_BUFFER_LIMIT = 256 * 1024;
+const ORGANIZER_IO_CONCURRENCY = 16;
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  let cursor = 0;
+
+  const runWorker = async (): Promise<void> => {
+    while (cursor < items.length) {
+      const idx = cursor;
+      cursor += 1;
+      results[idx] = await fn(items[idx], idx);
+    }
+  };
+
+  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+  return results;
+}
+
+export async function computeFileSha256(filePath: string, knownSize?: number): Promise<string> {
+  if (knownSize !== undefined && knownSize <= FAST_HASH_BUFFER_LIMIT) {
+    const buf = await fs.readFile(filePath);
+    return crypto.createHash('sha256').update(buf).digest('hex');
+  }
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
     const stream = fsSync.createReadStream(filePath);
@@ -265,63 +294,116 @@ export class AIOrganizerService {
     canonicalRoot: string,
     recursive: boolean
   ): Promise<{ files: CandidateFileEntry[]; skippedFiles: number }> {
-    const files: CandidateFileEntry[] = [];
     let skippedFiles = 0;
+    const rawCandidates: Array<{ fullPath: string; name: string; depth: number }> = [];
     const queue: Array<{ dir: string; depth: number }> = [{ dir: canonicalRoot, depth: 0 }];
+    let head = 0;
 
-    while (queue.length > 0 && files.length < MAX_ORGANIZE_FILES) {
-      const current = queue.shift()!;
-      const entries = await fs.readdir(current.dir, { withFileTypes: true }).catch(() => []);
-      for (const entry of entries) {
-        if (entry.name.startsWith('.')) {
-          skippedFiles += 1;
-          continue;
-        }
-        const fullPath = path.join(current.dir, entry.name);
-        if (entry.isSymbolicLink()) {
-          skippedFiles += 1;
-          continue;
-        }
-        if (entry.isDirectory()) {
-          if (
-            recursive &&
-            current.depth < MAX_RECURSIVE_DEPTH &&
-            !SKIPPED_RECURSIVE_DIRS.has(entry.name.toLowerCase())
-          ) {
-            queue.push({ dir: fullPath, depth: current.depth + 1 });
+    while (head < queue.length && rawCandidates.length < MAX_ORGANIZE_FILES) {
+      const levelBatch: Array<{ dir: string; depth: number }> = [];
+      while (head < queue.length && levelBatch.length < 8) {
+        levelBatch.push(queue[head]);
+        head += 1;
+      }
+
+      const dirEntriesList = await Promise.all(
+        levelBatch.map(async (item) => ({
+          item,
+          entries: await fs.readdir(item.dir, { withFileTypes: true }).catch(() => []),
+        }))
+      );
+
+      for (const { item, entries } of dirEntriesList) {
+        for (const entry of entries) {
+          if (entry.name.startsWith('.')) {
+            skippedFiles += 1;
+            continue;
           }
-          continue;
-        }
-        if (!entry.isFile()) {
-          continue;
-        }
+          const fullPath = path.join(item.dir, entry.name);
+          if (entry.isSymbolicLink()) {
+            skippedFiles += 1;
+            continue;
+          }
+          if (entry.isDirectory()) {
+            if (
+              recursive &&
+              item.depth < MAX_RECURSIVE_DEPTH &&
+              !SKIPPED_RECURSIVE_DIRS.has(entry.name.toLowerCase())
+            ) {
+              queue.push({ dir: fullPath, depth: item.depth + 1 });
+            }
+            continue;
+          }
+          if (!entry.isFile()) {
+            continue;
+          }
+          if (isSensitiveSecretFile(fullPath).blocked) {
+            skippedFiles += 1;
+            continue;
+          }
 
-        if (isSensitiveSecretFile(fullPath).blocked) {
-          skippedFiles += 1;
-          continue;
+          rawCandidates.push({ fullPath, name: entry.name, depth: item.depth });
+          if (rawCandidates.length >= MAX_ORGANIZE_FILES) {
+            break;
+          }
         }
-
-        const check = await this.deps.validator.validateCanonical(fullPath);
-        if (!check.valid || !check.canonicalPath) {
-          skippedFiles += 1;
-          continue;
-        }
-
-        const stat = await fs.stat(check.canonicalPath);
-        const sha256 = await computeFileSha256(check.canonicalPath);
-        files.push({
-          path: check.canonicalPath,
-          name: entry.name,
-          ext: path.extname(entry.name).toLowerCase(),
-          size: stat.size,
-          mtimeMs: stat.mtimeMs,
-          sha256,
-          depth: current.depth,
-        });
-
-        if (files.length >= MAX_ORGANIZE_FILES) {
+        if (rawCandidates.length >= MAX_ORGANIZE_FILES) {
           break;
         }
+      }
+    }
+
+    if (rawCandidates.length === 0) {
+      return { files: [], skippedFiles };
+    }
+
+    const validations = await this.deps.validator.validateCanonicalBatch(
+      rawCandidates.map((c) => c.fullPath),
+      ORGANIZER_IO_CONCURRENCY
+    );
+
+    const validated: Array<{ canonicalPath: string; name: string; depth: number }> = [];
+    for (let i = 0; i < rawCandidates.length; i += 1) {
+      const check = validations[i];
+      if (!check.valid || !check.canonicalPath) {
+        skippedFiles += 1;
+        continue;
+      }
+      validated.push({
+        canonicalPath: check.canonicalPath,
+        name: rawCandidates[i].name,
+        depth: rawCandidates[i].depth,
+      });
+    }
+
+    const entries = await mapWithConcurrency(
+      validated,
+      ORGANIZER_IO_CONCURRENCY,
+      async (item): Promise<CandidateFileEntry | null> => {
+        try {
+          const stat = await fs.stat(item.canonicalPath);
+          const sha256 = await computeFileSha256(item.canonicalPath, stat.size);
+          return {
+            path: item.canonicalPath,
+            name: item.name,
+            ext: path.extname(item.name).toLowerCase(),
+            size: stat.size,
+            mtimeMs: stat.mtimeMs,
+            sha256,
+            depth: item.depth,
+          };
+        } catch {
+          return null;
+        }
+      }
+    );
+
+    const files: CandidateFileEntry[] = [];
+    for (const entry of entries) {
+      if (entry) {
+        files.push(entry);
+      } else {
+        skippedFiles += 1;
       }
     }
 
@@ -484,6 +566,7 @@ export class AIOrganizerService {
     );
 
     const reservedDestinations = new Set<string>();
+    const folderListingCache = new Map<string, Set<string>>();
     const operations: OrganizePlanOperation[] = [];
     let usedLLM = false;
     let batchCount = 0;
@@ -515,7 +598,9 @@ export class AIOrganizerService {
             canonicalRoot,
             category,
             dup.name,
-            reservedDestinations
+            reservedDestinations,
+            undefined,
+            folderListingCache
           );
           if (destinationPath === dup.path) continue;
           operations.push({
@@ -602,7 +687,8 @@ export class AIOrganizerService {
           category,
           safeFileName,
           reservedDestinations,
-          file.path
+          file.path,
+          folderListingCache
         );
 
         if (normalizeOrganizerKey(destinationPath) === normalizeOrganizerKey(file.path)) {
@@ -686,10 +772,30 @@ export class AIOrganizerService {
     const verifiedSteps: Array<{ action: 'move' | 'rename'; source: string; destination: string }> =
       [];
 
-    // Pre-apply verification phase: hash check, canonical containment, zero collisions before moving any byte
-    for (const op of input.operations) {
-      const srcGlobalCheck = await this.deps.validator.validateCanonical(op.sourcePath);
-      const srcLocalCheck = await targetContainmentValidator.validateCanonical(op.sourcePath);
+    // Pre-apply verification phase: batch canonical containment + parallel stat/SHA-256 + cached collision scan
+    const [srcGlobalChecks, srcLocalChecks, dstGlobalChecks, dstLocalChecks] = await Promise.all([
+      this.deps.validator.validateCanonicalBatch(
+        input.operations.map((op) => op.sourcePath),
+        ORGANIZER_IO_CONCURRENCY
+      ),
+      targetContainmentValidator.validateCanonicalBatch(
+        input.operations.map((op) => op.sourcePath),
+        ORGANIZER_IO_CONCURRENCY
+      ),
+      this.deps.validator.validateCanonicalBatch(
+        input.operations.map((op) => op.destinationPath),
+        ORGANIZER_IO_CONCURRENCY
+      ),
+      targetContainmentValidator.validateCanonicalBatch(
+        input.operations.map((op) => op.destinationPath),
+        ORGANIZER_IO_CONCURRENCY
+      ),
+    ]);
+
+    for (let i = 0; i < input.operations.length; i += 1) {
+      const op = input.operations[i];
+      const srcGlobalCheck = srcGlobalChecks[i];
+      const srcLocalCheck = srcLocalChecks[i];
       if (
         !srcGlobalCheck.valid ||
         !srcGlobalCheck.canonicalPath ||
@@ -702,7 +808,6 @@ export class AIOrganizerService {
           { path: op.sourcePath }
         );
       }
-
       const canonicalSource = srcLocalCheck.canonicalPath;
       const sourceKey = normalizeOrganizerKey(canonicalSource);
       if (seenSources.has(sourceKey)) {
@@ -715,28 +820,8 @@ export class AIOrganizerService {
       }
       seenSources.add(sourceKey);
 
-      let sourceLstat: Awaited<ReturnType<typeof fs.lstat>>;
-      try {
-        sourceLstat = await fs.lstat(canonicalSource);
-      } catch {
-        throw ErrorFactory.createFileSystemError('FILE_NOT_FOUND', canonicalSource, 'organize');
-      }
-
-      if (!sourceLstat.isFile() || sourceLstat.isSymbolicLink()) {
-        throw ErrorFactory.createFileSystemError('INVALID_PATH', canonicalSource, 'organize');
-      }
-
-      const liveSha256 = await computeFileSha256(canonicalSource);
-      if (liveSha256.toLowerCase() !== op.sourceSha256.toLowerCase()) {
-        throw new ValidationError(
-          'INVALID_INPUT',
-          `File "${path.basename(canonicalSource)}" changed on disk since dry-run preview; zero files moved.`,
-          { field: 'sourceSha256', value: op.sourceSha256, expected: liveSha256 }
-        );
-      }
-
-      const dstGlobalCheck = await this.deps.validator.validateCanonical(op.destinationPath);
-      const dstLocalCheck = await targetContainmentValidator.validateCanonical(op.destinationPath);
+      const dstGlobalCheck = dstGlobalChecks[i];
+      const dstLocalCheck = dstLocalChecks[i];
       if (
         !dstGlobalCheck.valid ||
         !dstGlobalCheck.canonicalPath ||
@@ -750,10 +835,86 @@ export class AIOrganizerService {
           { path: op.destinationPath }
         );
       }
+    }
 
-      const canonicalDest = dstLocalCheck.canonicalPath;
+    const sourceInspections = await mapWithConcurrency(
+      input.operations,
+      ORGANIZER_IO_CONCURRENCY,
+      async (op, i): Promise<{ canonicalSource: string; lstatSize: number; isValidRegularFile: boolean; liveSha256: string; notFound?: boolean }> => {
+        const canonicalSource = srcLocalChecks[i].canonicalPath!;
+        let sourceLstat: Awaited<ReturnType<typeof fs.lstat>>;
+        try {
+          sourceLstat = await fs.lstat(canonicalSource);
+        } catch {
+          return { canonicalSource, lstatSize: 0, isValidRegularFile: false, liveSha256: '', notFound: true };
+        }
+        if (!sourceLstat.isFile() || sourceLstat.isSymbolicLink()) {
+          return { canonicalSource, lstatSize: 0, isValidRegularFile: false, liveSha256: '', notFound: false };
+        }
+        const liveSha256 = await computeFileSha256(canonicalSource, sourceLstat.size);
+        return { canonicalSource, lstatSize: sourceLstat.size, isValidRegularFile: true, liveSha256 };
+      }
+    );
+
+    const uniqueDestParents = new Map<string, string>();
+    for (let i = 0; i < input.operations.length; i += 1) {
+      const parentDir = path.dirname(dstLocalChecks[i].canonicalPath!);
+      uniqueDestParents.set(normalizeOrganizerKey(parentDir), parentDir);
+    }
+    const existingParentEntries = new Map<string, Set<string> | null>();
+    await mapWithConcurrency(
+      Array.from(uniqueDestParents.entries()),
+      ORGANIZER_IO_CONCURRENCY,
+      async ([dirKey, dirPath]): Promise<void> => {
+        try {
+          const names = await fs.readdir(dirPath);
+          const nameSet = new Set(names.map((n) => (process.platform === 'win32' ? n.toLowerCase() : n)));
+          existingParentEntries.set(dirKey, nameSet);
+        } catch {
+          existingParentEntries.set(dirKey, null);
+        }
+      }
+    );
+
+    const dirExistsCache = new Map<string, boolean>();
+    const rootKey = normalizeOrganizerKey(canonicalRoot);
+    const rootPrefix = rootKey.endsWith(path.sep) ? rootKey : `${rootKey}${path.sep}`;
+    for (const [parentKey, entrySet] of existingParentEntries.entries()) {
+      dirExistsCache.set(parentKey, entrySet !== null);
+    }
+
+    for (let i = 0; i < input.operations.length; i += 1) {
+      const op = input.operations[i];
+      const inspected = sourceInspections[i];
+      if (inspected.notFound) {
+        throw ErrorFactory.createFileSystemError('FILE_NOT_FOUND', inspected.canonicalSource, 'organize');
+      }
+      if (!inspected.isValidRegularFile) {
+        throw ErrorFactory.createFileSystemError('INVALID_PATH', inspected.canonicalSource, 'organize');
+      }
+      if (inspected.liveSha256.toLowerCase() !== op.sourceSha256.toLowerCase()) {
+        throw new ValidationError(
+          'INVALID_INPUT',
+          `File "${path.basename(inspected.canonicalSource)}" changed on disk since dry-run preview; zero files moved.`,
+          { field: 'sourceSha256', value: op.sourceSha256, expected: inspected.liveSha256 }
+        );
+      }
+
+      const canonicalDest = dstLocalChecks[i].canonicalPath!;
       const destKey = normalizeOrganizerKey(canonicalDest);
-      if (seenDestinations.has(destKey) || (await pathExistsOnDisk(canonicalDest))) {
+      const destParentDir = path.dirname(canonicalDest);
+      const destParentKey = normalizeOrganizerKey(destParentDir);
+      const destBaseKey =
+        process.platform === 'win32'
+          ? path.basename(canonicalDest).toLowerCase()
+          : path.basename(canonicalDest);
+      const destParentEntries = existingParentEntries.get(destParentKey);
+      const destExistsOnDisk =
+        destParentEntries !== undefined && destParentEntries !== null
+          ? destParentEntries.has(destBaseKey)
+          : await pathExistsOnDisk(canonicalDest);
+
+      if (seenDestinations.has(destKey) || destExistsOnDisk) {
         throw new FileSystemError(
           'ALREADY_EXISTS',
           `Destination conflict for "${path.basename(canonicalDest)}"; zero files moved.`,
@@ -762,14 +923,20 @@ export class AIOrganizerService {
       }
       seenDestinations.add(destKey);
 
-      let ancestorDir = path.dirname(canonicalDest);
-      const rootKey = normalizeOrganizerKey(canonicalRoot);
-      const rootPrefix = rootKey.endsWith(path.sep) ? rootKey : `${rootKey}${path.sep}`;
+      let ancestorDir = destParentDir;
       while (
         normalizeOrganizerKey(ancestorDir) !== rootKey &&
-        normalizeOrganizerKey(ancestorDir).startsWith(rootPrefix) &&
-        !(await pathExistsOnDisk(ancestorDir))
+        normalizeOrganizerKey(ancestorDir).startsWith(rootPrefix)
       ) {
+        const ancKey = normalizeOrganizerKey(ancestorDir);
+        let exists = dirExistsCache.get(ancKey);
+        if (exists === undefined) {
+          exists = await pathExistsOnDisk(ancestorDir);
+          dirExistsCache.set(ancKey, exists);
+        }
+        if (exists) {
+          break;
+        }
         neededDirs.add(ancestorDir);
         const parent = path.dirname(ancestorDir);
         if (parent === ancestorDir) break;
@@ -778,7 +945,7 @@ export class AIOrganizerService {
 
       verifiedSteps.push({
         action: op.action,
-        source: canonicalSource,
+        source: inspected.canonicalSource,
         destination: canonicalDest,
       });
     }
@@ -789,15 +956,21 @@ export class AIOrganizerService {
       const scopedRefs: Array<{ sourcePath: string; targetPath: string; isMarkdownLink: boolean }> = [];
       if (this.deps.findImpactForPaths) {
         const impactedRefs = this.deps.findImpactForPaths(verifiedSteps.map((s) => s.source));
-        for (const ref of impactedRefs) {
-          if (!ref.isMarkdownLink) continue;
-          const srcCheck = await this.deps.validator.validateCanonical(ref.sourcePath);
-          if (srcCheck.valid && srcCheck.canonicalPath) {
-            scopedRefs.push({
-              sourcePath: srcCheck.canonicalPath,
-              targetPath: ref.targetPath,
-              isMarkdownLink: true,
-            });
+        const mdImpactRefs = impactedRefs.filter((ref) => ref.isMarkdownLink);
+        if (mdImpactRefs.length > 0) {
+          const refChecks = await this.deps.validator.validateCanonicalBatch(
+            mdImpactRefs.map((r) => r.sourcePath),
+            ORGANIZER_IO_CONCURRENCY
+          );
+          for (let i = 0; i < mdImpactRefs.length; i += 1) {
+            const srcCheck = refChecks[i];
+            if (srcCheck.valid && srcCheck.canonicalPath) {
+              scopedRefs.push({
+                sourcePath: srcCheck.canonicalPath,
+                targetPath: mdImpactRefs[i].targetPath,
+                isMarkdownLink: true,
+              });
+            }
           }
         }
       }
@@ -859,9 +1032,25 @@ export class AIOrganizerService {
     category: string,
     fileName: string,
     reserved: Set<string>,
-    selfSourcePath?: string
+    selfSourcePath?: string,
+    folderListingCache?: Map<string, Set<string>>
   ): Promise<string> {
     const folder = path.join(canonicalRoot, category);
+    const folderKey = normalizeOrganizerKey(folder);
+    let existingNames: Set<string> | undefined;
+    if (folderListingCache) {
+      existingNames = folderListingCache.get(folderKey);
+      if (!existingNames) {
+        try {
+          const names = await fs.readdir(folder);
+          existingNames = new Set(names.map((n) => (process.platform === 'win32' ? n.toLowerCase() : n)));
+        } catch {
+          existingNames = new Set<string>();
+        }
+        folderListingCache.set(folderKey, existingNames);
+      }
+    }
+
     const ext = path.extname(fileName);
     const stem = ext ? fileName.slice(0, -ext.length) : fileName;
     const selfKey = selfSourcePath ? normalizeOrganizerKey(selfSourcePath) : null;
@@ -871,7 +1060,10 @@ export class AIOrganizerService {
       const candidatePath = path.join(folder, candidateName);
       const key = normalizeOrganizerKey(candidatePath);
       const isSelf = selfKey !== null && key === selfKey;
-      if (!reserved.has(key) && (isSelf || !(await pathExistsOnDisk(candidatePath)))) {
+      const diskExists = existingNames
+        ? existingNames.has(process.platform === 'win32' ? candidateName.toLowerCase() : candidateName)
+        : await pathExistsOnDisk(candidatePath);
+      if (!reserved.has(key) && (isSelf || !diskExists)) {
         reserved.add(key);
         return candidatePath;
       }

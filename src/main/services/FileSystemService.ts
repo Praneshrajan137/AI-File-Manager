@@ -12,7 +12,7 @@ import {
     MAX_CACHE_MEMORY,
     RING_BUFFER_CAPACITY,
 } from '@shared/contracts';
-import { PathValidator } from './PathValidator';
+import { CanonicalValidationContext, PathValidator } from './PathValidator';
 import { LRUCache } from '@main/dsa/LRUCache';
 import { RingBuffer } from '@main/dsa/RingBuffer';
 import { RuntimeDiagnostics } from './RuntimeDiagnostics';
@@ -438,11 +438,12 @@ export class FileSystemService implements IFileSystemService {
 
     async move(
         source: string,
-        destination: string
+        destination: string,
+        canonicalContext?: CanonicalValidationContext
     ): Promise<{ success: boolean; newPath: string }> {
         // SECURITY: Validate source (link-aware) and canonical destination
-        const canonicalSource = await this.validateLinkAwarePathOrThrow(source);
-        const canonicalDestination = await this.validateCanonicalPathOrThrow(destination);
+        const canonicalSource = await this.validateLinkAwarePathOrThrow(source, canonicalContext);
+        const canonicalDestination = await this.validateCanonicalPathOrThrow(destination, canonicalContext);
 
         const recordRetry = (): void => {
             RuntimeDiagnostics.getInstance().recordRenameRetry();
@@ -667,6 +668,10 @@ export class FileSystemService implements IFileSystemService {
         return this.validator.validateCanonical(filePath);
     }
 
+    async createCanonicalContext(): Promise<CanonicalValidationContext> {
+        return this.validator.createCanonicalContext();
+    }
+
     /**
      * Get allowed root directory.
      * 
@@ -696,7 +701,10 @@ export class FileSystemService implements IFileSystemService {
         this.clearCache();
     }
 
-    private async validateLinkAwarePathOrThrow(filePath: string): Promise<string> {
+    private async validateLinkAwarePathOrThrow(
+        filePath: string,
+        canonicalContext?: CanonicalValidationContext
+    ): Promise<string> {
         this.validatePathOrThrow(filePath);
         if (typeof fs.lstat === 'function') {
             try {
@@ -726,11 +734,16 @@ export class FileSystemService implements IFileSystemService {
                 }
             }
         }
-        return this.validateCanonicalPathOrThrow(filePath);
+        return this.validateCanonicalPathOrThrow(filePath, canonicalContext);
     }
 
-    private async validateCanonicalPathOrThrow(filePath: string): Promise<string> {
-        const result = await this.validator.validateCanonical(filePath);
+    private async validateCanonicalPathOrThrow(
+        filePath: string,
+        canonicalContext?: CanonicalValidationContext
+    ): Promise<string> {
+        const result = canonicalContext
+            ? await this.validator.validateCanonicalWithContext(filePath, canonicalContext)
+            : await this.validator.validateCanonical(filePath);
 
         if (!result.valid) {
             const errorCode =

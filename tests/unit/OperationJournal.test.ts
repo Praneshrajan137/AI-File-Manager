@@ -314,4 +314,57 @@ describe('OperationJournal (Recoverable Safety Kernel)', () => {
     expect(suppressed.length).toBeGreaterThanOrEqual(5);
     expect(suppressed.flat()).toEqual(expect.arrayContaining([a, b, c]));
   });
+
+  it('recovers interrupted wal-pending.jsonl batches and ignores truncated trailing NDJSON lines', async () => {
+    RuntimeDiagnostics.resetForTesting();
+
+    const srcFile = path.join(workspaceRoot, 'ndjson-src.txt');
+    const destDir = path.join(workspaceRoot, 'ndjson-dest');
+    const destFile = path.join(destDir, 'ndjson-src.txt');
+    await fs.mkdir(destDir, { recursive: true });
+    await fs.writeFile(destFile, 'ndjson-payload', 'utf-8');
+
+    const crashVault = path.join(sandboxDir, 'ndjson-crash-vault');
+    await fs.mkdir(path.join(crashVault, 'payloads'), { recursive: true });
+    const headerLine = JSON.stringify({
+      type: 'header',
+      batchId: 'ndjson-batch-1',
+      description: 'Interrupted NDJSON batch',
+      status: 'pending',
+      startedAt: Date.now(),
+    });
+    const stepLine = JSON.stringify({
+      type: 'step',
+      record: {
+        id: 'ndjson-child-1',
+        type: 'move',
+        timestamp: Date.now(),
+        sourcePath: srcFile,
+        destinationPath: destFile,
+        isDirectory: false,
+        size: 14,
+        undoable: true,
+        description: 'Move ndjson-src.txt',
+      },
+    });
+    // Include an incomplete truncated JSON line at EOF simulating power loss mid-write
+    const truncatedTail = '{"type":"step","record":{"id":"partial-crash';
+    await fs.writeFile(
+      path.join(crashVault, 'wal-pending.jsonl'),
+      `${headerLine}\n${stepLine}\n${truncatedTail}`,
+      'utf-8'
+    );
+
+    const recoveredJournal = new OperationJournal({
+      vaultDir: crashVault,
+      validator,
+      fileSystemService: fsService,
+    });
+    const recoveredState = await recoveredJournal.getState();
+    expect(recoveredState.canUndo).toBe(false);
+    expect(await fs.readFile(srcFile, 'utf-8')).toBe('ndjson-payload');
+    await expect(fs.stat(destFile)).rejects.toThrow();
+    await expect(fs.stat(path.join(crashVault, 'wal-pending.jsonl'))).rejects.toThrow();
+    expect(RuntimeDiagnostics.getInstance().getSnapshot().resilience?.walRecoveries).toBe(1);
+  });
 });
