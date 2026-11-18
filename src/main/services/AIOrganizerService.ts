@@ -13,10 +13,13 @@ import {
 import { isSensitiveSecretFile, redactSensitiveText } from '@shared/security/SecretGuard';
 import { ErrorFactory, FileSystemError, ValidationError } from '@shared/errors';
 import { FileSystemLogger } from '@shared/logging';
+import { VaultRootAuthority } from '@main/platform/VaultRootAuthority';
+import { normalizePathKey } from '@main/platform/pathNormalize';
 import { BatchOperationStep, OperationJournal } from './OperationJournal';
 import { PathValidator } from './PathValidator';
 import { buildBatchMarkdownLinkRepairSteps } from './MarkdownLinkRepair';
-import { getReactiveWorkspaceKernel, hasActiveReactiveWorkspaceKernel } from './ReactiveWorkspaceKernel';
+import { hasActiveReactiveWorkspaceKernel } from './ReactiveWorkspaceKernel';
+import { getFsCommandCoordinator } from '@main/kernel/FsCommandCoordinator';
 import { formatUntrustedWorkspaceData } from '../../llm/services/ContextManager';
 import { LocalLLMProvider, LocalModelTransport } from '../../llm/services/LocalModelTransport';
 import { clusterDocumentsByVector } from '../../llm/services/SemanticClustering';
@@ -87,8 +90,7 @@ export interface AIOrganizerServiceDeps {
 }
 
 function normalizeOrganizerKey(targetPath: string): string {
-  const resolved = path.resolve(targetPath);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  return normalizePathKey(targetPath);
 }
 
 interface CandidateFileEntry {
@@ -764,7 +766,7 @@ export class AIOrganizerService {
     }
 
     const canonicalRoot = rootValidation.canonicalPath;
-    const targetContainmentValidator = new PathValidator([canonicalRoot]);
+    const targetContainmentValidator = VaultRootAuthority.getInstance().createScopedValidator([canonicalRoot]);
 
     const seenSources = new Set<string>();
     const seenDestinations = new Set<string>();
@@ -993,28 +995,29 @@ export class AIOrganizerService {
       ...linkRepairSteps,
     ];
 
+    const activeKernel = !this.deps.notifyMutation && hasActiveReactiveWorkspaceKernel();
+    if (activeKernel) {
+      getFsCommandCoordinator().suppressBatchSteps(batchSteps);
+    }
+
     const batchResult = await this.deps.operationJournal.executeBatch(
       `AI Organize ${path.basename(canonicalRoot)} (${verifiedSteps.length} files)`,
       batchSteps
     );
 
-    const emitMutation =
-      this.deps.notifyMutation ??
-      (hasActiveReactiveWorkspaceKernel()
-        ? (type: 'create' | 'change' | 'unlink', filePath: string): void =>
-            getReactiveWorkspaceKernel().notifyMutation(type, filePath)
-        : undefined);
-    if (emitMutation) {
+    if (this.deps.notifyMutation) {
       for (const dir of sortedDirs) {
-        emitMutation('create', dir);
+        this.deps.notifyMutation('create', dir);
       }
       for (const step of verifiedSteps) {
-        emitMutation('unlink', step.source);
-        emitMutation('create', step.destination);
+        this.deps.notifyMutation('unlink', step.source);
+        this.deps.notifyMutation('create', step.destination);
       }
       for (const repair of linkRepairSteps) {
-        emitMutation('change', repair.filePath);
+        this.deps.notifyMutation('change', repair.filePath);
       }
+    } else if (activeKernel) {
+      getFsCommandCoordinator().emitRecordMutations(batchResult.operation, 'redo');
     }
 
     return {

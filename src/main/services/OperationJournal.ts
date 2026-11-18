@@ -10,6 +10,7 @@ import {
 } from '@shared/contracts';
 import { resolveDefaultTrashVaultDir as resolveSharedTrashVaultDir } from '@shared/config';
 import { CanonicalValidationContext, PathValidator } from './PathValidator';
+import { VaultRootAuthority } from '@main/platform/VaultRootAuthority';
 import { FileSystemService } from './FileSystemService';
 import { getReactiveWorkspaceKernel, hasActiveReactiveWorkspaceKernel } from './ReactiveWorkspaceKernel';
 import { RuntimeDiagnostics } from './RuntimeDiagnostics';
@@ -1776,16 +1777,22 @@ export class OperationJournal {
 }
 
 let journalSingleton: OperationJournal | null = null;
+let unsubscribeJournalRoots: (() => void) | null = null;
 
 export function getOperationJournal(): OperationJournal {
   const kernel = getReactiveWorkspaceKernel();
   const fsService = kernel.getFileSystemService();
-  const validator = new PathValidator(fsService.getAllowedRoots());
+  const authority = VaultRootAuthority.getInstance();
+  const validator = authority.getValidator();
 
   if (!journalSingleton) {
     journalSingleton = new OperationJournal({
       validator,
       fileSystemService: fsService,
+    });
+    unsubscribeJournalRoots?.();
+    unsubscribeJournalRoots = authority.onRootsChanged(() => {
+      journalSingleton?.updateValidator(authority.getValidator());
     });
   } else {
     journalSingleton.updateValidator(validator);
@@ -1794,5 +1801,7 @@ export function getOperationJournal(): OperationJournal {
 }
 
 export function resetOperationJournal(): void {
+  unsubscribeJournalRoots?.();
+  unsubscribeJournalRoots = null;
   journalSingleton = null;
 }

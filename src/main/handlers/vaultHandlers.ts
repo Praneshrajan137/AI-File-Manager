@@ -1,5 +1,4 @@
 import { ipcMain, dialog, BrowserWindow, IpcMainInvokeEvent } from 'electron';
-import fsSync from 'fs';
 import path from 'path';
 import { UIPreferencesSnapshot, VaultConfigSnapshot } from '@shared/contracts';
 import { IPCChannel } from '@shared/ipc/contracts';
@@ -7,54 +6,23 @@ import { ConfigManager, DEFAULT_EXCLUDED_DIRS } from '@shared/config';
 import { IPCLogger } from '@shared/logging';
 import { ErrorFactory } from '@shared/errors';
 import {
+  dedupeNormalizedPaths,
+  normalizeCanonicalKeySync,
+} from '@main/platform/pathNormalize';
+import { VaultRootAuthority } from '@main/platform/VaultRootAuthority';
+import {
   withContract,
   resolveAllowedRoots,
-  resetPathValidator,
   validateCanonicalPathOrThrow,
 } from './securityMiddleware';
 import { getReactiveWorkspaceKernel } from '../services/ReactiveWorkspaceKernel';
-import { PathValidator } from '../services/PathValidator';
-import { RuntimeDiagnostics } from '../services/RuntimeDiagnostics';
-import { resetSearchService } from './searchHandlers';
-import { resetOperationJournal } from '../services/OperationJournal';
-
-function canonicalizePathSync(targetPath: string): string {
-  const resolved = path.resolve(targetPath);
-  const realpathFn: ((p: string) => string) | null =
-    typeof fsSync.realpathSync?.native === 'function'
-      ? (p: string): string => fsSync.realpathSync.native(p)
-      : typeof fsSync.realpathSync === 'function'
-        ? (p: string): string => fsSync.realpathSync(p)
-        : null;
-  if (!realpathFn) {
-    return resolved;
-  }
-  try {
-    return realpathFn(resolved) || resolved;
-  } catch {
-    return resolved;
-  }
-}
 
 function normalizeCompare(targetPath: string): string {
-  const canonical = canonicalizePathSync(targetPath);
-  return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+  return normalizeCanonicalKeySync(targetPath);
 }
 
 function dedupePaths(pathsList: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const entry of pathsList) {
-    const cleaned = entry?.trim();
-    if (!cleaned) continue;
-    const canonical = canonicalizePathSync(cleaned);
-    const key = process.platform === 'win32' ? canonical.toLowerCase() : canonical;
-    if (!seen.has(key)) {
-      seen.add(key);
-      result.push(canonical);
-    }
-  }
-  return result;
+  return dedupeNormalizedPaths(pathsList);
 }
 
 export function buildVaultSnapshot(): VaultConfigSnapshot {
@@ -102,12 +70,9 @@ export function buildVaultSnapshot(): VaultConfigSnapshot {
 }
 
 function syncKernelAllowedRoots(roots: string[]): void {
-  resetPathValidator();
-  const kernel = getReactiveWorkspaceKernel();
-  kernel.updateAllowedRoots(roots);
-  RuntimeDiagnostics.getInstance().setAllowedRoots(roots);
-  resetSearchService();
-  resetOperationJournal();
+  // Ensure kernel/search/journal subscribers are attached before broadcasting root change
+  getReactiveWorkspaceKernel();
+  VaultRootAuthority.getInstance().applyAllowedRoots(roots);
 }
 
 async function handleGetVaultConfig(_event: IpcMainInvokeEvent): Promise<VaultConfigSnapshot> {
@@ -162,8 +127,10 @@ async function handleAddVaultRoot(
   }
 
   const current = buildVaultSnapshot();
-  const rootValidator = new PathValidator(current.allowedRoots);
-  const rootValidation = await rootValidator.validateNewRoot(targetPath);
+  const rootValidation = await VaultRootAuthority.getInstance().validateNewRoot(
+    targetPath,
+    current.allowedRoots
+  );
   if (!rootValidation.valid || !rootValidation.canonicalPath) {
     const code =
       rootValidation.error === 'PATH_TRAVERSAL'

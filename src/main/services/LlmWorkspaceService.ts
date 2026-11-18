@@ -68,7 +68,7 @@ import { AIOrganizerService } from './AIOrganizerService';
 import { DirectoryScanner } from './DirectoryScanner';
 import { FileSystemService } from './FileSystemService';
 import { getOperationJournal } from './OperationJournal';
-import { PathValidator } from './PathValidator';
+import { VaultRootAuthority } from '@main/platform/VaultRootAuthority';
 import { getReactiveWorkspaceKernel } from './ReactiveWorkspaceKernel';
 import { RuntimeDiagnostics } from './RuntimeDiagnostics';
 import { WorkspaceKnowledgeGraph } from './WorkspaceKnowledgeGraph';
@@ -439,7 +439,7 @@ function persistAgentTraceSafely(record: PersistedAgentTraceRecord): void {
 export function createOrganizerService(): AIOrganizerService {
   const kernel = getReactiveWorkspaceKernel();
   const fsService = kernel.getFileSystemService();
-  const validator = new PathValidator(fsService.getAllowedRoots());
+  const validator = VaultRootAuthority.getInstance().createScopedValidator(fsService.getAllowedRoots());
   const transportCfg = resolveActiveTransportSettings();
   const llmCfg = readLlmConfig();
   const configuredEmbModel = llmCfg?.embeddingModel ?? 'Xenova/bge-small-en-v1.5';
@@ -775,7 +775,7 @@ export async function executeCopilotQuery(
 
         const kernel = getReactiveWorkspaceKernel();
         const fsService = kernel.getFileSystemService();
-        const validator = new PathValidator(fsService.getAllowedRoots());
+        const validator = VaultRootAuthority.getInstance().createScopedValidator(fsService.getAllowedRoots());
 
         const agent = new WorkspaceReActAgent({
           provider: transportCfg.provider,
@@ -889,7 +889,7 @@ export async function executeCopilotQuery(
         contextScope.selectedPaths.length > 0
       ) {
         const kernelFs = getReactiveWorkspaceKernel().getFileSystemService();
-        const validator = new PathValidator(kernelFs.getAllowedRoots());
+        const validator = VaultRootAuthority.getInstance().createScopedValidator(kernelFs.getAllowedRoots());
         const pinnedBlocks: string[] = [];
         const pinnedSources: RetrievalSource[] = [];
 

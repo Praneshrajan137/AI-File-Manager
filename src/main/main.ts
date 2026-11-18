@@ -94,6 +94,13 @@ function initializeSystems(): void {
       logger.info('Configuration changed', {
         environment: newConfig.app.environment,
       });
+      if (Array.isArray(newConfig.fileSystem?.allowedRoots)) {
+        import('./platform/VaultRootAuthority')
+          .then(({ VaultRootAuthority }) => {
+            VaultRootAuthority.getInstance().applyAllowedRoots(newConfig.fileSystem.allowedRoots);
+          })
+          .catch(() => undefined);
+      }
     },
   });
 

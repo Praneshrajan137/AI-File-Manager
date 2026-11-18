@@ -2,6 +2,7 @@ import fsSync from 'fs';
 import fs from 'fs/promises';
 import { Readable } from 'stream';
 import type { CustomScheme } from 'electron';
+import { VaultRootAuthority } from '@main/platform/VaultRootAuthority';
 import { PathValidator } from './PathValidator';
 import {
   getMimeTypeForAssetExtension,
@@ -291,13 +292,7 @@ export function registerVaultAssetProtocol(validatorProvider?: () => PathValidat
 
     const resolveValidator =
       validatorProvider ??
-      (() : PathValidator => {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { getPathValidator } = require('@main/handlers/securityMiddleware') as {
-          getPathValidator: () => PathValidator;
-        };
-        return getPathValidator();
-      });
+      ((): PathValidator => VaultRootAuthority.getInstance().getValidator());
 
     electronMod.protocol.handle(VAULT_ASSET_SCHEME, (request: Request) =>
       handleVaultAssetRequest(request, resolveValidator)

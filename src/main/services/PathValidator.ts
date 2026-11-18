@@ -4,6 +4,11 @@ import os from 'os';
 import { ValidationResult } from '@shared/contracts';
 import { SecurityLogger } from '@shared/logging';
 import { ConfigManager } from '@shared/config';
+import {
+    isNormalizedWithin as checkNormalizedWithin,
+    normalizePathKey,
+    stripTrailingSep as stripPathTrailingSep,
+} from '@main/platform/pathNormalize';
 
 /**
  * PathValidator - Security-hardened path validation.
@@ -99,24 +104,15 @@ export class PathValidator {
     }
 
     private stripTrailingSep(targetPath: string): string {
-        const parsed = path.parse(targetPath);
-        if (targetPath === parsed.root) {
-            return targetPath;
-        }
-        return targetPath.replace(/[/\\]+$/, '');
+        return stripPathTrailingSep(targetPath);
     }
 
     private normalizeForCompare(targetPath: string): string {
-        const clean = this.stripTrailingSep(path.resolve(path.normalize(targetPath)));
-        return process.platform === 'win32' ? clean.toLowerCase() : clean;
+        return normalizePathKey(targetPath);
     }
 
     private isNormalizedWithin(candidateNorm: string, rootNorm: string): boolean {
-        if (candidateNorm === rootNorm) {
-            return true;
-        }
-        const rootWithSep = rootNorm.endsWith(path.sep) ? rootNorm : rootNorm + path.sep;
-        return candidateNorm.startsWith(rootWithSep);
+        return checkNormalizedWithin(candidateNorm, rootNorm);
     }
 
     private isWithinDirectory(candidatePath: string, rootPath: string): boolean {

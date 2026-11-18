@@ -2,25 +2,17 @@
  * WorkspaceSearchService.ts - PathTrie autocomplete and bounded workspace filename search service.
  */
 
-import path from 'path';
 import { PathTrie } from '@main/dsa/PathTrie';
 import { DirectoryScanner } from '@main/services/DirectoryScanner';
 import { FileSystemService } from '@main/services/FileSystemService';
 import { getReactiveWorkspaceKernel } from '@main/services/ReactiveWorkspaceKernel';
 import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
+import { VaultRootAuthority } from '@main/platform/VaultRootAuthority';
+import { isWithinNormalizedRoot, normalizePathKey } from '@main/platform/pathNormalize';
 import { FileNode, FileMetadata } from '@shared/contracts';
 import { DEFAULT_EXCLUDED_DIRS } from '@shared/config';
 import { IPCLogger, getLogger } from '@shared/logging';
 import { isSensitiveSecretFile } from '@shared/security/SecretGuard';
-
-function isWithinNormalizedRoot(candidatePath: string, rootPath: string): boolean {
-  const normalize = (p: string): string =>
-    process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
-  const normCandidate = normalize(candidatePath);
-  const normRoot = normalize(rootPath);
-  const prefix = normRoot.endsWith(path.sep) ? normRoot : `${normRoot}${path.sep}`;
-  return normCandidate === normRoot || normCandidate.startsWith(prefix);
-}
 
 export type AllowedRootsProvider = () => string[];
 
@@ -93,8 +85,7 @@ export class SearchService {
 
       const fileNodes: FileNode[] = [];
       const seenResultKeys = new Set<string>();
-      const normKey = (p: string): string =>
-        process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
+      const normKey = normalizePathKey;
 
       // STRATEGY 1: Bounded concurrent recursive subtree scan (depth <= 4, max 200 dirs, max 100 hits)
       const excludedDirs = new Set(DEFAULT_EXCLUDED_DIRS.map((d) => d.toLowerCase()));
@@ -350,17 +341,24 @@ export class SearchService {
 }
 
 let searchService: SearchService | null = null;
+let unsubscribeSearchRoots: (() => void) | null = null;
 
 export function getSearchService(): SearchService {
   const kernel = getReactiveWorkspaceKernel();
   if (!searchService) {
     searchService = new SearchService(kernel.getPathTrie(), kernel.getFileSystemService());
+    unsubscribeSearchRoots?.();
+    unsubscribeSearchRoots = VaultRootAuthority.getInstance().onRootsChanged(() => {
+      resetSearchService();
+    });
     IPCLogger.info('SearchService initialized with ReactiveWorkspaceKernel');
   }
   return searchService;
 }
 
 export function resetSearchService(): void {
+  unsubscribeSearchRoots?.();
+  unsubscribeSearchRoots = null;
   searchService = null;
 }
 

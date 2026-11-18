@@ -7,14 +7,13 @@
  */
 
 import type { IpcMainInvokeEvent } from 'electron';
-import os from 'os';
 import path from 'path';
 import { pathToFileURL } from 'url';
+import { VaultRootAuthority } from '@main/platform/VaultRootAuthority';
 import { PathValidator } from '@main/services/PathValidator';
 import { ErrorSerializer, SerializedError } from '@main/middleware/ErrorSerializer';
 import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
 import { SecurityLogger, IPCLogger } from '@shared/logging';
-import { ConfigManager } from '@shared/config';
 import { IPCError, ValidationError } from '@shared/errors';
 import {
   IPC_CONTRACTS,
@@ -28,67 +27,25 @@ import {
   wrapIPCSuccess,
 } from '@shared/ipc/contracts';
 
-let defaultValidator: PathValidator | null = null;
-
-function isLegacyUncustomizedSubfolderDefault(roots: string[], homeDir: string): boolean {
-  if (roots.length !== 3) {
-    return false;
-  }
-  const normalize = (p: string): string =>
-    process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
-  const legacyDefaults = new Set([
-    normalize(path.join(homeDir, 'Documents')),
-    normalize(path.join(homeDir, 'Downloads')),
-    normalize(path.join(homeDir, 'Desktop')),
-  ]);
-  return roots.every((r) => legacyDefaults.has(normalize(r)));
-}
-
 /**
- * Resolve allowed filesystem roots from ConfigManager.
- * Normalizes legacy default `[Documents, Downloads, Desktop]` config files to `[os.homedir()]`
- * so navigating Home never fails on upgraded installations while honoring custom configurations.
+ * Resolve allowed filesystem roots from canonical VaultRootAuthority.
  */
 export function resolveAllowedRoots(): string[] {
-  const homeDir = os.homedir();
-  let roots: string[] = [homeDir];
-
-  try {
-    const config = ConfigManager.getInstance();
-    const configured = config.get('fileSystem')?.allowedRoots;
-    if (Array.isArray(configured) && configured.length > 0) {
-      roots = isLegacyUncustomizedSubfolderDefault(configured, homeDir)
-        ? [homeDir]
-        : Array.from(new Set(configured.map((entry) => path.resolve(entry))));
-    }
-  } catch (error) {
-    SecurityLogger.debug('ConfigManager unavailable during root resolution, using homedir', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-
-  RuntimeDiagnostics.getInstance().setAllowedRoots(roots);
-  return roots;
+  return VaultRootAuthority.getInstance().resolveAllowedRoots();
 }
 
 /**
- * Get or create default path validator synced with ConfigManager allowedRoots.
+ * Get or create canonical path validator synced with VaultRootAuthority.
  */
 export function getPathValidator(): PathValidator {
-  if (!defaultValidator) {
-    const roots = resolveAllowedRoots();
-    defaultValidator = new PathValidator(roots);
-    SecurityLogger.info('Path validator initialized', { roots });
-  }
-
-  return defaultValidator;
+  return VaultRootAuthority.getInstance().getValidator();
 }
 
 /**
- * Reset cached default path validator (used after config changes or in tests).
+ * Invalidate cached path validator (used after config changes or in tests).
  */
 export function resetPathValidator(): void {
-  defaultValidator = null;
+  VaultRootAuthority.getInstance().invalidate();
 }
 
 function createPathSecurityError(code: string | undefined, message: string): Error {

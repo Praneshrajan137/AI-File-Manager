@@ -14,6 +14,10 @@ import os from 'os';
 import path from 'path';
 import readline from 'readline';
 import { PathValidator } from '../main/services/PathValidator';
+import {
+  VaultRootAuthority,
+  resolveEffectiveAllowedRoots,
+} from '../main/platform/VaultRootAuthority';
 import { FileSystemService } from '../main/services/FileSystemService';
 import { OperationJournal } from '../main/services/OperationJournal';
 import { AIOrganizerService } from '../main/services/AIOrganizerService';
@@ -299,7 +303,7 @@ export class WorkspaceMcpServer {
 
     this.allowedRoots = roots;
     this.graphDbPath = options.graphDbPath;
-    this.validator = new PathValidator(roots);
+    this.validator = VaultRootAuthority.getInstance().createScopedValidator(roots);
     this.fsService = new FileSystemService(roots);
 
     const journal = new OperationJournal({
@@ -898,7 +902,7 @@ export function runStdioCli(argv: string[] = process.argv.slice(2)): void {
       ConfigManager.initialize();
       const configuredRoots = ConfigManager.getInstance().getAll().fileSystem?.allowedRoots ?? [];
       if (configuredRoots.length > 0) {
-        resolvedRoots = configuredRoots;
+        resolvedRoots = resolveEffectiveAllowedRoots(configuredRoots);
       }
     } catch {
       // Fall back safely

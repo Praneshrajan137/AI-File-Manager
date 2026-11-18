@@ -14,6 +14,7 @@ import { registerShellHandlers } from './shellHandlers';
 import { registerVaultHandlers } from './vaultHandlers';
 import { registerGraphHandlers } from './graphHandlers';
 import { resetOperationJournal } from '../services/OperationJournal';
+import { resetFsCommandCoordinator } from '@main/kernel/FsCommandCoordinator';
 import { withContract, resolveAllowedRoots } from './securityMiddleware';
 import { RuntimeDiagnostics } from '@main/services/RuntimeDiagnostics';
 import { resetReactiveWorkspaceKernelSync } from '@main/services/ReactiveWorkspaceKernel';
@@ -95,6 +96,7 @@ export function unregisterAllHandlers(): void {
   registeredChannels.clear();
   resetSearchService();
   resetNavigationServices();
+  resetFsCommandCoordinator();
   resetOperationJournal();
   resetReactiveWorkspaceKernelSync();
   RuntimeDiagnostics.getInstance().setRegisteredChannels(0);

@@ -18,7 +18,11 @@ import {
   getReactiveWorkspaceKernel,
   resetReactiveWorkspaceKernelSync,
 } from '../services/ReactiveWorkspaceKernel';
-import { getOperationJournal, resetOperationJournal, type BatchOperationStep } from '../services/OperationJournal';
+import {
+  getFsCommandCoordinator,
+  resetFsCommandCoordinator,
+} from '@main/kernel/FsCommandCoordinator';
+import { getOperationJournal, resetOperationJournal } from '../services/OperationJournal';
 import { buildBatchMarkdownLinkRepairSteps } from '../services/MarkdownLinkRepair';
 import { checkWorkspaceGraphImpact } from './llmHandlers';
 import {
@@ -30,7 +34,6 @@ import {
   FilePreviewResult,
   FileStats,
   OperationJournalState,
-  OperationRecord,
   SystemPaths,
   TrashVaultEntry,
   UndoRedoResult,
@@ -53,6 +56,7 @@ export function getFileSystemService(): FileSystemService {
  * Reset shared FileSystemService / kernel state (used after config changes or in tests).
  */
 export function resetFileSystemService(): void {
+  resetFsCommandCoordinator();
   resetOperationJournal();
   resetReactiveWorkspaceKernelSync();
 }
@@ -163,9 +167,7 @@ async function handleWriteFile(
     contentLength: input.content.length,
   });
 
-  const kernel = getReactiveWorkspaceKernel();
-  const result = await kernel.getFileSystemService().writeFile(input.path, input.content);
-  kernel.notifyMutation('change', input.path);
+  const result = await getFsCommandCoordinator().writeFile(input.path, input.content);
 
   FileSystemLogger.info('File write successful', { path: input.path });
 
@@ -183,14 +185,15 @@ async function handleDelete(
     mode,
   });
 
-  const kernel = getReactiveWorkspaceKernel();
-  const journal = getOperationJournal();
-  await journal.delete(input.path, input.recursive ?? true, mode);
-  kernel.notifyMutation('unlink', input.path);
+  const result = await getFsCommandCoordinator().deletePath(
+    input.path,
+    input.recursive ?? true,
+    mode
+  );
 
   FileSystemLogger.info('Delete successful', { path: input.path, mode });
 
-  return { success: true };
+  return result;
 }
 
 async function handleMove(
@@ -203,57 +206,29 @@ async function handleMove(
     repairMarkdownLinks: Boolean(input.repairMarkdownLinks),
   });
 
-  const kernel = getReactiveWorkspaceKernel();
-  const journal = getOperationJournal();
-
-  if (input.repairMarkdownLinks) {
-    let linkSteps: Awaited<ReturnType<typeof buildBatchMarkdownLinkRepairSteps>> = [];
-    try {
-      const impact = await checkWorkspaceGraphImpact([input.source]);
-      const mdRefs = impact.references.filter((r) => r.isMarkdownLink);
-      linkSteps = await buildBatchMarkdownLinkRepairSteps(
-        [{ source: input.source, destination: input.destination }],
-        mdRefs
-      );
-    } catch (repairErr: unknown) {
-      FileSystemLogger.warn('Markdown link repair planning skipped; proceeding with standard move', {
-        error: repairErr instanceof Error ? repairErr.message : String(repairErr),
-      });
-    }
-
-    if (linkSteps.length > 0) {
-      const steps: BatchOperationStep[] = [
-        { type: 'move', source: input.source, destination: input.destination },
-        ...linkSteps,
-      ];
-      const batchRes = await journal.executeBatch(
-        `Move ${path.basename(input.source)} + repair ${linkSteps.length} link(s)`,
-        steps
-      );
-      const canonicalDest = batchRes.operation.children?.[0]?.destinationPath ?? input.destination;
-      kernel.notifyMutation('unlink', input.source);
-      kernel.notifyMutation('create', canonicalDest);
-      for (const edit of linkSteps) {
-        kernel.notifyMutation('change', edit.filePath);
+  const result = await getFsCommandCoordinator().moveOrRename(input.source, input.destination, {
+    repairMarkdownLinks: input.repairMarkdownLinks,
+    action: 'move',
+    buildLinkRepairSteps: async (src, dst) => {
+      try {
+        const impact = await checkWorkspaceGraphImpact([src]);
+        const mdRefs = impact.references.filter((r) => r.isMarkdownLink);
+        return buildBatchMarkdownLinkRepairSteps([{ source: src, destination: dst }], mdRefs);
+      } catch (repairErr: unknown) {
+        FileSystemLogger.warn('Markdown link repair planning skipped; proceeding with standard move', {
+          error: repairErr instanceof Error ? repairErr.message : String(repairErr),
+        });
+        return [];
       }
-      return {
-        success: true,
-        newPath: canonicalDest,
-        repairedLinksCount: linkSteps.length,
-      };
-    }
-  }
-
-  const result = await journal.move(input.source, input.destination, 'move');
-  kernel.notifyMutation('unlink', input.source);
-  kernel.notifyMutation('create', result.newPath);
+    },
+  });
 
   FileSystemLogger.info('Move successful', {
     source: input.source,
     destination: result.newPath,
   });
 
-  return { success: result.success, newPath: result.newPath };
+  return result;
 }
 
 async function handleCopy(
@@ -265,17 +240,14 @@ async function handleCopy(
     destination: input.destination,
   });
 
-  const kernel = getReactiveWorkspaceKernel();
-  const journal = getOperationJournal();
-  const result = await journal.copy(input.source, input.destination);
-  kernel.notifyMutation('create', result.copiedPath);
+  const result = await getFsCommandCoordinator().copy(input.source, input.destination);
 
   FileSystemLogger.info('Copy successful', {
     source: input.source,
     destination: result.copiedPath,
   });
 
-  return { success: result.success, copiedPath: result.copiedPath };
+  return result;
 }
 
 async function handleCreateFile(
@@ -293,14 +265,11 @@ async function handleCreateFile(
     fullPath,
   });
 
-  const kernel = getReactiveWorkspaceKernel();
-  await kernel.getFileSystemService().writeFile(fullPath, initialContent);
-  await getOperationJournal().recordCreation(fullPath, false, Buffer.byteLength(initialContent, 'utf-8'));
-  kernel.notifyMutation('create', fullPath);
+  const result = await getFsCommandCoordinator().createFile(fullPath, initialContent);
 
   FileSystemLogger.info('File created successfully', { path: fullPath });
 
-  return { success: true, path: fullPath };
+  return result;
 }
 
 async function handleCreateDirectory(
@@ -316,14 +285,11 @@ async function handleCreateDirectory(
     fullPath,
   });
 
-  const kernel = getReactiveWorkspaceKernel();
-  await kernel.getFileSystemService().createDirectory(fullPath);
-  await getOperationJournal().recordCreation(fullPath, true, 0);
-  kernel.notifyMutation('create', fullPath);
+  const result = await getFsCommandCoordinator().createDirectory(fullPath);
 
   FileSystemLogger.info('Directory created successfully', { path: fullPath });
 
-  return { success: true, path: fullPath };
+  return result;
 }
 
 async function handleGetStats(
@@ -352,10 +318,9 @@ async function handleRename(
     newName: input.newName,
   });
 
-  const kernel = getReactiveWorkspaceKernel();
-  const result = await getOperationJournal().move(input.oldPath, canonicalNewPath, 'rename');
-  kernel.notifyMutation('unlink', input.oldPath);
-  kernel.notifyMutation('create', result.newPath);
+  const result = await getFsCommandCoordinator().moveOrRename(input.oldPath, canonicalNewPath, {
+    action: 'rename',
+  });
 
   FileSystemLogger.info('File renamed successfully', {
     oldPath: input.oldPath,
@@ -365,55 +330,12 @@ async function handleRename(
   return { success: result.success, newPath: result.newPath };
 }
 
-function notifyRecordMutations(
-  record: OperationRecord | undefined,
-  direction: 'undo' | 'redo'
-): void {
-  if (!record) return;
-  if (record.children && record.children.length > 0) {
-    const seq = direction === 'undo' ? [...record.children].reverse() : record.children;
-    for (const child of seq) {
-      notifyRecordMutations(child, direction);
-    }
-    return;
-  }
-
-  const kernel = getReactiveWorkspaceKernel();
-  if (record.type === 'delete') {
-    kernel.notifyMutation(direction === 'undo' ? 'create' : 'unlink', record.sourcePath);
-  } else if (record.type === 'move' || record.type === 'rename') {
-    if (direction === 'undo') {
-      if (record.destinationPath) kernel.notifyMutation('unlink', record.destinationPath);
-      kernel.notifyMutation('create', record.sourcePath);
-    } else {
-      kernel.notifyMutation('unlink', record.sourcePath);
-      if (record.destinationPath) kernel.notifyMutation('create', record.destinationPath);
-    }
-  } else if (record.type === 'copy') {
-    if (record.destinationPath) {
-      kernel.notifyMutation(direction === 'undo' ? 'unlink' : 'create', record.destinationPath);
-    }
-  } else if (record.type === 'edit_links') {
-    kernel.notifyMutation('change', record.sourcePath);
-  } else if (record.type === 'create_file' || record.type === 'create_dir') {
-    kernel.notifyMutation(direction === 'undo' ? 'unlink' : 'create', record.sourcePath);
-  }
-}
-
 async function handleUndo(_event: IpcMainInvokeEvent): Promise<UndoRedoResult> {
-  const result = await getOperationJournal().undo();
-  if (result.success) {
-    notifyRecordMutations(result.operation, 'undo');
-  }
-  return result;
+  return getFsCommandCoordinator().undo();
 }
 
 async function handleRedo(_event: IpcMainInvokeEvent): Promise<UndoRedoResult> {
-  const result = await getOperationJournal().redo();
-  if (result.success) {
-    notifyRecordMutations(result.operation, 'redo');
-  }
-  return result;
+  return getFsCommandCoordinator().redo();
 }
 
 async function handleGetJournalState(_event: IpcMainInvokeEvent): Promise<OperationJournalState> {
@@ -428,22 +350,18 @@ async function handleRestoreTrashItem(
   _event: IpcMainInvokeEvent,
   input: { id: string }
 ): Promise<UndoRedoResult> {
-  const result = await getOperationJournal().restoreVaultItem(input.id);
-  if (result.success && result.restoredPath) {
-    getReactiveWorkspaceKernel().notifyMutation('create', result.restoredPath);
-  }
-  return result;
+  return getFsCommandCoordinator().restoreTrashItem(input.id);
 }
 
 async function handlePurgeTrashItem(
   _event: IpcMainInvokeEvent,
   input: { id: string }
 ): Promise<OperationJournalState> {
-  return getOperationJournal().purgeVaultItem(input.id);
+  return getFsCommandCoordinator().purgeTrashItem(input.id);
 }
 
 async function handleEmptyTrashVault(_event: IpcMainInvokeEvent): Promise<OperationJournalState> {
-  return getOperationJournal().emptyVault();
+  return getFsCommandCoordinator().emptyTrashVault();
 }
 
 async function handleWatchSplitDir(
@@ -464,44 +382,7 @@ async function handleBatchTransfer(
   _event: IpcMainInvokeEvent,
   input: { description?: string; steps: BatchTransferStep[] }
 ): Promise<BatchTransferResult> {
-  const journalSteps: BatchOperationStep[] = input.steps.map((step) => {
-    if (step.type === 'delete') {
-      return {
-        type: 'delete',
-        path: step.path,
-        recursive: step.recursive ?? true,
-        mode: step.mode ?? 'vault',
-      };
-    }
-    return {
-      type: step.type,
-      source: step.source,
-      destination: step.destination,
-    };
-  });
-
-  const description =
-    input.description?.trim() || `Batch transfer (${input.steps.length} items)`;
-  const result = await getOperationJournal().executeBatch(description, journalSteps);
-  const kernel = getReactiveWorkspaceKernel();
-
-  for (const step of input.steps) {
-    if (step.type === 'move') {
-      kernel.notifyMutation('unlink', step.source);
-      kernel.notifyMutation('create', step.destination);
-    } else if (step.type === 'copy') {
-      kernel.notifyMutation('create', step.destination);
-    } else {
-      kernel.notifyMutation('unlink', step.path);
-    }
-  }
-
-  return {
-    success: result.success,
-    count: input.steps.length,
-    operationId: result.operation.id,
-    journalState: result.state,
-  };
+  return getFsCommandCoordinator().batchTransfer(input.steps, input.description);
 }
 
 const FILE_SYSTEM_CHANNELS: IPCChannel[] = [

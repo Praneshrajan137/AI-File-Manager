@@ -251,10 +251,25 @@ describe('Architecture Boundaries & Acyclicity Gates', () => {
           layerOf(e.to) === toLayer
       );
 
-    // Step 0 already dropped main/services -> main/handlers from 4 to 3 (LlmWorkspaceService -> searchHandlers removed)
-    expect(valueSeam('main/services', 'main/handlers').length).toBeLessThanOrEqual(3);
+    // Step 1 stripped AssetProtocol -> securityMiddleware and ReactiveWorkspaceKernel -> securityMiddleware
+    expect(valueSeam('main/services', 'main/handlers').length).toBeLessThanOrEqual(1);
     expect(valueSeam('llm', 'main/services').length).toBeLessThanOrEqual(5);
     expect(valueSeam('mcp', 'main/services').length).toBeLessThanOrEqual(5);
     expect(valueSeam('main/services', 'llm').length).toBeLessThanOrEqual(19);
+  });
+
+  it('enforces single mutation-sync authority in fileSystemHandlers and bounded PathValidator ownership', () => {
+    const fsHandlersSrc = fs.readFileSync(
+      path.join(REPO_ROOT, 'src/main/handlers/fileSystemHandlers.ts'),
+      'utf-8'
+    );
+    expect(fsHandlersSrc).not.toContain('notifyMutation(');
+
+    const newPathValidatorCount = relFiles.reduce((count, relPath) => {
+      const content = fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf-8');
+      return count + (content.match(/\bnew PathValidator\(/g)?.length ?? 0);
+    }, 0);
+    // Ratcheted from 10 down to <= 3 (VaultRootAuthority x1 + FileSystemService x2 pending Step 3/5 constructor injection)
+    expect(newPathValidatorCount).toBeLessThanOrEqual(3);
   });
 });

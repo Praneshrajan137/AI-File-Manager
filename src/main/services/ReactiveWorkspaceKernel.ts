@@ -5,7 +5,8 @@ import { PathTrie } from '@main/dsa/PathTrie';
 import { FileWatcher, WatchOptions } from './FileWatcher';
 import { FileSystemService } from './FileSystemService';
 import { RuntimeDiagnostics } from './RuntimeDiagnostics';
-import { resolveAllowedRoots } from '@main/handlers/securityMiddleware';
+import { VaultRootAuthority } from '@main/platform/VaultRootAuthority';
+import { normalizePathKey } from '@main/platform/pathNormalize';
 import { EventPriority, FileEvent, FileMetadata, FileNode } from '@shared/contracts';
 import { DEFAULT_EXCLUDED_DIRS } from '@shared/config';
 import { FileSystemLogger } from '@shared/logging';
@@ -78,7 +79,7 @@ export class ReactiveWorkspaceKernel {
     this.allowedRoots =
       options.allowedRoots && options.allowedRoots.length > 0
         ? options.allowedRoots
-        : resolveAllowedRoots();
+        : VaultRootAuthority.getInstance().resolveAllowedRoots();
 
     this.eventQueue = new EventQueue({ maxSize: MAX_KERNEL_QUEUE_SIZE });
     this.fileWatcher = new FileWatcher(this.eventQueue);
@@ -866,8 +867,7 @@ export class ReactiveWorkspaceKernel {
   }
 
   private canonicalKey(filePath: string): string {
-    const resolved = path.resolve(filePath);
-    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    return normalizePathKey(filePath);
   }
 
   async shutdown(): Promise<void> {
@@ -920,6 +920,7 @@ export class ReactiveWorkspaceKernel {
 let kernelInstance: ReactiveWorkspaceKernel | null = null;
 let sharedBroadcaster: WorkspaceBroadcaster | null = null;
 let sharedIndexHook: IndexMutationHook | null = null;
+let unsubscribeKernelRoots: (() => void) | null = null;
 
 export function configureKernelHooks(hooks: {
   broadcaster?: WorkspaceBroadcaster | null;
@@ -941,16 +942,23 @@ export function hasActiveReactiveWorkspaceKernel(): boolean {
 
 export function getReactiveWorkspaceKernel(): ReactiveWorkspaceKernel {
   if (!kernelInstance) {
+    const authority = VaultRootAuthority.getInstance();
     kernelInstance = new ReactiveWorkspaceKernel({
-      allowedRoots: resolveAllowedRoots(),
+      allowedRoots: authority.resolveAllowedRoots(),
       broadcaster: sharedBroadcaster ?? undefined,
       indexMutationHook: sharedIndexHook ?? undefined,
+    });
+    unsubscribeKernelRoots?.();
+    unsubscribeKernelRoots = authority.onRootsChanged((roots) => {
+      kernelInstance?.updateAllowedRoots(roots);
     });
   }
   return kernelInstance;
 }
 
 export async function resetReactiveWorkspaceKernel(): Promise<void> {
+  unsubscribeKernelRoots?.();
+  unsubscribeKernelRoots = null;
   if (kernelInstance) {
     await kernelInstance.shutdown();
     kernelInstance = null;
@@ -958,6 +966,8 @@ export async function resetReactiveWorkspaceKernel(): Promise<void> {
 }
 
 export function resetReactiveWorkspaceKernelSync(): void {
+  unsubscribeKernelRoots?.();
+  unsubscribeKernelRoots = null;
   if (kernelInstance) {
     void kernelInstance.shutdown();
     kernelInstance = null;
