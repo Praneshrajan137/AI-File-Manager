@@ -1,6 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
+import { ALL_IPC_CHANNELS } from '@shared/ipc/contracts';
+import {
+  buildPreloadInvokeTree,
+  IPC_INVOKE_MANIFEST,
+  IPC_STREAMING_CHANNELS,
+  listManifestInvokeChannels,
+} from '@shared/ipc/apiManifest';
 
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const SRC_ROOT = path.join(REPO_ROOT, 'src');
@@ -298,5 +305,77 @@ describe('Architecture Boundaries & Acyclicity Gates', () => {
     expect(plannerEdges.some((e) => e.to.startsWith('src/llm/'))).toBe(false);
 
     expect(externalsByFile.get('src/main/services/OperationJournal.ts') ?? []).not.toContain('electron');
+  });
+
+  it('keeps shared/pure, shared/contracts, and shared/ipc free of Node/Electron runtime dependencies', () => {
+    const forbidden = new Set([
+      'fs',
+      'fs/promises',
+      'path',
+      'os',
+      'crypto',
+      'child_process',
+      'worker_threads',
+      'electron',
+    ]);
+    const violations: string[] = [];
+
+    for (const relPath of relFiles) {
+      const isPureShared =
+        relPath.startsWith('src/shared/pure/') ||
+        relPath.startsWith('src/shared/contracts/') ||
+        relPath === 'src/shared/contracts.ts' ||
+        relPath.startsWith('src/shared/ipc/') ||
+        relPath === 'src/shared/diagnostics.ts';
+      if (!isPureShared) continue;
+
+      for (const ext of externalsByFile.get(relPath) ?? []) {
+        if (forbidden.has(ext) || ext.startsWith('node:')) {
+          violations.push(`${relPath} -> external:${ext}`);
+        }
+      }
+      for (const edge of allInternalEdges.filter((e) => e.from === relPath)) {
+        if (
+          edge.to.startsWith('src/shared/config/') ||
+          edge.to.startsWith('src/shared/logging/') ||
+          edge.to.startsWith('src/shared/utils/') ||
+          !edge.to.startsWith('src/shared/')
+        ) {
+          violations.push(`${relPath} -> ${edge.to}`);
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
+  it('enforces 1:1 parity across IPC_CONTRACTS, apiManifest, preload, and ElectronAPI types', () => {
+    const manifestChannels = listManifestInvokeChannels();
+    expect(new Set(manifestChannels).size).toBe(manifestChannels.length);
+
+    const combinedManifest = new Set<string>([
+      ...manifestChannels,
+      ...IPC_STREAMING_CHANNELS,
+    ]);
+    const contractChannels = new Set<string>(ALL_IPC_CHANNELS);
+
+    expect([...combinedManifest].sort()).toEqual([...contractChannels].sort());
+
+    const invoked: string[] = [];
+    const tree = buildPreloadInvokeTree(IPC_INVOKE_MANIFEST, (ch) => {
+      invoked.push(ch);
+      return Promise.resolve({ ok: true, data: undefined } as never);
+    });
+    expect(typeof tree.fs.readDirectory).toBe('function');
+    expect(typeof tree.ping).toBe('function');
+    void tree.ping();
+    expect(invoked).toEqual(['ping']);
+
+    const preloadSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/main/preload.ts'), 'utf-8');
+    expect(preloadSrc).toContain('buildPreloadInvokeTree');
+    expect(preloadSrc).toContain('IPC_INVOKE_MANIFEST');
+
+    const dtsSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/renderer/electron.d.ts'), 'utf-8');
+    expect(dtsSrc).toContain('RendererInvokeTree<typeof IPC_INVOKE_MANIFEST>');
   });
 });

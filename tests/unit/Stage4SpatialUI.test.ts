@@ -8,7 +8,7 @@ import {
   getMimeTypeForAssetExtension,
   getVaultAssetKind,
   isPreviewableAssetExtension,
-} from '@shared/utils/vaultAssetUrl';
+} from '@shared/pure/vaultAssetUrl';
 import {
   getPrivilegedSchemeConfig,
   handleVaultAssetRequest,

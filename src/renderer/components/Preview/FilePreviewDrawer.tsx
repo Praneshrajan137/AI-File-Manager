@@ -5,7 +5,7 @@ import type {
   FileNode,
   FilePreviewResult,
 } from '@shared/contracts';
-import { buildVaultAssetUrl, getVaultAssetKind } from '@shared/utils/vaultAssetUrl';
+import { buildVaultAssetUrl, getVaultAssetKind } from '@shared/pure/vaultAssetUrl';
 import { useRegisterOverlay } from '@renderer/hooks/useOverlayStack';
 import { PreviewHeader } from './PreviewHeader';
 import { PreviewBody } from './PreviewBody';

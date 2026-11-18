@@ -1,128 +1,44 @@
 /**
  * Type definitions for Electron API exposed via preload script.
+ * Derived directly from `@shared/ipc/apiManifest` (`IPC_INVOKE_MANIFEST`) so renderer
+ * types never drift from preload bindings or main IPC contracts.
  */
 
 import type {
-  AgentTerminationReason,
-  AgentTokenUsage,
   AgentTraceStep,
-  AgentVerificationReport,
-  BatchTransferResult,
-  BatchTransferStep,
-  ContentSearchMatch,
   CopilotContextScope,
   CopilotQueryMode,
-  FileConnectionsSummary,
-  FileDeleteMode,
-  FileLineRangeResult,
-  FileNode,
-  FilePreviewResult,
-  FileStats,
-  GraphImpactCheckResult,
-  GraphInsightsResponse,
   IndexingStatus,
-  LLMModelsSnapshot,
-  OperationJournalState,
-  OrganizeApplyResult,
-  OrganizePlanOperation,
-  OrganizePlanResult,
-  OrganizeStrategy,
-  PersistedAgentTraceRecord,
-  RetrievalSource,
-  SystemPaths,
-  TrashVaultEntry,
-  UIPreferencesSnapshot,
-  UndoRedoResult,
-  VaultConfigSnapshot,
-  WorkspaceCollectionGroup,
-  WorkspaceGraphMap,
 } from '../shared/contracts';
-import type { RuntimeDiagnosticsSnapshot } from '../shared/diagnostics';
+import type { IPC_INVOKE_MANIFEST, RendererInvokeTree } from '../shared/ipc/apiManifest';
+import type { IPCResponse } from '../shared/ipc/contracts';
+
+type BaseInvokeAPI = RendererInvokeTree<typeof IPC_INVOKE_MANIFEST>;
+type WithOptional<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 
 interface ElectronAPI {
-  fs: {
-    readDirectory: (path: string) => Promise<FileNode[]>;
-    readFile: (path: string) => Promise<{ content: string; encoding: string }>;
-    previewFile: (path: string, maxLines?: number) => Promise<FilePreviewResult>;
-    readFileRange: (
-      path: string,
-      startLine: number,
-      endLine?: number,
-      contextLines?: number
-    ) => Promise<FileLineRangeResult>;
-    writeFile: (path: string, content: string) => Promise<{ success: boolean }>;
-    createFile: (
-      path: string,
-      name: string,
-      content?: string
-    ) => Promise<{ success: boolean; path: string }>;
-    createDirectory: (
-      path: string,
-      name: string
-    ) => Promise<{ success: boolean; path: string }>;
-    delete: (path: string, recursive?: boolean, mode?: FileDeleteMode) => Promise<{ success: boolean }>;
-    move: (
-      source: string,
-      destination: string,
-      repairMarkdownLinks?: boolean
-    ) => Promise<{ success: boolean; newPath: string; repairedLinksCount?: number }>;
-    copy: (source: string, destination: string) => Promise<{ success: boolean; copiedPath: string }>;
-    getStats: (path: string) => Promise<FileStats>;
-    getSystemPaths: () => Promise<SystemPaths>;
-    rename: (oldPath: string, newName: string) => Promise<{ success: boolean; newPath: string }>;
-    undo: () => Promise<UndoRedoResult>;
-    redo: () => Promise<UndoRedoResult>;
-    getJournalState: () => Promise<OperationJournalState>;
-    listTrashVault?: () => Promise<TrashVaultEntry[]>;
-    restoreTrashItem?: (id: string) => Promise<UndoRedoResult>;
-    purgeTrashItem?: (id: string) => Promise<OperationJournalState>;
-    emptyTrashVault: () => Promise<OperationJournalState>;
+  fs: WithOptional<
+    BaseInvokeAPI['fs'],
+    'listTrashVault' | 'restoreTrashItem' | 'purgeTrashItem' | 'watchSplitDir' | 'batchTransfer'
+  > & {
     getPathsForDroppedFiles?: (files: File[]) => string[];
-    watchSplitDir?: (path: string | null) => Promise<{ watching: boolean; path: string | null }>;
-    batchTransfer?: (steps: BatchTransferStep[], description?: string) => Promise<BatchTransferResult>;
   };
 
-  vault: {
-    getConfig: () => Promise<VaultConfigSnapshot>;
-    addRoot: (options?: {
-      path?: string;
-      pickDialog?: boolean;
-    }) => Promise<{ cancelled: boolean; addedPath?: string; config: VaultConfigSnapshot }>;
-    removeRoot: (path: string) => Promise<VaultConfigSnapshot>;
-    setIndexed: (path: string, enabled: boolean) => Promise<VaultConfigSnapshot>;
-    toggleFavorite: (path: string) => Promise<VaultConfigSnapshot>;
-    setUiPrefs?: (prefs: Partial<UIPreferencesSnapshot>) => Promise<UIPreferencesSnapshot>;
-    setDefaultDeleteMode?: (mode: 'vault' | 'trash') => Promise<VaultConfigSnapshot>;
-  };
+  vault: WithOptional<BaseInvokeAPI['vault'], 'setUiPrefs' | 'setDefaultDeleteMode'>;
 
-  navigation: {
-    back: () => Promise<string | null>;
-    forward: () => Promise<string | null>;
-    push: (path: string) => Promise<{ success: boolean }>;
-    getState: () => Promise<{ canGoBack: boolean; canGoForward: boolean }>;
-  };
+  navigation: BaseInvokeAPI['navigation'];
 
-  search: {
-    autocomplete: (prefix: string, maxResults?: number) => Promise<string[]>;
-    query: (query: string, searchRoot: string) => Promise<FileNode[]>;
-    content: (query: string, topK?: number, searchRoot?: string) => Promise<ContentSearchMatch[]>;
-  };
+  search: BaseInvokeAPI['search'];
 
-  graph: {
-    queryInsights: (options?: {
-      symbolQuery?: string;
-      backlinkTarget?: string;
-    }) => Promise<GraphInsightsResponse>;
-    checkImpact?: (paths: string[]) => Promise<GraphImpactCheckResult>;
-    getWorkspaceMap?: (options?: {
-      rootPrefix?: string;
-      maxNodes?: number;
-    }) => Promise<WorkspaceGraphMap>;
-    getCollections?: (options?: { rootPrefix?: string }) => Promise<WorkspaceCollectionGroup[]>;
-    getFileConnections?: (filePath: string) => Promise<FileConnectionsSummary>;
-  };
+  graph: WithOptional<
+    BaseInvokeAPI['graph'],
+    'checkImpact' | 'getWorkspaceMap' | 'getCollections' | 'getFileConnections'
+  >;
 
-  llm: {
+  llm: WithOptional<
+    BaseInvokeAPI['llm'],
+    'abortQuery' | 'getTraces' | 'clearTraces' | 'downloadModels'
+  > & {
     query: (
       query: string,
       callback: (chunk: string) => void,
@@ -133,88 +49,23 @@ interface ElectronAPI {
         onStep?: (step: AgentTraceStep) => void;
         onChannelCreated?: (channel: string) => void;
       }
-    ) => Promise<{
-      success: boolean;
-      error?: string;
-      sanitizedAnswer?: string;
-      sources?: RetrievalSource[];
-      agentSteps?: AgentTraceStep[];
-      offlineSynthesis?: boolean;
-      proposedPlan?: OrganizePlanResult;
-      traceId?: string;
-      terminationReason?: AgentTerminationReason;
-      verification?: AgentVerificationReport;
-      usage?: AgentTokenUsage;
-      retrievalMs?: number;
-      generationMs?: number;
-    }>;
-    abortQuery?: (channel: string) => Promise<{ aborted: boolean }>;
-    getTraces?: (limit?: number) => Promise<{ traces: PersistedAgentTraceRecord[] }>;
-    clearTraces?: () => Promise<{ cleared: number }>;
-    getIndexingStatus: () => Promise<IndexingStatus>;
+    ) => Promise<IPCResponse<'LLM:QUERY'>>;
     onIndexingProgress: (callback: (status: IndexingStatus) => void) => () => void;
-    startIndexing: (
-      path: string
-    ) => Promise<{ success: boolean; message?: string; total?: number; error?: string }>;
-    stopIndexing: () => Promise<{ success: boolean }>;
-    indexFile: (
-      filePath: string
-    ) => Promise<{ success: boolean; chunksCreated?: number; error?: string }>;
-    checkOllama: () => Promise<{ available: boolean; models: string[] }>;
-    clearIndex: () => Promise<{ success: boolean; error?: string }>;
-    listModels: () => Promise<LLMModelsSnapshot>;
-    setModelConfig: (config: {
-      provider?: 'ollama' | 'openai_compatible';
-      ollamaUrl?: string;
-      openAiBaseUrl?: string;
-      model?: string;
-      temperature?: number;
-      maxTokens?: number;
-      embeddingModel?: string;
-      rerankerModel?: string;
-      embeddingDevice?: 'auto' | 'cpu' | 'dml' | 'webgpu';
-      allowRemoteModels?: boolean;
-    }) => Promise<{ success: boolean; config: LLMModelsSnapshot }>;
-    downloadModels?: () => Promise<{
-      success: boolean;
-      snapshot: LLMModelsSnapshot;
-      error?: string;
-    }>;
   };
 
-  ai?: {
-    planOrganize: (
-      targetDir: string,
-      strategy?: OrganizeStrategy,
-      useLLM?: boolean,
-      recursive?: boolean
-    ) => Promise<OrganizePlanResult>;
-    applyOrganize: (input: {
-      planId: string;
-      targetDir: string;
-      operations: OrganizePlanOperation[];
-      repairMarkdownLinks?: boolean;
-    }) => Promise<OrganizeApplyResult>;
-  };
+  ai?: BaseInvokeAPI['ai'];
 
   fileWatcher: {
     subscribe: (callback: (event: { type: string; path: string }) => void) => () => void;
   };
 
-  clipboard: {
-    writeText: (text: string) => Promise<{ success: boolean }>;
-  };
+  clipboard: BaseInvokeAPI['clipboard'];
 
-  shell: {
-    openPath: (path: string) => Promise<{ success: boolean; error?: string }>;
-    revealInFolder?: (path: string) => Promise<{ success: boolean }>;
-  };
+  shell: WithOptional<BaseInvokeAPI['shell'], 'revealInFolder'>;
 
-  diagnostics: {
-    getSnapshot: () => Promise<RuntimeDiagnosticsSnapshot>;
-  };
+  diagnostics: BaseInvokeAPI['diagnostics'];
 
-  ping: () => Promise<'pong'>;
+  ping: BaseInvokeAPI['ping'];
 }
 
 declare global {

@@ -7,7 +7,7 @@ import { PathValidator } from './PathValidator';
 import {
   getMimeTypeForAssetExtension,
   normalizeAssetExtension,
-} from '@shared/utils/vaultAssetUrl';
+} from '@shared/pure/vaultAssetUrl';
 import { SecurityLogger } from '@shared/logging';
 import { isSensitiveSecretFile } from '@shared/security/SecretGuard';
 

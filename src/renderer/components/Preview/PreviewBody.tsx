@@ -6,7 +6,7 @@ import type {
   FileNode,
   FilePreviewResult,
 } from '@shared/contracts';
-import type { VaultAssetKind } from '@shared/utils/vaultAssetUrl';
+import type { VaultAssetKind } from '@shared/pure/vaultAssetUrl';
 import { Spinner } from '@renderer/components/common/Spinner';
 import { PreviewConnectionsTab } from './PreviewConnectionsTab';
 
