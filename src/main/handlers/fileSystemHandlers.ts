@@ -209,7 +209,7 @@ async function handleMove(
   if (input.repairMarkdownLinks) {
     let linkSteps: Awaited<ReturnType<typeof buildBatchMarkdownLinkRepairSteps>> = [];
     try {
-      const impact = checkWorkspaceGraphImpact([input.source]);
+      const impact = await checkWorkspaceGraphImpact([input.source]);
       const mdRefs = impact.references.filter((r) => r.isMarkdownLink);
       linkSteps = await buildBatchMarkdownLinkRepairSteps(
         [{ source: input.source, destination: input.destination }],
