@@ -29,6 +29,7 @@
   "dependencies": {
     "@huggingface/transformers": "^4.3.2",
     "@lancedb/lancedb": "^0.41.0",
+    "apache-arrow": "^15.0.2",
     "chokidar": "^3.5.3",
     "dotenv": "^17.2.3",
     "lucide-react": "^0.263.1",

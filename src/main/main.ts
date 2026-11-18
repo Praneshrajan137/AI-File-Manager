@@ -380,7 +380,24 @@ app.whenReady().then(async () => {
       memDb.close();
       recordSmokeTrace('07:smoke-lancedb-start');
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      require('@lancedb/lancedb');
+      const lancedb = require('@lancedb/lancedb') as typeof import('@lancedb/lancedb');
+      const smokeVecDir = fsSync.mkdtempSync(path.join(app.getPath('temp'), 'pv-lancedb-smoke-'));
+      try {
+        const db = await lancedb.connect(smokeVecDir);
+        const table = await db.createTable('smoke_vectors', [{ id: '1', vector: [0.25, 0.75] }]);
+        const rowCount = await table.countRows();
+        if (rowCount !== 1) {
+          throw new Error(`Unexpected LanceDB smoke row count: ${rowCount}`);
+        }
+        table.close();
+        db.close();
+      } finally {
+        try {
+          fsSync.rmSync(smokeVecDir, { recursive: true, force: true });
+        } catch {
+          // Ignore delayed Windows file handle cleanup in temp dir
+        }
+      }
       recordSmokeTrace('08:smoke-lancedb-ok');
       const modelCacheDir = resolveDefaultModelCacheDir();
       const mcpEntryPath = resolvePackagedMcpEntryPath(__dirname);

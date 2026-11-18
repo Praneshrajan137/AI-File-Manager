@@ -182,7 +182,7 @@ See [TEST_REPORT.md](./TEST_REPORT.md) for current verification policy and CI su
 
 ## 🔐 Security Model
 
-1. **Process & Context Isolation** — Sandboxed renderer (`sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`) + Electron Fuses (`RunAsNode` disabled, ASAR integrity).
+1. **Process & Context Isolation** — Sandboxed renderer (`sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`) + Electron Fuses (`RunAsNode`, `NODE_OPTIONS`, CLI inspect, and extra `file://` privileges disabled; `OnlyLoadAppFromAsar` enabled).
 2. **Canonical Path & Symlink Validation** — `PathValidator` confines all FS, preview, edit, external drag-drop, organize, and MCP operations strictly to configured Vault roots.
 3. **SecretGuard Redaction & Exclusion** — Excludes `.env`, credentials, keys, and token patterns across preview, indexing, `vault-asset://`, chat context, and MCP outputs.
 4. **Loopback-Only AI & Prompt-Injection Fencing** — Remote non-loopback AI URLs are blocked before persistence; untrusted file snippets are fenced inside agent prompts; standalone MCP is strictly read-only.

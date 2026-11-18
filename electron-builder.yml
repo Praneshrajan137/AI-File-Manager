@@ -7,7 +7,9 @@ copyright: Copyright © 2025-2026 Praneshrajan
 asar: true
 electronFuses:
   runAsNode: false
-  enableCookieEncryption: true
+  # Offline local-only app with zero browser cookies; enabling Linux Secret Service cookie
+  # encryption crashes headless/minimal X11 environments without GNOME Keyring/D-Bus.
+  enableCookieEncryption: false
   enableNodeOptionsEnvironmentVariable: false
   enableNodeCliInspectArguments: false
   onlyLoadAppFromAsar: true

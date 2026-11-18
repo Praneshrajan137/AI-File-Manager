@@ -65,6 +65,8 @@ describe('Stage 6 (M12): Packaging Contracts, Icons, & Copilot/Organizer UI Comp
       expect(pkg.scripts?.lint).toContain('--max-warnings=0');
       expect(pkg.dependencies?.electron).toBeUndefined();
       expect(pkg.devDependencies?.electron).toBeDefined();
+      expect(pkg.dependencies?.['@lancedb/lancedb']).toBeDefined();
+      expect(pkg.dependencies?.['apache-arrow']).toBeDefined();
 
       expect(builderYaml).toContain('asar: true');
       expect(builderYaml).toContain('node_modules/**/*.node');
