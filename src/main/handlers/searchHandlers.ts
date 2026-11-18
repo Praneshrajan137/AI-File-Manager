@@ -116,7 +116,9 @@ class SearchService {
     try {
       const queryLower = query.trim().toLowerCase();
       if (queryLower.length === 0) {
-        const entries = await this.fileSystemService.readDirectory(searchRoot);
+        const entries = await this.fileSystemService.readDirectory(searchRoot, {
+          bypassCache: true,
+        });
         const visible = entries.filter((entry) => !isSensitiveSecretFile(entry.path).blocked);
         endTimer({ query, resultCount: visible.length, source: 'dir_list' });
         return visible;
@@ -156,7 +158,7 @@ class SearchService {
               inFlight += 1;
 
               void this.fileSystemService
-                .readDirectory(current.dir)
+                .readDirectory(current.dir, { bypassCache: true })
                 .then((entries) => {
                   if (fileNodes.length >= 100) {
                     return;
