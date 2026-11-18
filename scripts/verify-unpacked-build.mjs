@@ -95,8 +95,19 @@ async function verifyPackagedMcpServer(unpackedMcpPath) {
       throw new Error(`MCP initialize failed: ${result.stdout}`);
     }
     const toolNames = (listResp?.result?.tools || []).map((t) => t.name);
-    if (!toolNames.includes('list_directory') || !toolNames.includes('semantic_search')) {
-      throw new Error(`Unexpected MCP tools list: ${JSON.stringify(toolNames)}`);
+    const expectedTools = [
+      'list_directory',
+      'search_files',
+      'search_content',
+      'read_file_range',
+      'graph_lookup',
+      'organize_dry_run',
+    ];
+    const missingTools = expectedTools.filter((name) => !toolNames.includes(name));
+    if (missingTools.length > 0) {
+      throw new Error(
+        `Unexpected MCP tools list (missing ${missingTools.join(', ')}): ${JSON.stringify(toolNames)}`
+      );
     }
     const dirText = dirResp?.result?.content?.[0]?.text || '';
     if (!dirText.includes('hello.md')) {

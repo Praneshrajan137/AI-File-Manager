@@ -1023,4 +1023,60 @@ describe('Interactive Accessibility, Resilience, and Keyboard Tests (JSDOM + jes
     expect(onSaveEdit).toHaveBeenCalledTimes(1);
     expect(await axe(previewContainer)).toHaveNoViolations();
   });
+
+  it('prevents slow listModels background refresh from overwriting user-edited Settings endpoint input or clearing save errors', async () => {
+    let resolveListModels!: (val: unknown) => void;
+    const delayedListModels = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveListModels = resolve;
+        })
+    );
+    const setModelConfig = jest.fn().mockRejectedValue(new Error('Non-local LLM URL rejected for privacy'));
+
+    (window as unknown as { electronAPI: unknown }).electronAPI = {
+      llm: { listModels: delayedListModels, setModelConfig },
+    };
+
+    render(
+      <OverlayStackProvider>
+        <WorkspaceSettingsModal
+          isOpen={true}
+          onClose={jest.fn()}
+          vaultConfig={{
+            allowedRoots: ['/vault'],
+            indexedRoots: ['/vault'],
+            excludedDirs: ['.git'],
+            favorites: [],
+            defaultDeleteMode: 'vault',
+          }}
+        />
+      </OverlayStackProvider>
+    );
+
+    const endpointInput = screen.getByTestId('settings-endpoint-input') as HTMLInputElement;
+    fireEvent.change(endpointInput, { target: { value: 'http://192.168.1.50:11434' } });
+    fireEvent.click(screen.getByTestId('settings-save-ai-button'));
+
+    await waitFor(() => expect(screen.getByTestId('settings-error-banner')).toBeInTheDocument());
+
+    // Now the slow background listModels probe finally resolves cleanly
+    resolveListModels({
+      available: false,
+      provider: 'ollama',
+      ollamaUrl: 'http://localhost:11434',
+      models: [],
+      activeModel: 'llama3.2',
+      embeddingModel: 'Xenova/bge-small-en-v1.5',
+      rerankerModel: 'Xenova/ms-marco-MiniLM-L-6-v2',
+      embeddingDevice: 'auto',
+      temperature: 0.7,
+      maxTokens: 2048,
+      allowRemoteModels: true,
+    });
+
+    await waitFor(() => expect(delayedListModels).toHaveBeenCalledTimes(1));
+    expect(endpointInput.value).toBe('http://192.168.1.50:11434');
+    expect(screen.getByTestId('settings-error-banner')).toHaveTextContent(/Non-local LLM URL rejected/i);
+  });
 });

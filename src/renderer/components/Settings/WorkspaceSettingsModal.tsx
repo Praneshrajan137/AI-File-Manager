@@ -68,50 +68,65 @@ export const WorkspaceSettingsModal: React.FC<WorkspaceSettingsModalProps> = ({
   const [downloadingModels, setDownloadingModels] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  const hydrateFromSnapshot = useCallback((next: LLMModelsSnapshot): void => {
-    setSnapshot(next);
-    setProvider(next.provider ?? 'ollama');
-    setOllamaUrl(next.ollamaUrl ?? 'http://localhost:11434');
-    setOpenAiBaseUrl(next.openAiBaseUrl ?? 'http://127.0.0.1:1234');
-    setModelName(next.activeModel || 'llama3.2');
-    setTemperature(next.temperature ?? 0.7);
-    setMaxTokens(next.maxTokens ?? 2048);
-    setEmbeddingDevice(next.embeddingDevice ?? 'auto');
-    setAllowRemoteModels(next.allowRemoteModels ?? true);
-  }, []);
-
   const wasOpenRef = useRef<boolean>(false);
+  const dirtyFieldsRef = useRef<boolean>(false);
 
-  const refreshSnapshot = useCallback(async (): Promise<void> => {
-    if (typeof window.electronAPI?.llm?.listModels !== 'function') {
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const next = await window.electronAPI.llm.listModels();
-      hydrateFromSnapshot(next);
-      onModelsUpdated?.(next);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to query local AI runtime');
-    } finally {
-      setLoading(false);
-    }
-  }, [hydrateFromSnapshot, onModelsUpdated]);
+  const hydrateFromSnapshot = useCallback(
+    (next: LLMModelsSnapshot, forceFields: boolean = false): void => {
+      setSnapshot(next);
+      if (!forceFields && dirtyFieldsRef.current) {
+        return;
+      }
+      setProvider(next.provider ?? 'ollama');
+      setOllamaUrl(next.ollamaUrl ?? 'http://localhost:11434');
+      setOpenAiBaseUrl(next.openAiBaseUrl ?? 'http://127.0.0.1:1234');
+      setModelName(next.activeModel || 'llama3.2');
+      setTemperature(next.temperature ?? 0.7);
+      setMaxTokens(next.maxTokens ?? 2048);
+      setEmbeddingDevice(next.embeddingDevice ?? 'auto');
+      setAllowRemoteModels(next.allowRemoteModels ?? true);
+    },
+    []
+  );
+
+  const refreshSnapshot = useCallback(
+    async (clearError: boolean = false): Promise<void> => {
+      if (typeof window.electronAPI?.llm?.listModels !== 'function') {
+        return;
+      }
+      setLoading(true);
+      if (clearError) {
+        setError(null);
+      }
+      try {
+        const next = await window.electronAPI.llm.listModels();
+        hydrateFromSnapshot(next, false);
+        onModelsUpdated?.(next);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : 'Failed to query local AI runtime');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [hydrateFromSnapshot, onModelsUpdated]
+  );
 
   useEffect(() => {
     if (!isOpen) {
       wasOpenRef.current = false;
+      dirtyFieldsRef.current = false;
       return;
     }
     if (wasOpenRef.current) {
       return;
     }
     wasOpenRef.current = true;
+    dirtyFieldsRef.current = false;
+    setError(null);
     if (initialModelsSnapshot) {
-      hydrateFromSnapshot(initialModelsSnapshot);
+      hydrateFromSnapshot(initialModelsSnapshot, true);
     }
-    void refreshSnapshot();
+    void refreshSnapshot(false);
   }, [hydrateFromSnapshot, initialModelsSnapshot, isOpen, refreshSnapshot]);
 
   const handleSaveAiSettings = async (): Promise<void> => {
@@ -129,7 +144,8 @@ export const WorkspaceSettingsModal: React.FC<WorkspaceSettingsModalProps> = ({
         embeddingDevice,
         allowRemoteModels,
       });
-      hydrateFromSnapshot(res.config);
+      dirtyFieldsRef.current = false;
+      hydrateFromSnapshot(res.config, true);
       onModelsUpdated?.(res.config);
       showToast?.({ type: 'success', message: 'Local AI settings saved cleanly' });
     } catch (err: unknown) {
@@ -201,17 +217,17 @@ export const WorkspaceSettingsModal: React.FC<WorkspaceSettingsModalProps> = ({
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-5 space-y-5 bg-slate-50 dark:bg-slate-950 scrollbar-thin">
-        {error && (
-          <div
-            role="alert"
-            data-testid="settings-error-banner"
-            className="p-3 rounded-lg bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-200"
-          >
-            {error}
-          </div>
-        )}
+      {error && (
+        <div
+          role="alert"
+          data-testid="settings-error-banner"
+          className="mx-5 mt-3 p-3 rounded-lg bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 text-xs text-red-700 dark:text-red-200 flex-shrink-0"
+        >
+          {error}
+        </div>
+      )}
 
+      <div className="flex-1 overflow-y-auto p-5 space-y-5 bg-slate-50 dark:bg-slate-950 scrollbar-thin">
         {/* Section 1: Local LLM Runtime */}
         <section className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3 shadow-sm">
           <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -235,7 +251,7 @@ export const WorkspaceSettingsModal: React.FC<WorkspaceSettingsModalProps> = ({
               <button
                 type="button"
                 onClick={(): void => {
-                  void refreshSnapshot();
+                  void refreshSnapshot(true);
                 }}
                 disabled={loading}
                 data-testid="settings-check-connection"
@@ -252,9 +268,10 @@ export const WorkspaceSettingsModal: React.FC<WorkspaceSettingsModalProps> = ({
               <span className="font-medium text-slate-700 dark:text-slate-200 block">Provider Mode</span>
               <select
                 value={provider}
-                onChange={(e): void =>
-                  setProvider(e.target.value as 'ollama' | 'openai_compatible')
-                }
+                onChange={(e): void => {
+                  dirtyFieldsRef.current = true;
+                  setProvider(e.target.value as 'ollama' | 'openai_compatible');
+                }}
                 data-testid="settings-provider-select"
                 className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
               >
@@ -271,6 +288,7 @@ export const WorkspaceSettingsModal: React.FC<WorkspaceSettingsModalProps> = ({
                 type="text"
                 value={provider === 'ollama' ? ollamaUrl : openAiBaseUrl}
                 onChange={(e): void => {
+                  dirtyFieldsRef.current = true;
                   if (provider === 'ollama') setOllamaUrl(e.target.value);
                   else setOpenAiBaseUrl(e.target.value);
                 }}
@@ -286,7 +304,10 @@ export const WorkspaceSettingsModal: React.FC<WorkspaceSettingsModalProps> = ({
                 type="text"
                 list="pv-discovered-models"
                 value={modelName}
-                onChange={(e): void => setModelName(e.target.value)}
+                onChange={(e): void => {
+                  dirtyFieldsRef.current = true;
+                  setModelName(e.target.value);
+                }}
                 data-testid="settings-model-input"
                 placeholder="llama3.2"
                 className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-mono"
@@ -309,7 +330,10 @@ export const WorkspaceSettingsModal: React.FC<WorkspaceSettingsModalProps> = ({
                   max={1}
                   step={0.05}
                   value={temperature}
-                  onChange={(e): void => setTemperature(parseFloat(e.target.value))}
+                  onChange={(e): void => {
+                    dirtyFieldsRef.current = true;
+                    setTemperature(parseFloat(e.target.value));
+                  }}
                   data-testid="settings-temperature-range"
                   className="w-full"
                 />
@@ -323,7 +347,10 @@ export const WorkspaceSettingsModal: React.FC<WorkspaceSettingsModalProps> = ({
                   max={32768}
                   step={128}
                   value={maxTokens}
-                  onChange={(e): void => setMaxTokens(parseInt(e.target.value, 10) || 2048)}
+                  onChange={(e): void => {
+                    dirtyFieldsRef.current = true;
+                    setMaxTokens(parseInt(e.target.value, 10) || 2048);
+                  }}
                   data-testid="settings-max-tokens-input"
                   className="w-full px-2 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-mono"
                 />
@@ -403,9 +430,10 @@ export const WorkspaceSettingsModal: React.FC<WorkspaceSettingsModalProps> = ({
                 </span>
                 <select
                   value={embeddingDevice}
-                  onChange={(e): void =>
-                    setEmbeddingDevice(e.target.value as 'auto' | 'cpu' | 'dml' | 'webgpu')
-                  }
+                  onChange={(e): void => {
+                    dirtyFieldsRef.current = true;
+                    setEmbeddingDevice(e.target.value as 'auto' | 'cpu' | 'dml' | 'webgpu');
+                  }}
                   data-testid="settings-device-select"
                   className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
                 >
@@ -420,7 +448,10 @@ export const WorkspaceSettingsModal: React.FC<WorkspaceSettingsModalProps> = ({
                 <input
                   type="checkbox"
                   checked={!allowRemoteModels}
-                  onChange={(e): void => setAllowRemoteModels(!e.target.checked)}
+                  onChange={(e): void => {
+                    dirtyFieldsRef.current = true;
+                    setAllowRemoteModels(!e.target.checked);
+                  }}
                   data-testid="settings-airgapped-checkbox"
                   className="rounded border-slate-300"
                 />
