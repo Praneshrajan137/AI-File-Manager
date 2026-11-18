@@ -1,7 +1,10 @@
 import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import type { FileNode, SortCriteria, SortDirection } from '@shared/contracts';
-import { sortFileNodes, toggleMultiSelection } from '@renderer/utils/explorerHelpers';
-import type { SelectionModifiers } from './useExplorerActions';
+import {
+  sortFileNodes,
+  toggleMultiSelection,
+  type SelectionModifiers,
+} from '@renderer/utils/explorerHelpers';
 
 export interface UseSplitPaneStateOptions {
   sortBy: SortCriteria;

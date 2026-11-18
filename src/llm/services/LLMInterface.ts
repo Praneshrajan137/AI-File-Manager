@@ -12,7 +12,7 @@ import {
     RetrievalResult,
 } from '../../shared/contracts';
 import { LLMLogger } from '../../shared/logging';
-import { neutralizeOuterContextTags } from './ContextManager';
+import { neutralizeOuterContextTags } from './promptFence';
 import {
     assertLoopbackLocalUrl,
     LocalChatMessage,

@@ -1,20 +1,10 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { DirectoryTreeNode } from './DirectoryTreeNode';
+import { DirectoryTreeFocusContext } from './DirectoryTreeFocusContext';
 import { FileEvent, FileNode } from '@shared/contracts';
 import { useSystemPaths } from '@renderer/contexts/SystemPathsContext';
 import { getErrorMessage } from '@renderer/utils/formatters';
-
-interface DirectoryTreeFocusContextValue {
-  focusedPath: string | null;
-  setFocusedPath: (path: string) => void;
-}
-
-const DirectoryTreeFocusContext = createContext<DirectoryTreeFocusContextValue | null>(null);
-
-export function useDirectoryTreeFocus(): DirectoryTreeFocusContextValue | null {
-  return useContext(DirectoryTreeFocusContext);
-}
 
 interface DirectoryTreeProps {
   rootPath?: string;

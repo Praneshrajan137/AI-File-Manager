@@ -102,7 +102,9 @@ export function resolveCanonicalVectorDbDir(): string {
 }
 
 export function resolveCanonicalGraphDbPath(): string {
-  const envDbOverride = process.env.FILE_MANAGER_VECTOR_DB_PATH?.trim();
+  const allowTestOverrides =
+    process.env.NODE_ENV === 'test' || process.env.E2E_TEST === 'true';
+  const envDbOverride = allowTestOverrides ? process.env.FILE_MANAGER_VECTOR_DB_PATH?.trim() : undefined;
   const canonicalGraph = path.join(
     os.homedir(),
     CANONICAL_DOT_DIR,

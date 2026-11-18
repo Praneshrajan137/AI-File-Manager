@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { IndexingStatus } from './useLLM';
+import type { IndexingStatus } from '@shared/contracts';
 
 interface UseLlmIndexingOptions {
   warmupReady: boolean;

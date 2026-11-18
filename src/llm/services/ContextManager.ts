@@ -12,7 +12,15 @@
 
 import * as path from 'path';
 import { VectorRecord } from '../../shared/contracts';
-import { LLMInterface } from './LLMInterface';
+import type { LLMInterface } from './LLMInterface';
+import {
+    escapePromptFenceAttr,
+    escapePromptFenceText,
+    formatUntrustedWorkspaceData,
+    neutralizeOuterContextTags,
+} from './promptFence';
+
+export { escapePromptFenceText, formatUntrustedWorkspaceData, neutralizeOuterContextTags };
 
 export interface CompressionOptions {
     /** Maximum tokens for compressed context */
@@ -34,49 +42,6 @@ const DEFAULT_OPTIONS: Required<CompressionOptions> = {
     summarizationModel: 'llama3.2',
     query: '',
 };
-
-/**
- * Format passive workspace content inside explicit untrusted_workspace_data isolation
- * fences so embedded instructions cannot override system or tool boundaries.
- */
-/**
- * Neutralize XML boundary injection tokens inside untrusted workspace content
- * so attacker-controlled files cannot break out of `<untrusted_workspace_data>`.
- */
-export function escapePromptFenceText(value: string): string {
-    return value
-        .replace(/<(\/?\s*(?:untrusted_workspace_data|workspace_context|system)\b)/gi, '&lt;$1')
-        .replace(/<\|([A-Za-z0-9_/-]{1,40})\|>/g, '&lt;|$1|&gt;');
-}
-
-export function neutralizeOuterContextTags(value: string): string {
-    return value
-        .replace(/<(\/?\s*(?:workspace_context|system)\b)/gi, '&lt;$1')
-        .replace(/<\|([A-Za-z0-9_/-]{1,40})\|>/g, '&lt;|$1|&gt;');
-}
-
-function escapePromptFenceAttr(value: string): string {
-    return value.replace(/"/g, '&quot;').replace(/[<>]/g, (ch) => (ch === '<' ? '&lt;' : '&gt;'));
-}
-
-export function formatUntrustedWorkspaceData(
-    source: string,
-    citation: string,
-    content: string,
-    heading?: string
-): string {
-    const safeSource = escapePromptFenceAttr(source);
-    const safeCitation = escapePromptFenceAttr(citation);
-    const safeHeading = heading ? ` (${escapePromptFenceText(heading)})` : '';
-    const safeBody = escapePromptFenceText(content);
-    return `<untrusted_workspace_data source="${safeSource}" citation="${safeCitation}">
-📄 **FILE: ${safeCitation}**${safeHeading}
-📍 PATH: ${safeSource}
----
-${safeBody}
----
-</untrusted_workspace_data>`;
-}
 
 export class ContextManager {
     private llmInterface: LLMInterface | null = null;

@@ -18,16 +18,10 @@
  * );
  */
 
-import {
-  FileSystemError,
-  FileSystemErrorCode,
-  LLMError,
-  LLMErrorCode,
-  IPCError,
-  IPCErrorCode,
-  ValidationError,
-  ValidationErrorCode,
-} from './index';
+import { FileSystemError, type FileSystemErrorCode } from './FileSystemError';
+import { LLMError, type LLMErrorCode } from './LLMError';
+import { IPCError, type IPCErrorCode } from './IPCError';
+import { ValidationError, type ValidationErrorCode } from './ValidationError';
 
 /**
  * Factory class for creating errors with enriched metadata.

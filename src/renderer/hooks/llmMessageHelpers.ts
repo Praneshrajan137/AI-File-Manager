@@ -6,7 +6,7 @@ import type {
   OrganizePlanResult,
   RetrievalSource,
 } from '@shared/contracts';
-import type { Message, SendQueryOptions } from './useLLM';
+import type { Message, SendQueryOptions } from './llmTypes';
 
 export interface LLMQueryResultShape {
   success?: boolean;

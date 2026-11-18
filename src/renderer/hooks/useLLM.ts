@@ -1,53 +1,16 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type {
-  AgentTerminationReason,
-  AgentTokenUsage,
   AgentTraceStep,
-  AgentVerificationReport,
-  CopilotContextScope,
-  CopilotQueryMode,
+  IndexingStatus,
   LLMModelsSnapshot,
-  OrganizePlanResult,
-  RetrievalSource,
 } from '@shared/contracts';
 import { useLlmIndexing } from './useLlmIndexing';
 import { applyQueryErrorToMessages, buildLlmMetadataPatch } from './llmMessageHelpers';
+import type { Message, SendQueryOptions } from './llmTypes';
+
+export type { IndexingStatus, Message, SendQueryOptions };
 
 let messageIdCounter = 0;
-
-export interface Message {
-  id: number;
-  role: 'user' | 'assistant';
-  content: string;
-  isError?: boolean;
-  retryQuery?: string;
-  retryOptions?: SendQueryOptions;
-  sources?: string[];
-  structuredSources?: RetrievalSource[];
-  agentSteps?: AgentTraceStep[];
-  offlineSynthesis?: boolean;
-  proposedPlan?: OrganizePlanResult;
-  traceId?: string;
-  terminationReason?: AgentTerminationReason;
-  verification?: AgentVerificationReport;
-  usage?: AgentTokenUsage;
-  retrievalMs?: number;
-  generationMs?: number;
-  timestamp: number;
-}
-
-export interface IndexingStatus {
-  indexed: number;
-  total: number;
-  inProgress: boolean;
-  currentFile?: string;
-}
-
-export interface SendQueryOptions {
-  mode?: CopilotQueryMode;
-  contextScope?: CopilotContextScope;
-  history?: Array<{ role: 'user' | 'assistant'; content: string }>;
-}
 
 export interface UseLLMOptions {
   isActive?: boolean;

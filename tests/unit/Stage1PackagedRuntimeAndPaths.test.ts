@@ -102,6 +102,13 @@ describe('Stage 1: Packaged Runtime Paths, Writable ONNX Cache & Unpacked MCP Re
       fs.writeFileSync(path.join(legacyDb, 'knowledge-graph.sqlite'), 'stub', 'utf-8');
       expect(resolveCanonicalVectorDbDir()).toBe(legacyDb);
       expect(resolveCanonicalGraphDbPath()).toBe(path.join(legacyDb, 'knowledge-graph.sqlite'));
+
+      // Production mode ignores test-only FILE_MANAGER_VECTOR_DB_PATH override for both vector and graph DBs
+      process.env.FILE_MANAGER_VECTOR_DB_PATH = path.join(fakeHome, 'untrusted-override');
+      process.env.NODE_ENV = 'production';
+      delete process.env.E2E_TEST;
+      expect(resolveCanonicalVectorDbDir()).toBe(legacyDb);
+      expect(resolveCanonicalGraphDbPath()).toBe(path.join(legacyDb, 'knowledge-graph.sqlite'));
     } finally {
       fs.rmSync(fakeHome, { recursive: true, force: true });
     }

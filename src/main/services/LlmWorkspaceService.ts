@@ -62,7 +62,7 @@ import {
 } from '../../llm/models/transformersLoader';
 import { EmbeddingWorkerPool } from '../../llm/workers/EmbeddingWorkerPool';
 import { resolveAllowedRoots, validateCanonicalPathOrThrow } from '../handlers/securityMiddleware';
-import { searchWorkspacePaths } from '../handlers/searchHandlers';
+import { searchWorkspacePaths } from './WorkspaceSearchService';
 import { ErrorSerializer } from '../middleware/ErrorSerializer';
 import { AIOrganizerService } from './AIOrganizerService';
 import { DirectoryScanner } from './DirectoryScanner';

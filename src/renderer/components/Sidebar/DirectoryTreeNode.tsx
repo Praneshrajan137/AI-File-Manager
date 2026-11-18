@@ -3,7 +3,7 @@ import { Folder, ChevronRight, Loader, RefreshCw } from 'lucide-react';
 import { FileEvent, FileNode } from '@shared/contracts';
 import { extractParentDirectory, normalizeComparablePath } from '@renderer/utils/pathHelpers';
 import { getErrorMessage } from '@renderer/utils/formatters';
-import { useDirectoryTreeFocus } from './DirectoryTree';
+import { useDirectoryTreeFocus } from './DirectoryTreeFocusContext';
 
 interface DirectoryTreeNodeProps {
   node: FileNode;
