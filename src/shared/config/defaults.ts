@@ -8,6 +8,7 @@
 import os from 'os';
 import path from 'path';
 import { type AppConfig } from './schema';
+import { APP_BRAND_NAME } from './appPaths';
 
 /**
  * Get OS-specific forbidden paths.
@@ -61,6 +62,7 @@ export const DEFAULT_EXCLUDED_DIRS: string[] = [
   'System Volume Information',
   'AppData',
   '.Trash',
+  '.privatevault',
   '.file-manager',
   'trash-vault',
 ];
@@ -83,7 +85,7 @@ function getDefaultAllowedRoots(): string[] {
  */
 export const defaultConfig: AppConfig = {
   app: {
-    name: 'File Manager',
+    name: APP_BRAND_NAME,
     version: '0.1.0',
     environment: (process.env.NODE_ENV as 'development' | 'production' | 'test') || 'development',
   },
@@ -119,7 +121,6 @@ export const defaultConfig: AppConfig = {
     embeddingDevice: 'auto',
     rerankerModel: 'Xenova/ms-marco-MiniLM-L-6-v2',
     enableWebGPU: false,
-    enableVisionCaptioning: false,
     allowRemoteModels: true,
   },
 
@@ -128,6 +129,8 @@ export const defaultConfig: AppConfig = {
     explorerLens: 'files',
     viewMode: 'list',
     splitPaneOpen: false,
+    onboardingCompleted: false,
+    developerBadges: false,
   },
 
   logging: {

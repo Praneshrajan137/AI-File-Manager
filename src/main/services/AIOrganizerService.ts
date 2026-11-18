@@ -19,6 +19,7 @@ import { buildBatchMarkdownLinkRepairSteps } from './MarkdownLinkRepair';
 import { getReactiveWorkspaceKernel, hasActiveReactiveWorkspaceKernel } from './ReactiveWorkspaceKernel';
 import { formatUntrustedWorkspaceData } from '../../llm/services/ContextManager';
 import { LocalLLMProvider, LocalModelTransport } from '../../llm/services/LocalModelTransport';
+import { clusterDocumentsByVector } from '../../llm/services/SemanticClustering';
 
 const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 // eslint-disable-next-line no-control-regex
@@ -31,6 +32,7 @@ const ORGANIZER_LLM_TIMEOUT_MS = 8000;
 const SKIPPED_RECURSIVE_DIRS = new Set([
   'node_modules',
   '.git',
+  '.privatevault',
   '.file-manager',
   'trash-vault',
   'duplicates archive',
@@ -80,6 +82,8 @@ export interface AIOrganizerServiceDeps {
   fetchFn?: typeof fetch;
   findImpactForPaths?: (targetPaths: string[]) => GraphImpactReference[];
   notifyMutation?: (type: 'create' | 'change' | 'unlink', filePath: string) => void;
+  getDocumentVectors?: (filePaths: string[], canonicalRoot: string) => Promise<Map<string, number[]>>;
+  embedTexts?: (texts: string[]) => Promise<number[][]>;
 }
 
 function normalizeOrganizerKey(targetPath: string): string {
@@ -203,7 +207,7 @@ async function readFileSnippetSample(filePath: string, ext: string, size: number
   }
 }
 
-async function classifySemanticContent(
+async function classifySemanticHeuristicFallback(
   file: CandidateFileEntry
 ): Promise<{ category: string; reason: string } | null> {
   const sample = (await readFileSnippetSample(file.path, file.ext, file.size)).toLowerCase();
@@ -211,31 +215,31 @@ async function classifySemanticContent(
   if (/(oauth|jwt|encrypt|hmac|secretguard|pathvalidator|auth|security|firewall|token)/.test(combined)) {
     return {
       category: 'Security & Auth',
-      reason: 'Semantic content cluster: authentication, cryptography, or security controls',
+      reason: 'Topic heuristic fallback (ONNX embeddings unavailable): authentication or security controls',
     };
   }
   if (/(invoice|budget|revenue|arr_usd|expense|ledger|tax|fiscal|payroll)/.test(combined)) {
     return {
       category: 'Finance & Legal',
-      reason: 'Semantic content cluster: financial metrics, budgets, or accounting records',
+      reason: 'Topic heuristic fallback (ONNX embeddings unavailable): financial or accounting records',
     };
   }
   if (/(kubernetes|dockerfile|github\/workflows|terraform|ci-watch|autoscaler|postgres|replication)/.test(combined)) {
     return {
       category: 'Infrastructure & CI',
-      reason: 'Semantic content cluster: deployment, pipelines, or database operations',
+      reason: 'Topic heuristic fallback (ONNX embeddings unavailable): deployment or operations config',
     };
   }
   if (/(react|usestate|tailwind|component|modal|drawer|tsx|css|dark-slate)/.test(combined)) {
     return {
       category: 'UI & Frontend',
-      reason: 'Semantic content cluster: React UI components, styling, or layout tokens',
+      reason: 'Topic heuristic fallback (ONNX embeddings unavailable): UI components or styling',
     };
   }
   if (/(architecture|runbook|protocol|adr-|rfc-|specification|design doc)/.test(combined)) {
     return {
       category: 'Specs & Notes',
-      reason: 'Semantic content cluster: architecture specs or operational runbooks',
+      reason: 'Topic heuristic fallback (ONNX embeddings unavailable): architecture specs or runbooks',
     };
   }
   return null;
@@ -322,6 +326,106 @@ export class AIOrganizerService {
     }
 
     return { files, skippedFiles };
+  }
+
+  private async buildVectorSemanticAssignments(
+    canonicalRoot: string,
+    fileCandidates: CandidateFileEntry[]
+  ): Promise<Map<string, { category: string; reason: string; confidence: number }>> {
+    const assignments = new Map<
+      string,
+      { category: string; reason: string; confidence: number }
+    >();
+    if (fileCandidates.length < 2 || (!this.deps.getDocumentVectors && !this.deps.embedTexts)) {
+      return assignments;
+    }
+
+    const sampleByPath = new Map<string, string>();
+    for (const file of fileCandidates) {
+      const sample = await readFileSnippetSample(file.path, file.ext, file.size);
+      if (sample.trim().length > 0) {
+        sampleByPath.set(file.path, sample);
+      }
+    }
+
+    let vectorByPath = new Map<string, number[]>();
+    if (this.deps.getDocumentVectors) {
+      try {
+        vectorByPath = await this.deps.getDocumentVectors(
+          fileCandidates.map((f) => f.path),
+          canonicalRoot
+        );
+      } catch {
+        vectorByPath = new Map();
+      }
+    }
+
+    const normalizeKey = (p: string): string => normalizeOrganizerKey(p);
+    const normalizedVecMap = new Map<string, number[]>();
+    for (const [k, vec] of vectorByPath.entries()) {
+      if (Array.isArray(vec) && vec.length > 0) {
+        normalizedVecMap.set(normalizeKey(k), vec);
+      }
+    }
+
+    if (this.deps.embedTexts) {
+      const uncachedCandidates = fileCandidates
+        .filter((f) => !normalizedVecMap.has(normalizeKey(f.path)) && sampleByPath.has(f.path))
+        .slice(0, 60);
+      if (uncachedCandidates.length > 0) {
+        try {
+          const texts = uncachedCandidates.map(
+            (f) => `${f.name}\n${sampleByPath.get(f.path) ?? ''}`
+          );
+          const embedded = await this.deps.embedTexts(texts);
+          uncachedCandidates.forEach((file, idx) => {
+            const vec = embedded[idx];
+            if (Array.isArray(vec) && vec.length > 0) {
+              normalizedVecMap.set(normalizeKey(file.path), vec);
+            }
+          });
+        } catch {
+          // Graceful fallback if embedding worker unavailable
+        }
+      }
+    }
+
+    const clusterInputs = fileCandidates
+      .map((f) => {
+        const vec = normalizedVecMap.get(normalizeKey(f.path));
+        if (!vec || vec.length === 0) {
+          return null;
+        }
+        return {
+          filePath: f.path,
+          name: f.name,
+          fileType: f.ext.replace(/^\./, '') || 'file',
+          chunkCount: 1,
+          vector: vec,
+          topSymbols: [],
+          textSample: sampleByPath.get(f.path) ?? '',
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+
+    if (clusterInputs.length < 2) {
+      return assignments;
+    }
+
+    const { groups } = clusterDocumentsByVector(clusterInputs, { maxClusters: 6 });
+    for (const group of groups) {
+      for (const file of group.files) {
+        const sim = group.memberCosineByPath.get(file.path) ?? group.cohesionScore;
+        const confidence = Number(Math.max(0.55, Math.min(0.96, sim)).toFixed(2));
+        assignments.set(normalizeKey(file.path), {
+          category: group.label,
+          reason: `Vector embedding cluster "${group.label}" (cosine ${sim.toFixed(2)}, cohesion ${group.cohesionScore.toFixed(2)})`,
+          confidence,
+        });
+      }
+    }
+
+    return assignments;
   }
 
   private buildImpactSummary(paths: string[]): GraphImpactCheckResult | undefined {
@@ -443,27 +547,48 @@ export class AIOrganizerService {
       batchCount = llmOutcome.batchCount;
       degradedReason = llmOutcome.degradedReason;
 
+      const vectorSemanticAssignments =
+        strategy === 'semantic_cluster'
+          ? await this.buildVectorSemanticAssignments(canonicalRoot, fileCandidates)
+          : new Map<string, { category: string; reason: string; confidence: number }>();
+      const usedVectorClustering = vectorSemanticAssignments.size >= 2;
+      if (strategy === 'semantic_cluster' && !usedVectorClustering) {
+        degradedReason =
+          degradedReason ??
+          'Dense embedding vectors unavailable for this folder; used keyword topic heuristic fallback.';
+      }
+
       for (const file of fileCandidates) {
         const relKey = path.relative(canonicalRoot, file.path).replace(/\\/g, '/');
         const llmHint = llmOutcome.suggestions?.get(relKey) ?? llmOutcome.suggestions?.get(file.name);
+        const vectorHint =
+          strategy === 'semantic_cluster'
+            ? vectorSemanticAssignments.get(normalizeOrganizerKey(file.path))
+            : undefined;
         const semanticHint =
-          strategy === 'semantic_cluster' ? await classifySemanticContent(file) : null;
+          strategy === 'semantic_cluster'
+            ? vectorHint ?? (await classifySemanticHeuristicFallback(file))
+            : null;
         const fallback =
           semanticHint ?? classifyFileDeterministic(file.name, file.ext, file.mtimeMs, strategy);
 
         const classificationSource: OrganizePlanOperation['classificationSource'] = llmHint
           ? 'llm'
-          : semanticHint
+          : vectorHint
             ? 'semantic'
-            : 'deterministic';
+            : semanticHint
+              ? 'semantic'
+              : 'deterministic';
         const confidence =
           classificationSource === 'llm'
             ? llmHint?.confidence ?? 0.85
-            : classificationSource === 'semantic'
-              ? 0.78
-              : strategy === 'by_type' || strategy === 'by_date'
-                ? 0.92
-                : 0.75;
+            : vectorHint
+              ? vectorHint.confidence
+              : semanticHint
+                ? 0.62
+                : strategy === 'by_type' || strategy === 'by_date'
+                  ? 0.92
+                  : 0.75;
 
         const category = sanitizeSingleSegment(llmHint?.category || fallback.category, fallback.category);
         const desiredFileName = sanitizeSingleSegment(llmHint?.newName || file.name, file.name);

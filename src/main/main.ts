@@ -25,8 +25,13 @@
  */
 
 import { app, BrowserWindow, protocol, session } from 'electron';
+import * as fsSync from 'fs';
 import * as path from 'path';
-import { ConfigManager } from '@shared/config';
+import {
+  ConfigManager,
+  resolveDefaultModelCacheDir,
+  resolvePackagedMcpEntryPath,
+} from '@shared/config';
 import { Logger, getLogger } from '@shared/logging';
 import { suppressSqliteExperimentalWarning } from '@shared/utils/processWarnings';
 import { ErrorHandler } from './middleware/ErrorHandler';
@@ -310,9 +315,11 @@ app.whenReady().then(async () => {
 
   // CRITICAL: Register all IPC handlers BEFORE creating window
   // This ensures handlers are ready when renderer process starts
+  let registeredChannelsCount = 0;
   try {
-    const { registerAllHandlers } = await import('./handlers/ipcHandlers');
+    const { getRegisteredChannels, registerAllHandlers } = await import('./handlers/ipcHandlers');
     registerAllHandlers();
+    registeredChannelsCount = getRegisteredChannels().length;
     logger.info('All IPC handlers registered successfully');
   } catch (error) {
     logger.error('Failed to register IPC handlers', {
@@ -325,6 +332,48 @@ app.whenReady().then(async () => {
 
   registerVaultAssetProtocol();
   configureSessionSecurity();
+
+  if (process.argv.includes('--smoke-packaged-boot')) {
+    const reportArg = process.argv.find((arg) => arg.startsWith('--smoke-report-file='));
+    const reportFile = reportArg ? reportArg.slice('--smoke-report-file='.length) : null;
+    try {
+      // Verify built-in node:sqlite and LanceDB bind cleanly inside packaged ASAR/unpacked bundle
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+      const memDb = new DatabaseSync(':memory:');
+      memDb.exec('CREATE VIRTUAL TABLE t USING fts5(body); INSERT INTO t VALUES (\'ok\');');
+      memDb.close();
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      require('@lancedb/lancedb');
+      const modelCacheDir = resolveDefaultModelCacheDir();
+      const mcpEntryPath = resolvePackagedMcpEntryPath(__dirname);
+      const smokePayload = {
+        ok: true,
+        packaged: app.isPackaged,
+        registeredChannels: registeredChannelsCount,
+        modelCacheDir,
+        mcpEntryPath,
+        mcpExists: fsSync.existsSync(mcpEntryPath),
+      };
+      if (reportFile) {
+        fsSync.writeFileSync(reportFile, JSON.stringify(smokePayload, null, 2), 'utf-8');
+      }
+      process.stdout.write(`[SMOKE_PACKAGED_OK] ${JSON.stringify(smokePayload)}\n`);
+      await Promise.allSettled([
+        resetReactiveWorkspaceKernel(),
+        import('./handlers/llmHandlers').then(({ cleanupLLMServices }) => cleanupLLMServices()),
+      ]);
+      app.exit(0);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (reportFile) {
+        fsSync.writeFileSync(reportFile, JSON.stringify({ ok: false, error: msg }), 'utf-8');
+      }
+      process.stderr.write(`[SMOKE_PACKAGED_FAIL] ${msg}\n`);
+      app.exit(1);
+    }
+    return;
+  }
 
   app.on('web-contents-created', (_event, contents) => {
     const rendererDir = path.resolve(__dirname, '../renderer');
@@ -411,7 +460,11 @@ app.on('window-all-closed', () => {
   })();
 });
 
-if (process.env.E2E_TEST !== 'true' && process.env.NODE_ENV !== 'test') {
+if (
+  process.env.E2E_TEST !== 'true' &&
+  process.env.NODE_ENV !== 'test' &&
+  !process.argv.includes('--smoke-packaged-boot')
+) {
   const gotTheLock = app.requestSingleInstanceLock();
   if (!gotTheLock) {
     const logger = getLogger();

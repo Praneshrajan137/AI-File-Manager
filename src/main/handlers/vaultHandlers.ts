@@ -82,12 +82,22 @@ export function buildVaultSnapshot(): VaultConfigSnapshot {
     excludedDirs,
     favorites,
     defaultDeleteMode: fsConfig.defaultDeleteMode === 'trash' ? 'trash' : 'vault',
-    ui: config.ui ?? {
-      theme: 'light',
-      explorerLens: 'files',
-      viewMode: 'list',
-      splitPaneOpen: false,
-    },
+    ui: config.ui
+      ? {
+          ...config.ui,
+          onboardingCompleted:
+            process.env.E2E_TEST === 'true' && process.env.PV_E2E_ONBOARDING !== 'true'
+              ? true
+              : config.ui.onboardingCompleted,
+        }
+      : {
+          theme: 'light',
+          explorerLens: 'files',
+          viewMode: 'list',
+          splitPaneOpen: false,
+          onboardingCompleted: process.env.E2E_TEST === 'true',
+          developerBadges: false,
+        },
   };
 }
 
@@ -271,15 +281,27 @@ async function handleSetUiPrefs(
     explorerLens: 'files',
     viewMode: 'list',
     splitPaneOpen: false,
+    onboardingCompleted: false,
+    developerBadges: false,
   };
   const nextUi: UIPreferencesSnapshot = {
     theme: input.theme ?? currentUi.theme,
     explorerLens: input.explorerLens ?? currentUi.explorerLens,
     viewMode: input.viewMode ?? currentUi.viewMode,
     splitPaneOpen: input.splitPaneOpen ?? currentUi.splitPaneOpen,
+    onboardingCompleted: input.onboardingCompleted ?? currentUi.onboardingCompleted ?? false,
+    developerBadges: input.developerBadges ?? currentUi.developerBadges ?? false,
   };
   cm.set('ui', nextUi, true);
   return nextUi;
+}
+
+async function handleSetDefaultDeleteMode(
+  _event: IpcMainInvokeEvent,
+  input: { mode: 'vault' | 'trash' }
+): Promise<VaultConfigSnapshot> {
+  ConfigManager.getInstance().set('fileSystem.defaultDeleteMode', input.mode, true);
+  return buildVaultSnapshot();
 }
 
 const VAULT_CHANNELS: IPCChannel[] = [
@@ -289,6 +311,7 @@ const VAULT_CHANNELS: IPCChannel[] = [
   'VAULT:SET_INDEXED',
   'VAULT:TOGGLE_FAVORITE',
   'VAULT:SET_UI_PREFS',
+  'VAULT:SET_DEFAULT_DELETE_MODE',
 ];
 
 export function registerVaultHandlers(): IPCChannel[] {
@@ -299,5 +322,9 @@ export function registerVaultHandlers(): IPCChannel[] {
   ipcMain.handle('VAULT:SET_INDEXED', withContract('VAULT:SET_INDEXED', handleSetVaultIndexed));
   ipcMain.handle('VAULT:TOGGLE_FAVORITE', withContract('VAULT:TOGGLE_FAVORITE', handleToggleFavorite));
   ipcMain.handle('VAULT:SET_UI_PREFS', withContract('VAULT:SET_UI_PREFS', handleSetUiPrefs));
+  ipcMain.handle(
+    'VAULT:SET_DEFAULT_DELETE_MODE',
+    withContract('VAULT:SET_DEFAULT_DELETE_MODE', handleSetDefaultDeleteMode)
+  );
   return [...VAULT_CHANNELS];
 }

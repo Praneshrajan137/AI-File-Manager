@@ -1,5 +1,7 @@
 # Technology Decisions Log
 
+> **[Note on Current Evolution]**: Early Dec 2025 entries (e.g., `Electron 28.x`, `Vitest`) reflect initial project inception decisions. Current shipped PrivateVault AI runs on **Electron 45**, **Node 24 LTS**, **Jest + Playwright**, **SQLite WAL/FTS5 (`node:sqlite`) + LanceDB**, **standalone pure-Node MCP (`dist/main/mcpServer.js`)**, and **canonical `~/.privatevault/` storage**; see [README.md](../README.md) and [PROJECT-MEMORY.md](./PROJECT-MEMORY.md) for current architecture decisions.
+
 ## Project-2: OS File Manager with Custom LLM
 
 

@@ -23,11 +23,18 @@ interface PreviewBodyProps {
   assetKind: VaultAssetKind;
   assetUrl: string | null;
   assetError: string | null;
+  isEditing?: boolean;
+  editContent?: string;
+  editSaving?: boolean;
+  editError?: string | null;
+  onChangeEditContent?: (value: string) => void;
+  onSaveEdit?: () => void;
+  onCancelEdit?: () => void;
   onAssetError: (msg: string) => void;
   onOpenCitation?: (filePath: string, startLine?: number, endLine?: number) => void;
 }
 
-/** Renders the scrollable text, line-range citation, vault-asset media, binary notice, or graph connections body. */
+/** Renders the scrollable text, inline editor, line-range citation, vault-asset media, binary notice, or graph connections body. */
 export const PreviewBody: React.FC<PreviewBodyProps> = ({
   file,
   activeTab,
@@ -41,6 +48,13 @@ export const PreviewBody: React.FC<PreviewBodyProps> = ({
   assetKind,
   assetUrl,
   assetError,
+  isEditing = false,
+  editContent = '',
+  editSaving = false,
+  editError = null,
+  onChangeEditContent,
+  onSaveEdit,
+  onCancelEdit,
   onAssetError,
   onOpenCitation,
 }) => {
@@ -74,7 +88,40 @@ export const PreviewBody: React.FC<PreviewBodyProps> = ({
             </div>
           )}
 
-          {!loading && !error && lineRange && (
+          {!loading && editError && (
+            <div
+              role="alert"
+              data-testid="preview-edit-error"
+              className="mb-3 p-3 rounded-lg bg-red-950/70 border border-red-800 text-red-200"
+            >
+              {editError}
+            </div>
+          )}
+
+          {!loading && !error && isEditing && (
+            <div className="h-full flex flex-col">
+              <textarea
+                value={editContent}
+                onChange={(e): void => onChangeEditContent?.(e.target.value)}
+                onKeyDown={(e): void => {
+                  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+                    e.preventDefault();
+                    onSaveEdit?.();
+                  } else if (e.key === 'Escape') {
+                    e.stopPropagation();
+                    onCancelEdit?.();
+                  }
+                }}
+                disabled={editSaving}
+                aria-label={`Edit ${file.name}`}
+                data-testid="preview-editor-textarea"
+                spellCheck={false}
+                className="w-full h-full min-h-[360px] flex-1 p-3 rounded-lg bg-slate-900 text-slate-100 border border-indigo-500/60 focus:outline-none focus:ring-2 focus:ring-indigo-400 font-mono text-xs leading-5 resize-none"
+              />
+            </div>
+          )}
+
+          {!loading && !error && !isEditing && lineRange && (
             <div className="space-y-0.5" data-testid="preview-line-range">
               {lineRange.lines.length === 0 ? (
                 <div className="text-slate-300 italic p-2">(File is empty)</div>
@@ -106,7 +153,7 @@ export const PreviewBody: React.FC<PreviewBodyProps> = ({
             </div>
           )}
 
-          {!loading && !error && !lineRange && assetUrl && !assetError && (
+          {!loading && !error && !isEditing && !lineRange && assetUrl && !assetError && (
             <div className="h-full flex flex-col items-center justify-center p-2" data-testid="preview-asset-viewer">
               {assetKind === 'image' && (
                 <img
@@ -150,13 +197,13 @@ export const PreviewBody: React.FC<PreviewBodyProps> = ({
             </div>
           )}
 
-          {!loading && !error && !lineRange && assetError && (
+          {!loading && !error && !isEditing && !lineRange && assetError && (
             <div role="alert" className="p-3 rounded-lg bg-red-950/70 border border-red-800 text-red-200">
               {assetError}
             </div>
           )}
 
-          {!loading && !error && !lineRange && !assetUrl && preview?.binary && (
+          {!loading && !error && !isEditing && !lineRange && !assetUrl && preview?.binary && (
             <div
               className="p-4 rounded-lg bg-slate-900 border border-slate-700 text-slate-200 space-y-2"
               data-testid="preview-binary-notice"
@@ -171,7 +218,7 @@ export const PreviewBody: React.FC<PreviewBodyProps> = ({
             </div>
           )}
 
-          {!loading && !error && !lineRange && !assetUrl && preview && !preview.binary && (
+          {!loading && !error && !isEditing && !lineRange && !assetUrl && preview && !preview.binary && (
             <div className="space-y-0.5" data-testid="preview-lines">
               {preview.lines.length === 0 ? (
                 <div className="text-slate-300 italic p-2">(File is empty)</div>

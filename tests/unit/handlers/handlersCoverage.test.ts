@@ -28,6 +28,21 @@ const mockLlmService = {
   cleanupLLMServices: jest.fn(async () => undefined),
   clearAgentTracesHistory: jest.fn(async () => ({ cleared: 2 })),
   clearVectorIndex: jest.fn(async () => ({ success: true })),
+  downloadLlmModels: jest.fn(async () => ({
+    success: true,
+    snapshot: {
+      provider: 'ollama',
+      available: true,
+      activeModel: 'llama3.2',
+      models: ['llama3.2'],
+      embeddingModel: 'Xenova/bge-small-en-v1.5',
+      rerankerModel: 'Xenova/ms-marco-MiniLM-L-6-v2',
+      embeddingDevice: 'auto',
+      temperature: 0.2,
+      maxTokens: 1024,
+      allowRemoteModels: true,
+    },
+  })),
   executeCopilotQuery: jest.fn(async () => ({ success: true, sanitizedAnswer: 'ok' })),
   getIndexingStatus: jest.fn(async () => ({ indexed: 3, total: 3, inProgress: false })),
   getRecentAgentTraces: jest.fn(async () => ({ traces: [] })),
@@ -52,7 +67,7 @@ const mockLlmService = {
     embeddingDevice: 'auto',
     temperature: 0.2,
     maxTokens: 1024,
-    enableVisionCaptioning: false,
+    allowRemoteModels: true,
   })),
   planWorkspaceOrganize: jest.fn(async () => ({
     planId: 'plan-1',
@@ -90,7 +105,7 @@ const mockLlmService = {
       embeddingDevice: 'auto',
       temperature: 0.2,
       maxTokens: 1024,
-      enableVisionCaptioning: false,
+      allowRemoteModels: true,
     },
   })),
   startDirectoryIndexing: jest.fn(async () => ({ success: true, total: 4 })),
@@ -282,9 +297,13 @@ describe('Handler Suites Coverage: Navigation, Search, FileSystem, and LLM Chann
 
   it('registers all llmHandlers channels, delegates calls, and tears down kernel hooks on cleanup', async () => {
     const channels = registerLLMHandlers();
-    expect(channels).toHaveLength(14);
+    expect(channels).toHaveLength(15);
     expect(channels).toContain('LLM:INDEX_STATUS');
+    expect(channels).toContain('LLM:DOWNLOAD_MODELS');
     expect(channels).toContain('AI:ORGANIZE_PLAN');
+
+    const downloadRes = await invokeRegistered<{ success: boolean }>('LLM:DOWNLOAD_MODELS', {});
+    expect(downloadRes).toMatchObject({ ok: true, data: { success: true } });
 
     const statusRes = await invokeRegistered<{ indexed: number }>('LLM:INDEX_STATUS', {});
     expect(statusRes).toMatchObject({ ok: true, data: { indexed: 3 } });

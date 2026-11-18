@@ -19,8 +19,10 @@ interface EvalQueryCase {
 }
 
 /**
- * Deterministic semantic-concept + character-trigram embedding model for
- * offline CI evaluation of real LanceDB + SQLite FTS5 + Cross-Encoder retrieval.
+ * Deterministic hash-trigram + lexical token-overlap test double for offline CI
+ * regression testing of LanceDB + SQLite FTS5 indexing and retrieval wiring.
+ * Note: does NOT measure real semantic ONNX embeddings — run `npm run eval:rag`
+ * against real cached `bge-small-en-v1.5` + `ms-marco-MiniLM-L-6-v2` weights.
  */
 class DeterministicEvalEmbeddingModel implements IEmbeddingModel {
   private readonly dim = 384;

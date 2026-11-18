@@ -162,6 +162,18 @@ export const DiagnosticsSections: React.FC<DiagnosticsBodyProps> = ({
               {snapshot.llm.activeModel ? ` · ${snapshot.llm.activeModel}` : ''}
             </dd>
           </div>
+          {snapshot.modelCacheDir && (
+            <div className="flex justify-between gap-2">
+              <dt>ONNX Model Cache:</dt>
+              <dd
+                className="font-mono text-slate-900 dark:text-slate-100 truncate max-w-[180px]"
+                title={snapshot.modelCacheDir}
+                data-testid="diagnostics-model-cache-dir"
+              >
+                {snapshot.modelCacheDir}
+              </dd>
+            </div>
+          )}
           <div className="flex justify-between">
             <dt>LLM Queries (ok/err):</dt>
             <dd className="font-mono text-slate-900 dark:text-slate-100">

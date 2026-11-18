@@ -14,6 +14,8 @@
  *   node scripts/eval-real-rag.mjs [--device cpu|dml|webgpu|auto] [--allow-download] [--json]
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
@@ -235,11 +237,27 @@ function percentile(values, p) {
   return Number(sorted[idx].toFixed(2));
 }
 
+function resolveEvalModelCacheDir() {
+  const override =
+    process.env.FILE_MANAGER_MODEL_CACHE_DIR?.trim() ||
+    process.env.TRANSFORMERS_CACHE?.trim();
+  const hfHome = process.env.HF_HOME?.trim();
+  const resolved = override
+    ? path.resolve(override)
+    : hfHome
+      ? path.join(path.resolve(hfHome), 'hub')
+      : path.join(os.homedir(), '.privatevault', 'models');
+  fs.mkdirSync(resolved, { recursive: true });
+  return resolved;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const transformers = require('@huggingface/transformers');
+  const cacheDir = resolveEvalModelCacheDir();
   transformers.env.useBrowserCache = false;
   transformers.env.useFSCache = true;
+  transformers.env.cacheDir = cacheDir;
   transformers.env.allowRemoteModels = args.allowDownload;
 
   const supportedDevices =

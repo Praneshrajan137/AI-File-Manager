@@ -19,6 +19,7 @@ interface SidebarProps {
   onToggleIndexedRoot?: (rootPath: string, enabled: boolean) => Promise<void>;
   onToggleFavorite?: (targetPath: string) => Promise<void>;
   onEmptyTrashVault?: () => Promise<void>;
+  onOpenTrashVault?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -33,6 +34,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleIndexedRoot,
   onToggleFavorite,
   onEmptyTrashVault,
+  onOpenTrashVault,
 }) => {
   const [isResizing, setIsResizing] = useState(false);
 
@@ -84,12 +86,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Header - Brand & Privacy Badge */}
       <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 bg-gradient-to-b from-white to-slate-50/40 dark:from-slate-900 dark:to-slate-900">
         <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-100 tracking-tight">
-          File Manager
+          PrivateVault
         </h1>
         <div className="flex items-center gap-1.5 mt-1">
           <Shield className="w-3 h-3 text-accent-600 dark:text-indigo-400" aria-hidden="true" />
           <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300 tracking-wide uppercase">
-            PrivateVault AI
+            Local Knowledge OS
           </span>
         </div>
       </div>
@@ -106,6 +108,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onRemoveRoot={onRemoveVaultRoot}
             onToggleIndexed={onToggleIndexedRoot}
             onEmptyTrashVault={onEmptyTrashVault}
+            onOpenTrashVault={onOpenTrashVault}
           />
         )}
         <DirectoryTree onNavigate={onNavigate} lastWatcherEvent={lastWatcherEvent} />

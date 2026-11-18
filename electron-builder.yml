@@ -1,8 +1,8 @@
 # electron-builder Configuration
 # Packaging configuration for Windows, macOS, and Linux
 
-appId: com.project2.filemanager
-productName: Project-2 File Manager
+appId: com.praneshrajan.privatevault
+productName: PrivateVault AI
 copyright: Copyright © 2025-2026 Praneshrajan
 asar: true
 electronFuses:
@@ -13,6 +13,8 @@ electronFuses:
   onlyLoadAppFromAsar: true
   grantFileProtocolExtraPrivileges: false
 asarUnpack:
+  - "dist/main/mcpServer.js"
+  - "dist/main/embeddingWorker.js"
   - "node_modules/**/*.node"
   - "node_modules/@lancedb/**"
   - "node_modules/onnxruntime-node/**"

@@ -138,7 +138,7 @@ test.describe('Frontier Workflows E2E', () => {
 
       const previewDrawer = page.locator('[data-testid="file-preview-drawer"]');
       await expect(previewDrawer).toBeVisible({ timeout: 5000 });
-      await expect(page.locator('[data-testid="preview-cache-badge"]')).toContainText('RingBuffer(100)');
+      await expect(page.locator('[data-testid="preview-cache-badge"]')).toContainText('Quick Preview');
       await expect(previewDrawer).toContainText('Capped');
 
       const previewLines = page.locator('[data-testid="preview-lines"]');
@@ -148,11 +148,11 @@ test.describe('Frontier Workflows E2E', () => {
       await page.locator('[data-testid="preview-close"]').click();
       await expect(previewDrawer).toBeHidden();
 
-      // Reopen via Alt+P shortcut and verify LRUCache HIT
+      // Reopen via Alt+P shortcut and verify LRUCache HIT (surfaced cleanly as "Cached" by default)
       await page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'service.log' }).click();
       await page.keyboard.press('Alt+p');
       await expect(previewDrawer).toBeVisible({ timeout: 5000 });
-      await expect(page.locator('[data-testid="preview-cache-badge"]')).toContainText('LRUCache HIT');
+      await expect(page.locator('[data-testid="preview-cache-badge"]')).toContainText('Cached');
 
       // Open binary file in drawer and verify binary guard notice
       await page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'blob.bin' }).click();
@@ -216,6 +216,47 @@ test.describe('Frontier Workflows E2E', () => {
 
       await page.keyboard.press('Escape');
       await expect(diagnosticsModal).toBeHidden();
+
+      // 8. Stage 3 Preview full-file Quick Edit & Save + Settings loopback guard + Developer DSA Badges toggle
+      await page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'alpha.txt' }).click();
+      await page.locator('[data-testid="preview-button"]').click();
+      await expect(previewDrawer).toBeVisible({ timeout: 5000 });
+      await page.locator('[data-testid="preview-edit-button"]').click();
+      const editorTextarea = page.locator('[data-testid="preview-editor-textarea"]');
+      await expect(editorTextarea).toBeVisible({ timeout: 5000 });
+      await expect(editorTextarea).toHaveValue(/alpha payload/);
+      await editorTextarea.fill('alpha payload\nEdited cleanly inline\n');
+      await page.locator('[data-testid="preview-save-button"]').click();
+      await expect(editorTextarea).toBeHidden({ timeout: 5000 });
+      await expect(previewLines).toContainText('Edited cleanly inline');
+      expect(await fs.readFile(alphaFile, 'utf-8')).toBe('alpha payload\nEdited cleanly inline\n');
+      await page.locator('[data-testid="preview-close"]').click();
+      await expect(previewDrawer).toBeHidden();
+
+      await page.locator('[data-testid="settings-button"]').click();
+      const settingsModal = page.locator('[data-testid="workspace-settings-modal"]');
+      await expect(settingsModal).toBeVisible({ timeout: 5000 });
+      const endpointInput = page.locator('[data-testid="settings-endpoint-input"]');
+      await endpointInput.fill('http://192.168.1.50:11434');
+      await page.locator('[data-testid="settings-save-ai-button"]').click();
+      await expect(page.locator('[data-testid="settings-error-banner"]')).toBeVisible({ timeout: 5000 });
+      await endpointInput.fill('http://localhost:11434');
+
+      const devCheckbox = page.locator('[data-testid="settings-dev-badges-checkbox"]');
+      await devCheckbox.check();
+      await page.locator('[data-testid="settings-close"]').click();
+      await expect(settingsModal).toBeHidden();
+
+      await page.locator('[data-testid="file-list"] [role="option"]', { hasText: 'service.log' }).click();
+      await page.keyboard.press('Alt+p');
+      await expect(previewDrawer).toBeVisible({ timeout: 5000 });
+      await expect(page.locator('[data-testid="preview-cache-badge"]')).toContainText('LRUCache HIT');
+      await page.locator('[data-testid="preview-close"]').click();
+
+      await page.locator('[data-testid="settings-button"]').click();
+      await expect(settingsModal).toBeVisible({ timeout: 5000 });
+      await devCheckbox.uncheck();
+      await page.locator('[data-testid="settings-close"]').click();
     } finally {
       await fs.rm(tempBase, { recursive: true, force: true }).catch(() => {});
     }

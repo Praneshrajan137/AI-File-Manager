@@ -143,6 +143,9 @@ export const SpatialWorkspacePane: React.FC<SpatialWorkspacePaneProps> = ({
                 onDropMove={(sources, dest): void => {
                   void explorer.handleDropMove(sources, dest);
                 }}
+                onDropExternalFiles={(sources, dest): void => {
+                  void explorer.handleCopyPathsToDirectory(sources, dest);
+                }}
               />
 
               {explorer.selectedFiles.length > 0 && (

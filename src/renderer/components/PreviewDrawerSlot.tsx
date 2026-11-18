@@ -12,19 +12,23 @@ const LazyFilePreviewDrawer = React.lazy(() =>
 interface PreviewDrawerSlotProps {
   preview: UsePreviewDrawerReturn;
   orderedFiles: FileNode[];
+  developerBadges?: boolean;
   setSelectedFiles: (paths: string[]) => void;
   onOpenExternal: (file: FileNode) => Promise<void>;
   onOpenCitation: (filePath: string, startLine?: number, endLine?: number) => Promise<void>;
+  onFileSaved?: () => Promise<void> | void;
   showToast: (toast: Omit<ToastMessage, 'id'>) => void;
 }
 
-/** Lazy-loaded preview drawer slot with sibling Prev/Next file cycling and toast feedback. */
+/** Lazy-loaded preview drawer slot with sibling Prev/Next file cycling, quick edit, and toast feedback. */
 export const PreviewDrawerSlot: React.FC<PreviewDrawerSlotProps> = ({
   preview,
   orderedFiles,
+  developerBadges = false,
   setSelectedFiles,
   onOpenExternal,
   onOpenCitation,
+  onFileSaved,
   showToast,
 }) => {
   if (!preview.previewFileNode) return null;
@@ -49,6 +53,26 @@ export const PreviewDrawerSlot: React.FC<PreviewDrawerSlotProps> = ({
           connectionsLoading={preview.connectionsLoading}
           loading={preview.previewLoading}
           error={preview.previewError}
+          developerBadges={developerBadges}
+          isEditing={preview.isEditing}
+          editContent={preview.editContent}
+          editDirty={preview.editDirty}
+          editSaving={preview.editSaving}
+          editError={preview.editError}
+          onStartEdit={(): void => {
+            void preview.startEditing();
+          }}
+          onCancelEdit={preview.cancelEditing}
+          onChangeEditContent={preview.updateEditContent}
+          onSaveEdit={(): void => {
+            void (async (): Promise<void> => {
+              const saved = await preview.saveEdit();
+              if (saved && preview.previewFileNode) {
+                showToast({ type: 'success', message: `Saved ${preview.previewFileNode.name}` });
+                await onFileSaved?.();
+              }
+            })();
+          }}
           hasPrev={hasPrev}
           hasNext={hasNext}
           onPrevFile={(): void => {

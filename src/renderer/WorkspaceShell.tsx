@@ -38,6 +38,7 @@ export const WorkspaceShell: React.FC = () => {
         onToggleIndexedRoot={c.vault.handleToggleIndexedRoot}
         onToggleFavorite={c.vault.handleToggleFavorite}
         onEmptyTrashVault={c.vault.handleEmptyTrashVault}
+        onOpenTrashVault={(): void => c.setTrashVaultOpen(true)}
       />
 
       <main className="flex-1 min-w-0 flex flex-col overflow-hidden" data-testid="main-content">
@@ -85,6 +86,7 @@ export const WorkspaceShell: React.FC = () => {
           splitPaneOpen={c.vault.splitPaneOpen}
           onToggleSplitPane={c.handleToggleSplitPane}
           onOpenDiagnostics={(): void => c.setDiagnosticsOpen(true)}
+          onOpenSettings={(): void => c.setSettingsOpen(true)}
           onOpenOmnibar={(): void => c.setOmnibarOpen(true)}
           onOpenOrganize={(): void => {
             if (c.currentPath) c.handleOpenOrganizeModal(c.currentPath, 'auto');
@@ -166,9 +168,11 @@ export const WorkspaceShell: React.FC = () => {
           <PreviewDrawerSlot
             preview={c.preview}
             orderedFiles={c.explorer.orderedFiles}
+            developerBadges={c.vault.developerBadges}
             setSelectedFiles={c.explorer.setSelectedFiles}
             onOpenExternal={c.handleFileDoubleClick}
             onOpenCitation={c.handleOpenCitation}
+            onFileSaved={c.handleFileSaved}
             showToast={c.showToast}
           />
 
@@ -194,6 +198,7 @@ export const WorkspaceShell: React.FC = () => {
                     onPreviewOrganizePlan={(plan): void =>
                       c.handleOpenOrganizeModal(plan.targetDir, plan.strategy, plan)
                     }
+                    onOpenSettings={(): void => c.setSettingsOpen(true)}
                   />
                 </Suspense>
               </ErrorBoundary>
@@ -220,6 +225,7 @@ export const WorkspaceShell: React.FC = () => {
         currentPath={c.currentPath}
         vault={c.vault}
         explorer={c.explorer}
+        llmState={c.llmState}
         favoritesSet={c.favoriteSet}
         normalizePathKey={normalizeComparablePath}
         contextMenu={c.contextMenu}
@@ -232,6 +238,17 @@ export const WorkspaceShell: React.FC = () => {
         onClosePendingDelete={(): void => c.setPendingDeletePaths(null)}
         diagnosticsOpen={c.diagnosticsOpen}
         onCloseDiagnostics={(): void => c.setDiagnosticsOpen(false)}
+        settingsOpen={c.settingsOpen}
+        onCloseSettings={(): void => c.setSettingsOpen(false)}
+        onOpenSettings={(): void => c.setSettingsOpen(true)}
+        trashVaultOpen={c.trashVaultOpen}
+        onCloseTrashVault={(): void => c.setTrashVaultOpen(false)}
+        onboardingOpen={c.onboardingOpen}
+        onOpenOnboarding={(): void => c.setOnboardingOpen(true)}
+        onCompleteOnboarding={(): void => {
+          c.vault.completeOnboarding();
+          c.setOnboardingOpen(false);
+        }}
         omnibarOpen={c.omnibarOpen}
         onCloseOmnibar={(): void => c.setOmnibarOpen(false)}
         organizeTargetDir={c.organizeTargetDir}

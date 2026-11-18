@@ -27,11 +27,11 @@
 
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import { config as loadDotenv } from 'dotenv';
 import { type AppConfig, type PartialAppConfig } from './schema';
 import { defaultConfig, getDefaultForbiddenPaths } from './defaults';
 import { validateConfigOrThrow } from './validator';
+import { migrateLegacyConfigIfNeeded, resolveCanonicalConfigPath } from './appPaths';
 import { atomicWriteFileSync } from '../utils/atomicFs';
 
 type DeepPartialAppConfig = {
@@ -279,6 +279,7 @@ export class ConfigManager {
    */
   private loadConfigFile(): DeepPartialAppConfig | null {
     try {
+      migrateLegacyConfigIfNeeded(this.configPath);
       if (fs.existsSync(this.configPath)) {
         const content = fs.readFileSync(this.configPath, 'utf-8');
         return JSON.parse(content);
@@ -435,8 +436,7 @@ export class ConfigManager {
    * @returns Config file path
    */
   private getDefaultConfigPath(): string {
-    const homeDir = os.homedir();
-    return path.join(homeDir, '.project2-file-manager', 'config.json');
+    return resolveCanonicalConfigPath();
   }
 
   /**

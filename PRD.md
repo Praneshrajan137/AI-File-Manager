@@ -1,5 +1,7 @@
 # Product Requirements Document (PRD)
 
+> **[Historical Design Spec — December 4, 2025]**: This document captures the initial Phase-1 PRD prior to implementation of PrivateVault AI (Electron 45, Node.js 24 LTS, `~/.privatevault/`, Trash Vault recovery modal, Workspace Settings, Onboarding, Inline Quick Edit, Spherical k-Means Semantic Clustering, and Standalone MCP). For current shipped features and test gates, see [README.md](./README.md) and [TEST_REPORT.md](./TEST_REPORT.md).
+
 ## Project-2: OS File Manager with Custom LLM
 
 
@@ -570,14 +572,14 @@ Build an industrial-grade Operating System File Manager that demonstrates master
 
 | Layer | Technology | Version | Justification |
 |-------|-----------|---------|---------------|
-| Runtime | Electron | 28.x | Hardware-enforced process separation |
+| Runtime | Electron | 45.x | Hardware-enforced process separation |
 | Language | TypeScript | 5.x | Type safety, interfaces for contracts |
 | Frontend | React | 18.x | Component model, hooks |
 | Styling | Tailwind CSS | 3.x | Utility-first, rapid development |
-| Backend | Node.js | 20.x LTS | Native fs module access |
-| Vector DB | LanceDB | Latest | In-process, no external server |
-| LLM Runtime | Ollama | Latest | Local model execution |
-| Testing | Vitest | Latest | TypeScript support, fast |
+| Backend | Node.js | 24.x LTS | Native fs & `node:sqlite` access |
+| Vector DB | LanceDB | ^0.41.0 | In-process, no external server |
+| LLM Runtime | Ollama / OpenAI-Compat | Local | Local model execution + Offline fallback |
+| Testing | Jest + Playwright | Current | Unit/JSDOM/axe + Electron E2E |
 | Build | Webpack | 5.x | Electron standard |
 | Packaging | electron-builder | Latest | Cross-platform builds |
 

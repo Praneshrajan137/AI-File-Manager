@@ -1375,7 +1375,11 @@ export class WorkspaceKnowledgeGraph {
         group = {
           id: groupId,
           label: domainCategory,
-          reason: topFolder === 'Workspace Root' ? `Grouped by ${file.fileType || 'document'} domain` : `Clustered under ${topFolder}/ & knowledge links`,
+          clusteringMode: 'structural_heuristic',
+          reason:
+            topFolder === 'Workspace Root'
+              ? `Structural grouping by ${file.fileType || 'document'} extension (enable AI indexing for vector clustering)`
+              : `Structural grouping under ${topFolder}/ folder & links (index files with ONNX embeddings for vector clustering)`,
           files: [],
           dominantSymbols: [],
         };

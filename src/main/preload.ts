@@ -11,7 +11,7 @@
  * strict Electron sandboxing (no Node.js primitives exposed to renderer).
  */
 
-import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, IpcRendererEvent, webUtils } from 'electron';
 import {
   IPCEnvelope,
   isIPCEnvelope,
@@ -130,8 +130,35 @@ const electronAPI = {
     getJournalState: (): ContractResult<'FS:GET_JOURNAL_STATE'> =>
       invokeContract('FS:GET_JOURNAL_STATE'),
 
+    listTrashVault: (): ContractResult<'FS:LIST_TRASH_VAULT'> =>
+      invokeContract('FS:LIST_TRASH_VAULT'),
+
+    restoreTrashItem: (id: string): ContractResult<'FS:RESTORE_TRASH_ITEM'> =>
+      invokeContract('FS:RESTORE_TRASH_ITEM', { id }),
+
+    purgeTrashItem: (id: string): ContractResult<'FS:PURGE_TRASH_ITEM'> =>
+      invokeContract('FS:PURGE_TRASH_ITEM', { id }),
+
     emptyTrashVault: (): ContractResult<'FS:EMPTY_TRASH_VAULT'> =>
       invokeContract('FS:EMPTY_TRASH_VAULT'),
+
+    getPathsForDroppedFiles: (files: File[]): string[] => {
+      if (typeof webUtils?.getPathForFile !== 'function') {
+        return [];
+      }
+      const paths: string[] = [];
+      for (const file of files) {
+        try {
+          const resolved = webUtils.getPathForFile(file);
+          if (typeof resolved === 'string' && resolved.trim().length > 0) {
+            paths.push(resolved);
+          }
+        } catch {
+          // Ignore non-filesystem blobs
+        }
+      }
+      return paths;
+    },
 
     watchSplitDir: (path: string | null): ContractResult<'FS:WATCH_SPLIT_DIR'> =>
       invokeContract('FS:WATCH_SPLIT_DIR', { path }),
@@ -163,6 +190,9 @@ const electronAPI = {
 
     setUiPrefs: (prefs: Partial<UIPreferencesSnapshot>): ContractResult<'VAULT:SET_UI_PREFS'> =>
       invokeContract('VAULT:SET_UI_PREFS', prefs),
+
+    setDefaultDeleteMode: (mode: 'vault' | 'trash'): ContractResult<'VAULT:SET_DEFAULT_DELETE_MODE'> =>
+      invokeContract('VAULT:SET_DEFAULT_DELETE_MODE', { mode }),
   },
 
   /**
@@ -454,6 +484,7 @@ const electronAPI = {
 
     setModelConfig: (config: {
       provider?: 'ollama' | 'openai_compatible';
+      ollamaUrl?: string;
       openAiBaseUrl?: string;
       model?: string;
       temperature?: number;
@@ -461,9 +492,12 @@ const electronAPI = {
       embeddingModel?: string;
       rerankerModel?: string;
       embeddingDevice?: 'auto' | 'cpu' | 'dml' | 'webgpu';
-      enableVisionCaptioning?: boolean;
+      allowRemoteModels?: boolean;
     }): ContractResult<'LLM:SET_MODEL_CONFIG'> =>
       invokeContract('LLM:SET_MODEL_CONFIG', config),
+
+    downloadModels: (): ContractResult<'LLM:DOWNLOAD_MODELS'> =>
+      invokeContract('LLM:DOWNLOAD_MODELS'),
   },
 
   /**

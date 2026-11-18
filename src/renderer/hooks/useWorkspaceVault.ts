@@ -28,6 +28,11 @@ export interface UseWorkspaceVaultReturn {
   setLastWatcherEvent: React.Dispatch<React.SetStateAction<FileEvent | null>>;
   isDarkMode: boolean;
   toggleDarkMode: () => void;
+  developerBadges: boolean;
+  setDeveloperBadges: (enabled: boolean) => void;
+  completeOnboarding: () => void;
+  applyVaultConfig: (config: VaultConfigSnapshot) => void;
+  handleSetDefaultDeleteMode: (mode: 'vault' | 'trash') => Promise<void>;
   explorerLens: ExplorerLens;
   setExplorerLens: (lens: ExplorerLens) => void;
   viewMode: ViewMode;
@@ -53,6 +58,7 @@ export function useWorkspaceVault(options: UseWorkspaceVaultOptions): UseWorkspa
   const [journalState, setJournalState] = useState<OperationJournalState | null>(null);
   const [lastWatcherEvent, setLastWatcherEvent] = useState<FileEvent | null>(null);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
+  const [developerBadges, setDeveloperBadgesState] = useState<boolean>(false);
   const [explorerLens, setExplorerLensState] = useState<ExplorerLens>('files');
   const [viewMode, setViewModeState] = useState<ViewMode>('list');
   const [splitPaneOpen, setSplitPaneOpenState] = useState<boolean>(false);
@@ -67,6 +73,7 @@ export function useWorkspaceVault(options: UseWorkspaceVaultOptions): UseWorkspa
     explorerLens?: boolean;
     viewMode?: boolean;
     splitPaneOpen?: boolean;
+    developerBadges?: boolean;
   }>({});
 
   useEffect(() => {
@@ -100,6 +107,9 @@ export function useWorkspaceVault(options: UseWorkspaceVaultOptions): UseWorkspa
         if (typeof ui.splitPaneOpen === 'boolean' && !dirtyUiKeysRef.current.splitPaneOpen) {
           setSplitPaneOpenState(ui.splitPaneOpen);
         }
+        if (typeof ui.developerBadges === 'boolean' && !dirtyUiKeysRef.current.developerBadges) {
+          setDeveloperBadgesState(ui.developerBadges);
+        }
       }
     }
 
@@ -116,10 +126,79 @@ export function useWorkspaceVault(options: UseWorkspaceVaultOptions): UseWorkspa
       explorerLens?: ExplorerLens;
       viewMode?: ViewMode;
       splitPaneOpen?: boolean;
+      onboardingCompleted?: boolean;
+      developerBadges?: boolean;
     }): void => {
       void window.electronAPI?.vault?.setUiPrefs?.(patch)?.catch?.(() => undefined);
     },
     []
+  );
+
+  const mergeUiSnapshot = useCallback(
+    (
+      prev: VaultConfigSnapshot | null,
+      patch: Partial<NonNullable<VaultConfigSnapshot['ui']>>
+    ): VaultConfigSnapshot | null => {
+      if (!prev) return prev;
+      const baseUi: NonNullable<VaultConfigSnapshot['ui']> = prev.ui ?? {
+        theme: isDarkModeRef.current ? 'dark' : 'light',
+        explorerLens: 'files',
+        viewMode: 'list',
+        splitPaneOpen: false,
+      };
+      return {
+        ...prev,
+        ui: {
+          ...baseUi,
+          ...patch,
+        },
+      };
+    },
+    []
+  );
+
+  const setDeveloperBadges = useCallback(
+    (enabled: boolean): void => {
+      dirtyUiKeysRef.current.developerBadges = true;
+      setDeveloperBadgesState(enabled);
+      setVaultConfig((prev) => mergeUiSnapshot(prev, { developerBadges: enabled }));
+      persistUiPrefs({ developerBadges: enabled });
+    },
+    [mergeUiSnapshot, persistUiPrefs]
+  );
+
+  const completeOnboarding = useCallback((): void => {
+    setVaultConfig((prev) => mergeUiSnapshot(prev, { onboardingCompleted: true }));
+    persistUiPrefs({ onboardingCompleted: true });
+  }, [mergeUiSnapshot, persistUiPrefs]);
+
+  const applyVaultConfig = useCallback((config: VaultConfigSnapshot): void => {
+    setVaultConfig(config);
+  }, []);
+
+  const handleSetDefaultDeleteMode = useCallback(
+    async (mode: 'vault' | 'trash'): Promise<void> => {
+      if (typeof window.electronAPI?.vault?.setDefaultDeleteMode !== 'function') {
+        return;
+      }
+      try {
+        const updated = await window.electronAPI.vault.setDefaultDeleteMode(mode);
+        setVaultConfig(updated);
+        showToast({
+          type: 'info',
+          message:
+            mode === 'vault'
+              ? 'Default delete action set to Trash Vault (recoverable)'
+              : 'Default delete action set to OS Recycle Bin / Trash',
+        });
+      } catch (err: unknown) {
+        showToast({
+          type: 'error',
+          message: err instanceof Error ? err.message : 'Failed to update delete policy',
+        });
+      }
+    },
+    [showToast]
   );
 
   const toggleDarkMode = useCallback((): void => {
@@ -260,6 +339,11 @@ export function useWorkspaceVault(options: UseWorkspaceVaultOptions): UseWorkspa
     setLastWatcherEvent,
     isDarkMode,
     toggleDarkMode,
+    developerBadges,
+    setDeveloperBadges,
+    completeOnboarding,
+    applyVaultConfig,
+    handleSetDefaultDeleteMode,
     explorerLens,
     setExplorerLens,
     viewMode,

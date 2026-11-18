@@ -33,6 +33,7 @@ let activeDtype: TransformersDtype = 'q8';
 let activeDevice: ResolvedExecutionDevice = 'cpu';
 let requestedDevicePreference: TransformersDevice = 'auto';
 let activeAllowRemoteModels: boolean | undefined;
+let activeCacheDir: string | undefined;
 const DIMENSIONS = 384;
 
 /**
@@ -44,12 +45,14 @@ async function initializeModel(options?: {
   device?: TransformersDevice;
   rerankerModel?: string;
   allowRemoteModels?: boolean;
+  cacheDir?: string;
 }): Promise<void> {
   const requestedModel = options?.modelName || activeModelName;
   const requestedDtype = options?.dtype ?? activeDtype;
   const requestedDevice = options?.device ?? requestedDevicePreference;
   const requestedAllowRemoteModels =
     options?.allowRemoteModels !== undefined ? options.allowRemoteModels : activeAllowRemoteModels;
+  const requestedCacheDir = options?.cacheDir || activeCacheDir;
   if (options?.rerankerModel) {
     activeRerankerModel = options.rerankerModel;
   }
@@ -59,7 +62,8 @@ async function initializeModel(options?: {
     requestedModel === activeModelName &&
     requestedDtype === activeDtype &&
     requestedDevice === requestedDevicePreference &&
-    requestedAllowRemoteModels === activeAllowRemoteModels
+    requestedAllowRemoteModels === activeAllowRemoteModels &&
+    requestedCacheDir === activeCacheDir
   ) {
     const supportedDevices = await detectSupportedTransformersDevices();
     parentPort?.postMessage({
@@ -86,6 +90,7 @@ async function initializeModel(options?: {
       dtype: requestedDtype,
       device: requestedDevice,
       allowRemoteModels: requestedAllowRemoteModels,
+      cacheDir: requestedCacheDir,
       onResolved: (info) => {
         resolvedInfo = info;
       },
@@ -95,6 +100,7 @@ async function initializeModel(options?: {
     activeDevice = resolvedInfo.device;
     requestedDevicePreference = requestedDevice;
     activeAllowRemoteModels = requestedAllowRemoteModels;
+    activeCacheDir = requestedCacheDir;
     const supportedDevices = await detectSupportedTransformersDevices();
 
     parentPort?.postMessage({
@@ -112,15 +118,18 @@ async function initializeModel(options?: {
 
 async function ensureRerankerLoaded(
   modelName?: string,
-  allowRemoteModels?: boolean
+  allowRemoteModels?: boolean,
+  cacheDir?: string
 ): Promise<CrossEncoderRerankerFn> {
   const targetModel = modelName || activeRerankerModel || DEFAULT_RERANKER_MODEL;
   const effectiveAllowRemoteModels =
     allowRemoteModels !== undefined ? allowRemoteModels : activeAllowRemoteModels;
+  const effectiveCacheDir = cacheDir || activeCacheDir;
   if (
     reranker &&
     targetModel === activeRerankerModel &&
-    effectiveAllowRemoteModels === activeAllowRemoteModels
+    effectiveAllowRemoteModels === activeAllowRemoteModels &&
+    effectiveCacheDir === activeCacheDir
   ) {
     return reranker;
   }
@@ -129,9 +138,11 @@ async function ensureRerankerLoaded(
     dtype: activeDtype,
     device: activeDevice,
     allowRemoteModels: effectiveAllowRemoteModels,
+    cacheDir: effectiveCacheDir,
   });
   activeRerankerModel = targetModel;
   activeAllowRemoteModels = effectiveAllowRemoteModels;
+  activeCacheDir = effectiveCacheDir;
   return reranker;
 }
 
@@ -212,6 +223,7 @@ parentPort?.on('message', async (message: {
     dtype?: TransformersDtype;
     device?: TransformersDevice;
     allowRemoteModels?: boolean;
+    cacheDir?: string;
 }) => {
     try {
         switch (message.type) {
@@ -222,6 +234,7 @@ parentPort?.on('message', async (message: {
                     device: message.device,
                     rerankerModel: message.rerankerModel,
                     allowRemoteModels: message.allowRemoteModels,
+                    cacheDir: message.cacheDir,
                 });
                 break;
 
@@ -233,6 +246,7 @@ parentPort?.on('message', async (message: {
                         device: message.device,
                         rerankerModel: message.rerankerModel,
                         allowRemoteModels: message.allowRemoteModels,
+                        cacheDir: message.cacheDir,
                     });
                 }
 
@@ -250,7 +264,8 @@ parentPort?.on('message', async (message: {
                 if (message.query !== undefined && message.passages && message.id !== undefined) {
                     const model = await ensureRerankerLoaded(
                         message.rerankerModel,
-                        message.allowRemoteModels
+                        message.allowRemoteModels,
+                        message.cacheDir
                     );
                     const scores = await model(message.query, message.passages);
                     parentPort?.postMessage({

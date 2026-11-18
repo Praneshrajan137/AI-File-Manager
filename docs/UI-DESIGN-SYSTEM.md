@@ -1,4 +1,6 @@
-# UI Design System - Project-2 File Manager
+# UI Design System — PrivateVault AI
+
+> **[Note]**: The Dec 2025 initial palette notes below describe early blue light-mode tokens. Current UI tokens implement the **Obsidian Dark Slate & Accent Indigo** theme (`dark` class toggle, `scrollbar-thin`, ARIA-compliant contrast across light & dark modes) defined in `src/renderer/styles/index.css` and `tailwind.config.js`.
 
 ## Design Philosophy
 

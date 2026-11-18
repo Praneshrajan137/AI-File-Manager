@@ -238,7 +238,7 @@ Structured JSON for machine parsing:
   "timestamp": "2025-12-18T14:30:15.123Z",
   "level": "error",
   "message": "Operation failed",
-  "service": "project2-file-manager",
+  "service": "privatevault-ai",
   "category": "FileSystem",
   "operation": "readFile",
   "path": "/test",
@@ -254,7 +254,7 @@ Structured JSON for machine parsing:
 Logs are automatically rotated daily:
 
 ```
-~/.project2-file-manager/logs/
+~/.privatevault/logs/
 ├── app-2025-12-18.log
 ├── app-2025-12-17.log
 ├── app-2025-12-16.log.gz  (compressed after 1 day)

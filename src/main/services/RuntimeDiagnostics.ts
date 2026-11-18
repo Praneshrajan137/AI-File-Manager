@@ -11,6 +11,7 @@ import {
   WatcherDiagnostics,
 } from '@shared/diagnostics';
 import { CACHE_CAPACITY, MAX_CACHE_MEMORY, RING_BUFFER_CAPACITY } from '@shared/contracts';
+import { resolveDefaultModelCacheDir, resolvePackagedMcpEntryPath } from '@shared/config';
 
 interface MutableChannelCounter {
   calls: number;
@@ -278,6 +279,8 @@ export class RuntimeDiagnostics {
       capturedAt: Date.now(),
       uptimeMs: Date.now() - this.startedAt,
       allowedRoots: [...this.allowedRoots],
+      mcpEntryPath: resolvePackagedMcpEntryPath(__dirname),
+      modelCacheDir: resolveDefaultModelCacheDir(),
       watcher: { ...this.watcher },
       eventQueue: { ...this.eventQueue },
       pathTrie: {

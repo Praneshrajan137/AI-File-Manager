@@ -95,6 +95,24 @@ test.describe('Stage 1 (M7) Safety Kernel: Trash Vault, Undo/Redo & Workspace Va
       await expect(targetItem).toBeVisible({ timeout: 5000 });
       expect(await fs.readFile(sampleFile, 'utf-8')).toBe('Recoverable vault payload content');
 
+      // 5b. Trash Vault Individual Recovery UI (Inspect -> Restore item -> Remove from modal)
+      await targetItem.click();
+      await page.keyboard.press('Delete');
+      await expect(confirmDialog).toBeVisible({ timeout: 5000 });
+      await page.locator('[data-testid="delete-confirm-button"]').click();
+      await expect(targetItem).toBeHidden({ timeout: 5000 });
+
+      await page.locator('[data-testid="inspect-trash-vault-button"]').click();
+      const trashModal = page.locator('[data-testid="trash-vault-modal"]');
+      await expect(trashModal).toBeVisible({ timeout: 5000 });
+      await expect(page.locator('[data-testid="trash-vault-row-important-note.txt"]')).toBeVisible();
+      await page.locator('[data-testid="trash-restore-important-note.txt"]').click();
+      await expect(page.locator('[data-testid="trash-vault-row-important-note.txt"]')).toBeHidden({ timeout: 5000 });
+      await page.locator('[data-testid="trash-modal-close"]').click();
+      await expect(trashModal).toBeHidden();
+      await expect(targetItem).toBeVisible({ timeout: 5000 });
+      expect(await fs.readFile(sampleFile, 'utf-8')).toBe('Recoverable vault payload content');
+
       // 6. Symlink safe delete: deleting junction inside vault never deletes outsideDir contents
       const symlinkDelRes = await page.evaluate(async (p: string) => {
         return await window.electronAPI.fs.delete(p, true, 'vault');

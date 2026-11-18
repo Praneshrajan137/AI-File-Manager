@@ -49,6 +49,11 @@ export interface UsePreviewDrawerReturn {
   previewError: string | null;
   fileConnections: FileConnectionsSummary | null;
   connectionsLoading: boolean;
+  isEditing: boolean;
+  editContent: string;
+  editDirty: boolean;
+  editSaving: boolean;
+  editError: string | null;
   loadFilePreview: (file: FileNode) => Promise<void>;
   openCitation: (filePath: string, startLine: number, endLine?: number) => Promise<void>;
   closePreview: () => void;
@@ -56,6 +61,10 @@ export interface UsePreviewDrawerReturn {
   clearRangeFocus: () => void;
   toggleQuickLook: (selectedFiles: string[], files: FileNode[]) => void;
   syncPreviewWatcherEvent: (eventPath: string, eventType: string) => void;
+  startEditing: () => Promise<void>;
+  cancelEditing: () => void;
+  updateEditContent: (next: string) => void;
+  saveEdit: () => Promise<boolean>;
 }
 
 export function usePreviewDrawer(): UsePreviewDrawerReturn {
@@ -69,8 +78,23 @@ export function usePreviewDrawer(): UsePreviewDrawerReturn {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [fileConnections, setFileConnections] = useState<FileConnectionsSummary | null>(null);
   const [connectionsLoading, setConnectionsLoading] = useState<boolean>(false);
+  const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [editContent, setEditContent] = useState<string>('');
+  const [originalEditContent, setOriginalEditContent] = useState<string>('');
+  const [editSaving, setEditSaving] = useState<boolean>(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   const previewSeqRef = useRef<number>(0);
+  const isEditingRef = useRef<boolean>(false);
+  isEditingRef.current = isEditing;
+
+  const resetEditState = useCallback((): void => {
+    setIsEditing(false);
+    setEditContent('');
+    setOriginalEditContent('');
+    setEditSaving(false);
+    setEditError(null);
+  }, []);
 
   const fetchConnections = useCallback(async (filePath: string, seq: number): Promise<void> => {
     const getFileConnections = window.electronAPI?.graph?.getFileConnections;
@@ -104,6 +128,7 @@ export function usePreviewDrawer(): UsePreviewDrawerReturn {
       }
 
       const seq = ++previewSeqRef.current;
+      resetEditState();
       setPreviewFileNode(file);
       setPreviewLoading(true);
       setPreviewError(null);
@@ -131,12 +156,13 @@ export function usePreviewDrawer(): UsePreviewDrawerReturn {
         }
       }
     },
-    [fetchConnections]
+    [fetchConnections, resetEditState]
   );
 
   const openCitation = useCallback(
     async (filePath: string, startLine: number, endLine?: number): Promise<void> => {
       const seq = ++previewSeqRef.current;
+      resetEditState();
       const baseName = extractBasename(filePath);
       const extDot = baseName.lastIndexOf('.');
       const extension = extDot > 0 ? baseName.slice(extDot + 1).toLowerCase() : '';
@@ -184,11 +210,12 @@ export function usePreviewDrawer(): UsePreviewDrawerReturn {
         }
       }
     },
-    [fetchConnections]
+    [fetchConnections, resetEditState]
   );
 
   const closePreview = useCallback((): void => {
     previewSeqRef.current += 1;
+    resetEditState();
     setPreviewFileNode(null);
     setPreviewResult(null);
     setPreviewLineRange(null);
@@ -196,7 +223,7 @@ export function usePreviewDrawer(): UsePreviewDrawerReturn {
     setPreviewError(null);
     setFileConnections(null);
     setConnectionsLoading(false);
-  }, []);
+  }, [resetEditState]);
 
   const refreshPreview = useCallback((): void => {
     if (previewFileNode) {
@@ -235,12 +262,62 @@ export function usePreviewDrawer(): UsePreviewDrawerReturn {
       }
       if (eventType === 'unlink') {
         closePreview();
-      } else if (eventType === 'change') {
+      } else if (eventType === 'change' && !isEditingRef.current) {
         void loadFilePreview(previewFileNode);
       }
     },
     [closePreview, loadFilePreview, previewFileNode]
   );
+
+  const startEditing = useCallback(async (): Promise<void> => {
+    if (!previewFileNode || previewFileNode.isDirectory || previewResult?.binary) {
+      return;
+    }
+    if ((previewResult?.size ?? previewFileNode.size) > 512 * 1024) {
+      setEditError('File exceeds 512 KB in-app editor cap; open externally instead.');
+      return;
+    }
+    if (typeof window.electronAPI?.fs?.readFile !== 'function') {
+      setEditError('File read API is unavailable for editing.');
+      return;
+    }
+    setEditError(null);
+    try {
+      const full = await window.electronAPI.fs.readFile(previewFileNode.path);
+      setOriginalEditContent(full.content);
+      setEditContent(full.content);
+      setIsEditing(true);
+    } catch (err: unknown) {
+      setEditError(err instanceof Error ? err.message : 'Unable to open file for editing');
+    }
+  }, [previewFileNode, previewResult]);
+
+  const cancelEditing = useCallback((): void => {
+    resetEditState();
+  }, [resetEditState]);
+
+  const updateEditContent = useCallback((next: string): void => {
+    setEditContent(next);
+  }, []);
+
+  const saveEdit = useCallback(async (): Promise<boolean> => {
+    if (!previewFileNode || typeof window.electronAPI?.fs?.writeFile !== 'function') {
+      return false;
+    }
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      await window.electronAPI.fs.writeFile(previewFileNode.path, editContent);
+      resetEditState();
+      await loadFilePreview(previewFileNode);
+      return true;
+    } catch (err: unknown) {
+      setEditError(err instanceof Error ? err.message : 'Failed to save file');
+      return false;
+    } finally {
+      setEditSaving(false);
+    }
+  }, [editContent, loadFilePreview, previewFileNode, resetEditState]);
 
   return {
     previewFileNode,
@@ -251,6 +328,11 @@ export function usePreviewDrawer(): UsePreviewDrawerReturn {
     previewError,
     fileConnections,
     connectionsLoading,
+    isEditing,
+    editContent,
+    editDirty: isEditing && editContent !== originalEditContent,
+    editSaving,
+    editError,
     loadFilePreview,
     openCitation,
     closePreview,
@@ -258,5 +340,9 @@ export function usePreviewDrawer(): UsePreviewDrawerReturn {
     clearRangeFocus,
     toggleQuickLook,
     syncPreviewWatcherEvent,
+    startEditing,
+    cancelEditing,
+    updateEditContent,
+    saveEdit,
   };
 }

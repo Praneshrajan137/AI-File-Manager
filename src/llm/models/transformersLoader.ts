@@ -1,3 +1,7 @@
+import fs from 'fs';
+import path from 'path';
+import { resolveDefaultModelCacheDir } from '../../shared/config/appPaths';
+
 export type TransformersDtype = 'q8' | 'fp32';
 export type ResolvedExecutionDevice = 'cpu' | 'dml' | 'webgpu' | 'cuda' | 'gpu';
 export type TransformersDevice = 'auto' | ResolvedExecutionDevice;
@@ -79,13 +83,96 @@ function isMissingQuantizedFileError(error: unknown): boolean {
   );
 }
 
+export interface CachedModelInspection {
+  modelId: string;
+  cached: boolean;
+  bytes: number;
+  modelDir: string;
+}
+
+export interface LocalModelCacheInspection {
+  cacheDir: string;
+  models: CachedModelInspection[];
+}
+
+function sumDirectoryBytesSafe(dirPath: string): { bytes: number; hasOnnx: boolean } {
+  if (!fs.existsSync(dirPath)) {
+    return { bytes: 0, hasOnnx: false };
+  }
+  let bytes = 0;
+  let hasOnnx = false;
+  const stack = [dirPath];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else if (entry.isFile()) {
+        try {
+          const stat = fs.statSync(full);
+          bytes += stat.size;
+          if (entry.name.toLowerCase().endsWith('.onnx') && stat.size > 0) {
+            hasOnnx = true;
+          }
+        } catch {
+          // Ignore transient race
+        }
+      }
+    }
+  }
+  return { bytes, hasOnnx };
+}
+
+export function getResolvedModelCacheDir(overrideCacheDir?: string): string {
+  const target =
+    overrideCacheDir && overrideCacheDir.trim().length > 0
+      ? path.resolve(overrideCacheDir.trim())
+      : resolveDefaultModelCacheDir();
+  try {
+    fs.mkdirSync(target, { recursive: true });
+  } catch {
+    // Callers surface permission errors cleanly during download
+  }
+  return target;
+}
+
+export function inspectLocalModelCache(
+  modelIds: string[],
+  overrideCacheDir?: string
+): LocalModelCacheInspection {
+  const cacheDir = getResolvedModelCacheDir(overrideCacheDir);
+  const models: CachedModelInspection[] = modelIds.map((modelId) => {
+    const safeSegments = modelId.split('/').filter((seg) => seg.length > 0 && seg !== '..' && seg !== '.');
+    const modelDir = path.join(cacheDir, ...safeSegments);
+    const hasConfig = fs.existsSync(path.join(modelDir, 'config.json'));
+    const { bytes, hasOnnx } = sumDirectoryBytesSafe(modelDir);
+    return {
+      modelId,
+      cached: hasConfig && hasOnnx,
+      bytes,
+      modelDir,
+    };
+  });
+  return { cacheDir, models };
+}
+
 /**
  * Loads `@huggingface/transformers` via CommonJS (`transformers.node.cjs`) and
- * configures Node-safe filesystem caching cleanly across Main, Worker, and Jest.
+ * configures Node-safe writable filesystem caching cleanly across Main, Worker, and packaged builds.
  */
 export async function loadTransformers(options?: {
   allowRemoteModels?: boolean;
+  cacheDir?: string;
 }): Promise<TransformersPipelineModule> {
+  const effectiveCacheDir = getResolvedModelCacheDir(options?.cacheDir);
+
   if (!cachedTransformers) {
     // Webpack externalizes `@huggingface/transformers` to Node's CommonJS entry cleanly.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -93,12 +180,18 @@ export async function loadTransformers(options?: {
     if (loaded?.env) {
       loaded.env.useBrowserCache = false;
       loaded.env.useFSCache = true;
+      loaded.env.cacheDir = effectiveCacheDir;
     }
     cachedTransformers = loaded;
   }
 
-  if (options?.allowRemoteModels !== undefined && cachedTransformers?.env) {
-    cachedTransformers.env.allowRemoteModels = options.allowRemoteModels;
+  if (cachedTransformers?.env) {
+    cachedTransformers.env.useBrowserCache = false;
+    cachedTransformers.env.useFSCache = true;
+    cachedTransformers.env.cacheDir = effectiveCacheDir;
+    if (options?.allowRemoteModels !== undefined) {
+      cachedTransformers.env.allowRemoteModels = options.allowRemoteModels;
+    }
   }
 
   return cachedTransformers;
@@ -161,10 +254,12 @@ export async function loadFeatureExtractionPipeline(options: {
   device?: TransformersDevice;
   platform?: NodeJS.Platform;
   allowRemoteModels?: boolean;
+  cacheDir?: string;
   onResolved?: (info: ExecutionProviderResolution) => void;
 }): Promise<FeatureExtractorFn> {
   const transformers = await loadTransformers({
     allowRemoteModels: options.allowRemoteModels,
+    cacheDir: options.cacheDir,
   });
   const requestedDtype: TransformersDtype = options.dtype ?? 'q8';
   const requestedDevice: TransformersDevice = options.device ?? 'cpu';
@@ -231,10 +326,12 @@ export async function loadCrossEncoderReranker(options: {
   dtype?: TransformersDtype;
   device?: TransformersDevice;
   allowRemoteModels?: boolean;
+  cacheDir?: string;
   onResolved?: (info: ExecutionProviderResolution) => void;
 } = {}): Promise<CrossEncoderRerankerFn> {
   const transformers = await loadTransformers({
     allowRemoteModels: options.allowRemoteModels,
+    cacheDir: options.cacheDir,
   });
 
   if (!transformers.AutoTokenizer || !transformers.AutoModelForSequenceClassification) {

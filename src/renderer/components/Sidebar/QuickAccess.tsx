@@ -59,7 +59,7 @@ export const QuickAccess: React.FC<QuickAccessProps> = ({ onNavigate }) => {
       </h3>
       <ul className="space-y-0.5">
         {quickLinks.map((link) => (
-          <li key={link.path}>
+          <li key={link.name}>
             <button
               type="button"
               onClick={() => onNavigate(link.path)}

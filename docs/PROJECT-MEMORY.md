@@ -6,8 +6,8 @@
 ---
 
 ## Binding Operational Rule: Hardware & Remote-First CI (12 GB RAM + RTX 3050)
-- **Local laptop (lightweight only):** `npm run type-check`, targeted `npx eslint`, and single/targeted mocked unit tests (`npx jest <file> --runInBand --maxWorkers=1`).
-- **GitHub Actions ONLY (heavy CI):** Full `npm run test:coverage`, full production `npm run build`, RAG/scale benchmarks, packaging dry-runs, and full Playwright Electron E2E suites MUST run in GitHub Actions via `.github/workflows/`. Always wait for GitHub Actions results (`gh run watch` / `gh run view`) before proceeding or claiming completion.
+- **Local laptop (lightweight only):** `npm run type-check`, `npm run lint` / targeted `npx eslint`, and single/targeted mocked unit tests (`npx jest <single-test-file> --runInBand`; never pass `--maxWorkers=1` together with `--runInBand` — see `AGENTS.md`).
+- **GitHub Actions ONLY (heavy CI):** Full `npx jest --coverage --runInBand`, full production `npm run build`, packaging dry-runs (`npm run package` + `scripts/verify-unpacked-build.mjs`), and full Playwright Electron E2E suites run in GitHub Actions via `.github/workflows/ci.yml`, monitored exclusively via `node scripts/ci-watch.mjs`.
 
 ---
 
@@ -44,6 +44,12 @@
 | **AC-6** Live `RUNTIME:GET_DIAGNOSTICS` & UI Inspector | Verified (Unit, UI SSR & Electron E2E) | `RuntimeDiagnostics`, `RUNTIME:GET_DIAGNOSTICS`, `DiagnosticsModal.tsx`, `uiLogic.test.ts`, and `frontier-workflows.spec.ts` verify live Watcher/EventQueue/PathTrie/LRUCache/RingBuffer/VectorStore/LLM/IPC telemetry, Refresh button, & `Escape` dismissal. |
 | **AC-7** `type-check`, `lint`, `build`, `npm test`, `npm run test:e2e` verified cleanly | Verified (Post-Final-Edit; Global Coverage Noted) | `type-check` exit `0` (`4.19s`); `lint` `0` errors / `84` warnings (`3.87s`); `build` exit `0` (`35.65s`); `npx jest --runInBand` `23/23` (`397/397`, `11.718s`); `playwright test` `33/33` (`144.62s`); `jest --coverage` passed `397/397` (`exit 1` under unrelaxed `90%` global threshold: `68.81%` stmts / `55.43%` branches / `69.2%` funcs / `69.1%` lines). |
 
-## Open Items / Next Actions Outside Transformation Scope
-- Native OS file drag-and-drop & cross-session Favorites persistence (`FavoritesList`).
-- Live GPU Ollama `llama3.2` interactive benchmark (requires running Ollama desktop daemon).
+## Post-M6 Frontier Stages Completed
+- [x] **Stage 1 (Packaged Runtime & OS Containment)**: Unified `~/.privatevault/` canonical paths (with non-destructive migration from `~/.file-manager/` / `~/.project2-file-manager/`), writable ONNX model cache (`<userData>/models/`), standalone pure-Node `dist/main/mcpServer.js` & unpacked `embeddingWorker.js`, OS Known Folders via `app.getPath(...)`, unified `PrivateVault AI` branding, removed dead `enableVisionCaptioning`, and added real packaged Electron + stdio MCP boot verification (`scripts/verify-unpacked-build.mjs`).
+- [x] **Stage 2 (Genuine Semantic Clustering & Model Control)**: Implemented 384-D spherical k-means vector clustering (`SemanticClustering.ts` + `VectorStore.getDocumentCentroids`), honest `structural_heuristic` fallback labels when unindexed/cold, `LLM:DOWNLOAD_MODELS` IPC + cache inspection, and loopback URL enforcement on `ollamaUrl`.
+- [x] **Stage 3 (End-User Product Completeness)**: Added Workspace & AI Settings modal (`WorkspaceSettingsModal`), Trash Vault individual restore/purge UI (`TrashVaultModal`), First-Run Guided Onboarding (`OnboardingModal`), inline full-file Quick Edit & Save (`Ctrl+S`), External OS Drag-and-Drop import (`webUtils.getPathForFile`), user-friendly preview badges with Developer DSA Badges toggle, and `ALREADY_EXISTS` collision fidelity.
+- [x] **Stage 4 (Documentation Reconciliation & Cloud CI Matrix)**: Reconciled `README.md`, `TEST_REPORT.md`, `PRD.md`, `CLAUDE.md`, and `docs/` against actual running code; full verification via `.github/workflows/ci.yml`.
+
+## Residual Honest Unknowns / Future Work
+- Live GPU/CPU interactive inference latency and qualitative answer quality with a live `Ollama` / `LM Studio` daemon running real open-weights chat models outside offline CI environments.
+- macOS (`macos-latest`) signed DMG/notarization packaging build (`electron-builder.yml` mac config present; CI matrix currently verifies `ubuntu-24.04` and `windows-latest`).

@@ -23,6 +23,9 @@ import { SmartCollectionsLens } from '@renderer/components/Spatial/SmartCollecti
 import { SelectionActionBar } from '@renderer/components/FileExplorer/SelectionActionBar';
 import { WorkspaceStatusBar } from '@renderer/components/Toolbar/WorkspaceStatusBar';
 import { FilePreviewDrawer } from '@renderer/components/Preview/FilePreviewDrawer';
+import { WorkspaceSettingsModal } from '@renderer/components/Settings/WorkspaceSettingsModal';
+import { TrashVaultModal } from '@renderer/components/Vault/TrashVaultModal';
+import { OnboardingModal } from '@renderer/components/Onboarding/OnboardingModal';
 import { ChatInterface } from '@renderer/components/ChatPanel/ChatInterface';
 import { useLLM } from '@renderer/hooks/useLLM';
 import { useSpatialLens } from '@renderer/hooks/useSpatialLens';
@@ -866,5 +869,158 @@ describe('Interactive Accessibility, Resilience, and Keyboard Tests (JSDOM + jes
     fireEvent.click(screen.getByText('Show Graph'));
     await waitFor(() => expect(queryInsights).toHaveBeenCalledTimes(1));
     expect(getWorkspaceMap).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps Stage 3 Settings, TrashVault, Onboarding modals and Preview Edit mode WCAG accessible and interactive', async () => {
+    const listModels = jest.fn().mockResolvedValue({
+      available: true,
+      provider: 'ollama',
+      ollamaUrl: 'http://localhost:11434',
+      models: ['llama3.2'],
+      activeModel: 'llama3.2',
+      embeddingModel: 'Xenova/bge-small-en-v1.5',
+      rerankerModel: 'Xenova/ms-marco-MiniLM-L-6-v2',
+      modelCacheDir: '/vault/.privatevault/models',
+      embeddingCached: true,
+      embeddingCacheBytes: 1024,
+      rerankerCached: false,
+      rerankerCacheBytes: 0,
+      supportedEmbeddingDevices: ['cpu'],
+      temperature: 0.5,
+      maxTokens: 2048,
+      embeddingDevice: 'auto',
+      allowRemoteModels: true,
+    });
+    const listTrashVault = jest.fn().mockResolvedValue([
+      {
+        id: 'vault-entry-1',
+        name: 'deleted-note.md',
+        originalPath: '/vault/deleted-note.md',
+        deletedAt: Date.now(),
+        size: 512,
+        isDirectory: false,
+        isSymlink: false,
+        description: 'Move to Trash Vault: deleted-note.md',
+      },
+    ]);
+    const restoreTrashItem = jest.fn().mockResolvedValue({
+      success: true,
+      restoredPath: '/vault/deleted-note.md',
+      state: { canUndo: false, canRedo: false, undoCount: 0, redoCount: 0, vaultItemCount: 0, vaultTotalBytes: 0 },
+    });
+
+    (window as unknown as { electronAPI: unknown }).electronAPI = {
+      llm: { listModels },
+      fs: { listTrashVault, restoreTrashItem },
+    };
+
+    const onToggleDevBadges = jest.fn();
+    const { container: settingsContainer, unmount: unmountSettings } = render(
+      <OverlayStackProvider>
+        <WorkspaceSettingsModal
+          isOpen={true}
+          onClose={jest.fn()}
+          vaultConfig={{
+            allowedRoots: ['/vault'],
+            indexedRoots: ['/vault'],
+            excludedDirs: ['.git'],
+            favorites: [],
+            defaultDeleteMode: 'vault',
+          }}
+          onToggleDeveloperBadges={onToggleDevBadges}
+        />
+      </OverlayStackProvider>
+    );
+    await waitFor(() => expect(listModels).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByTestId('settings-dev-badges-checkbox'));
+    expect(onToggleDevBadges).toHaveBeenCalledWith(true);
+    expect(await axe(settingsContainer)).toHaveNoViolations();
+    unmountSettings();
+
+    const onRestoredOrPurged = jest.fn().mockResolvedValue(undefined);
+    const { container: trashContainer, unmount: unmountTrash } = render(
+      <OverlayStackProvider>
+        <TrashVaultModal
+          isOpen={true}
+          onClose={jest.fn()}
+          onRestoredOrPurged={onRestoredOrPurged}
+          onEmptyAll={jest.fn().mockResolvedValue(undefined)}
+          showToast={jest.fn()}
+        />
+      </OverlayStackProvider>
+    );
+    await waitFor(() => expect(screen.getByTestId('trash-vault-row-deleted-note.md')).toBeInTheDocument());
+    expect(await axe(trashContainer)).toHaveNoViolations();
+    fireEvent.click(screen.getByTestId('trash-restore-deleted-note.md'));
+    await waitFor(() => expect(restoreTrashItem).toHaveBeenCalledWith('vault-entry-1'));
+    expect(onRestoredOrPurged).toHaveBeenCalledTimes(1);
+    unmountTrash();
+
+    const onComplete = jest.fn();
+    const { container: onboardingContainer, unmount: unmountOnboarding } = render(
+      <OverlayStackProvider>
+        <OnboardingModal
+          isOpen={true}
+          onComplete={onComplete}
+          vaultConfig={{
+            allowedRoots: ['/vault'],
+            indexedRoots: [],
+            excludedDirs: ['.git'],
+            favorites: [],
+            defaultDeleteMode: 'vault',
+          }}
+          modelsSnapshot={null}
+          onAddVaultRoot={jest.fn().mockResolvedValue(undefined)}
+          onIndexRoot={jest.fn().mockResolvedValue(undefined)}
+          onOpenSettings={jest.fn()}
+        />
+      </OverlayStackProvider>
+    );
+    expect(await axe(onboardingContainer)).toHaveNoViolations();
+    fireEvent.click(screen.getByTestId('onboarding-complete-button'));
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    unmountOnboarding();
+
+    const onChangeEdit = jest.fn();
+    const onSaveEdit = jest.fn();
+    const { container: previewContainer } = render(
+      <OverlayStackProvider>
+        <FilePreviewDrawer
+          isOpen={true}
+          file={SAMPLE_NODES[0]}
+          preview={{
+            path: SAMPLE_NODES[0].path,
+            name: SAMPLE_NODES[0].name,
+            extension: 'ts',
+            size: 120,
+            modified: 1000,
+            lines: ['const a = 1;'],
+            totalLinesBuffered: 1,
+            truncated: false,
+            binary: false,
+            fromCache: false,
+          }}
+          loading={false}
+          error={null}
+          isEditing={true}
+          editContent="const a = 2;"
+          editDirty={true}
+          onStartEdit={jest.fn()}
+          onCancelEdit={jest.fn()}
+          onChangeEditContent={onChangeEdit}
+          onSaveEdit={onSaveEdit}
+          onClose={jest.fn()}
+          onRefresh={jest.fn()}
+          onOpenExternal={jest.fn()}
+          onCopyPath={jest.fn()}
+        />
+      </OverlayStackProvider>
+    );
+    const textarea = screen.getByTestId('preview-editor-textarea');
+    fireEvent.change(textarea, { target: { value: 'const a = 3;' } });
+    expect(onChangeEdit).toHaveBeenCalledWith('const a = 3;');
+    fireEvent.keyDown(textarea, { key: 's', ctrlKey: true });
+    expect(onSaveEdit).toHaveBeenCalledTimes(1);
+    expect(await axe(previewContainer)).toHaveNoViolations();
   });
 });

@@ -29,6 +29,7 @@ import type {
   PersistedAgentTraceRecord,
   RetrievalSource,
   SystemPaths,
+  TrashVaultEntry,
   UIPreferencesSnapshot,
   UndoRedoResult,
   VaultConfigSnapshot,
@@ -157,6 +158,13 @@ export const IPC_SCHEMAS = {
   'FS:UNDO': optionalEmptyObjectSchema,
   'FS:REDO': optionalEmptyObjectSchema,
   'FS:GET_JOURNAL_STATE': optionalEmptyObjectSchema,
+  'FS:LIST_TRASH_VAULT': optionalEmptyObjectSchema,
+  'FS:RESTORE_TRASH_ITEM': z.object({
+    id: z.string().min(1).max(120),
+  }),
+  'FS:PURGE_TRASH_ITEM': z.object({
+    id: z.string().min(1).max(120),
+  }),
   'FS:EMPTY_TRASH_VAULT': optionalEmptyObjectSchema,
   'FS:WATCH_SPLIT_DIR': z.object({
     path: boundedPathSchema.nullable(),
@@ -195,6 +203,11 @@ export const IPC_SCHEMAS = {
     explorerLens: z.enum(['files', 'graph', 'collections', 'duplicates']).optional(),
     viewMode: z.enum(['grid', 'list']).optional(),
     splitPaneOpen: z.boolean().optional(),
+    onboardingCompleted: z.boolean().optional(),
+    developerBadges: z.boolean().optional(),
+  }),
+  'VAULT:SET_DEFAULT_DELETE_MODE': z.object({
+    mode: z.enum(['vault', 'trash']),
   }),
   'NAV:BACK': optionalEmptyObjectSchema,
   'NAV:FORWARD': optionalEmptyObjectSchema,
@@ -338,6 +351,7 @@ export const IPC_SCHEMAS = {
   'LLM:LIST_MODELS': optionalEmptyObjectSchema,
   'LLM:SET_MODEL_CONFIG': z.object({
     provider: z.enum(['ollama', 'openai_compatible']).optional(),
+    ollamaUrl: z.string().min(1).max(200).optional(),
     openAiBaseUrl: z.string().min(1).max(200).optional(),
     model: z.string().min(1).max(120).optional(),
     temperature: z.number().min(0).max(1).optional(),
@@ -345,8 +359,9 @@ export const IPC_SCHEMAS = {
     embeddingModel: z.string().min(1).max(120).optional(),
     rerankerModel: z.string().min(1).max(120).optional(),
     embeddingDevice: z.enum(['auto', 'cpu', 'dml', 'webgpu']).optional(),
-    enableVisionCaptioning: z.boolean().optional(),
+    allowRemoteModels: z.boolean().optional(),
   }),
+  'LLM:DOWNLOAD_MODELS': optionalEmptyObjectSchema,
   'CLIPBOARD:WRITE_TEXT': z.union([
     z.string().max(1024 * 1024).transform((text) => ({ text })),
     z.object({ text: z.string().max(1024 * 1024) }),
@@ -382,6 +397,9 @@ export interface IPCResponseMap {
   'FS:UNDO': UndoRedoResult;
   'FS:REDO': UndoRedoResult;
   'FS:GET_JOURNAL_STATE': OperationJournalState;
+  'FS:LIST_TRASH_VAULT': TrashVaultEntry[];
+  'FS:RESTORE_TRASH_ITEM': UndoRedoResult;
+  'FS:PURGE_TRASH_ITEM': OperationJournalState;
   'FS:EMPTY_TRASH_VAULT': OperationJournalState;
   'FS:WATCH_SPLIT_DIR': { watching: boolean; path: string | null };
   'FS:BATCH_TRANSFER': BatchTransferResult;
@@ -391,6 +409,7 @@ export interface IPCResponseMap {
   'VAULT:SET_INDEXED': VaultConfigSnapshot;
   'VAULT:TOGGLE_FAVORITE': VaultConfigSnapshot;
   'VAULT:SET_UI_PREFS': UIPreferencesSnapshot;
+  'VAULT:SET_DEFAULT_DELETE_MODE': VaultConfigSnapshot;
   'NAV:BACK': string | null;
   'NAV:FORWARD': string | null;
   'NAV:PUSH': { success: boolean };
@@ -431,6 +450,7 @@ export interface IPCResponseMap {
   'LLM:CLEAR_TRACES': { cleared: number };
   'LLM:LIST_MODELS': LLMModelsSnapshot;
   'LLM:SET_MODEL_CONFIG': { success: boolean; config: LLMModelsSnapshot };
+  'LLM:DOWNLOAD_MODELS': { success: boolean; snapshot: LLMModelsSnapshot; error?: string };
   'CLIPBOARD:WRITE_TEXT': { success: boolean };
   'SHELL:OPEN_PATH': { success: boolean; error?: string };
   'SHELL:REVEAL_IN_FOLDER': { success: boolean };
@@ -567,6 +587,27 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     pathFields: [],
     rateLimit: READ_RATE_LIMIT,
   },
+  'FS:LIST_TRASH_VAULT': {
+    channel: 'FS:LIST_TRASH_VAULT',
+    group: 'fileSystem',
+    schema: IPC_SCHEMAS['FS:LIST_TRASH_VAULT'],
+    pathFields: [],
+    rateLimit: READ_RATE_LIMIT,
+  },
+  'FS:RESTORE_TRASH_ITEM': {
+    channel: 'FS:RESTORE_TRASH_ITEM',
+    group: 'fileSystem',
+    schema: IPC_SCHEMAS['FS:RESTORE_TRASH_ITEM'],
+    pathFields: [],
+    rateLimit: WRITE_RATE_LIMIT,
+  },
+  'FS:PURGE_TRASH_ITEM': {
+    channel: 'FS:PURGE_TRASH_ITEM',
+    group: 'fileSystem',
+    schema: IPC_SCHEMAS['FS:PURGE_TRASH_ITEM'],
+    pathFields: [],
+    rateLimit: WRITE_RATE_LIMIT,
+  },
   'FS:EMPTY_TRASH_VAULT': {
     channel: 'FS:EMPTY_TRASH_VAULT',
     group: 'fileSystem',
@@ -627,6 +668,13 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     channel: 'VAULT:SET_UI_PREFS',
     group: 'vault',
     schema: IPC_SCHEMAS['VAULT:SET_UI_PREFS'],
+    pathFields: [],
+    rateLimit: WRITE_RATE_LIMIT,
+  },
+  'VAULT:SET_DEFAULT_DELETE_MODE': {
+    channel: 'VAULT:SET_DEFAULT_DELETE_MODE',
+    group: 'vault',
+    schema: IPC_SCHEMAS['VAULT:SET_DEFAULT_DELETE_MODE'],
     pathFields: [],
     rateLimit: WRITE_RATE_LIMIT,
   },
@@ -790,6 +838,13 @@ export const IPC_CONTRACTS: { [C in IPCChannel]: IPCContractEntry<C> } = {
     schema: IPC_SCHEMAS['LLM:SET_MODEL_CONFIG'],
     pathFields: [],
     rateLimit: LLM_RATE_LIMIT,
+  },
+  'LLM:DOWNLOAD_MODELS': {
+    channel: 'LLM:DOWNLOAD_MODELS',
+    group: 'llm',
+    schema: IPC_SCHEMAS['LLM:DOWNLOAD_MODELS'],
+    pathFields: [],
+    rateLimit: LLM_INDEX_RATE_LIMIT,
   },
   'LLM:ABORT_QUERY': {
     channel: 'LLM:ABORT_QUERY',

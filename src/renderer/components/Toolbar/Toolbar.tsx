@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, Columns, Command, MessageSquare, Moon, Sun } from 'lucide-react';
+import { Activity, Columns, Command, MessageSquare, Moon, Settings, Sun } from 'lucide-react';
 import { NavigationButtons } from './NavigationButtons';
 import { Breadcrumb } from './Breadcrumb';
 import { ToolbarActionsRow } from './ToolbarActionsRow';
@@ -33,6 +33,7 @@ interface ToolbarProps {
   onUndo?: () => void;
   onRedo?: () => void;
   onOpenDiagnostics?: () => void;
+  onOpenSettings?: () => void;
   onOpenOmnibar?: () => void;
   splitPaneOpen?: boolean;
   onToggleSplitPane?: () => void;
@@ -73,6 +74,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onUndo,
   onRedo,
   onOpenDiagnostics,
+  onOpenSettings,
   onOpenOmnibar,
   splitPaneOpen = false,
   onToggleSplitPane,
@@ -163,6 +165,18 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             title="Kernel Runtime Diagnostics"
             aria-label="Runtime Diagnostics"
             data-testid="diagnostics-button"
+          />
+        )}
+
+        {onOpenSettings && (
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<Settings className="w-4 h-4 text-slate-600 dark:text-slate-300" aria-hidden="true" />}
+            onClick={onOpenSettings}
+            title="Workspace & AI Settings"
+            aria-label="Workspace Settings"
+            data-testid="settings-button"
           />
         )}
 

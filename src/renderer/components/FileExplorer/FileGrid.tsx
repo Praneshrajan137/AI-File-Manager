@@ -12,6 +12,7 @@ import type { SelectionModifiers } from '@renderer/hooks/useExplorerActions';
 import {
   computeGridGeometry,
   extractDraggedPaths,
+  extractExternalDroppedPaths,
   sortFileNodes,
 } from '@renderer/utils/explorerHelpers';
 
@@ -31,6 +32,7 @@ interface FileGridProps {
   onRetry?: () => void;
   currentDirectory?: string;
   onDropMove?: (sourcePaths: string[], destinationDir: string) => void;
+  onDropExternalFiles?: (sourcePaths: string[], destinationDir: string) => void;
 }
 
 export const FileGrid: React.FC<FileGridProps> = ({
@@ -49,6 +51,7 @@ export const FileGrid: React.FC<FileGridProps> = ({
   onRetry,
   currentDirectory,
   onDropMove,
+  onDropExternalFiles,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<FixedSizeList<SharedVirtualItemData>>(null);
@@ -56,6 +59,7 @@ export const FileGrid: React.FC<FileGridProps> = ({
   const [containerHeight, setContainerHeight] = useState(600);
   const [containerWidth, setContainerWidth] = useState(800);
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
+  const [isExternalDragOver, setIsExternalDragOver] = useState(false);
 
   const sortedFiles = useMemo(
     () => sortFileNodes(files, sortBy, sortDirection),
@@ -197,26 +201,56 @@ export const FileGrid: React.FC<FileGridProps> = ({
   }
 
   const handlePaneDragOver = (e: React.DragEvent): void => {
-    if (!onDropMove || !currentDirectory) return;
-    if (e.dataTransfer.types.includes('application/x-fm-paths')) {
+    if (!currentDirectory) return;
+    if (onDropMove && e.dataTransfer.types.includes('application/x-fm-paths')) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
+    } else if (onDropExternalFiles && e.dataTransfer.types.includes('Files')) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      if (!isExternalDragOver) {
+        setIsExternalDragOver(true);
+      }
+    }
+  };
+
+  const handlePaneDragLeave = (e: React.DragEvent): void => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+      setIsExternalDragOver(false);
     }
   };
 
   const handlePaneDrop = (e: React.DragEvent): void => {
-    if (!onDropMove || !currentDirectory) return;
+    setIsExternalDragOver(false);
+    if (!currentDirectory) return;
     const dragged = extractDraggedPaths(e.dataTransfer);
     setDropTargetPath(null);
-    if (dragged.length > 0) {
+    if (dragged.length > 0 && onDropMove) {
       e.preventDefault();
       onDropMove(dragged, currentDirectory);
+      return;
+    }
+    if (onDropExternalFiles && e.dataTransfer.types.includes('Files')) {
+      const externalPaths = extractExternalDroppedPaths(e.dataTransfer);
+      if (externalPaths.length > 0) {
+        e.preventDefault();
+        onDropExternalFiles(externalPaths, currentDirectory);
+      }
     }
   };
 
+  const externalDropRingClass = isExternalDragOver
+    ? 'ring-2 ring-inset ring-accent-500 bg-indigo-50/40 dark:bg-indigo-950/30 rounded-lg'
+    : '';
+
   if (sortedFiles.length === 0) {
     return (
-      <div className="h-full" onDragOver={handlePaneDragOver} onDrop={handlePaneDrop}>
+      <div
+        className={`h-full ${externalDropRingClass}`}
+        onDragOver={handlePaneDragOver}
+        onDragLeave={handlePaneDragLeave}
+        onDrop={handlePaneDrop}
+      >
         <EmptyState searchQuery={searchQuery} onClearSearch={onClearSearch} />
       </div>
     );
@@ -226,12 +260,13 @@ export const FileGrid: React.FC<FileGridProps> = ({
     return (
       <div
         ref={containerRef}
-        className="h-full overflow-hidden"
+        className={`h-full overflow-hidden ${externalDropRingClass}`}
         role="listbox"
         aria-label="File grid"
         aria-multiselectable="true"
         data-testid="file-grid"
         onDragOver={handlePaneDragOver}
+        onDragLeave={handlePaneDragLeave}
         onDrop={handlePaneDrop}
       >
         <FixedSizeGrid
@@ -258,12 +293,13 @@ export const FileGrid: React.FC<FileGridProps> = ({
   return (
     <div
       ref={containerRef}
-      className="h-full"
+      className={`h-full ${externalDropRingClass}`}
       role="listbox"
       aria-label="File list"
       aria-multiselectable="true"
       data-testid="file-list"
       onDragOver={handlePaneDragOver}
+      onDragLeave={handlePaneDragLeave}
       onDrop={handlePaneDrop}
     >
       <FixedSizeList

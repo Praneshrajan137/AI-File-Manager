@@ -176,6 +176,27 @@ export function extractDraggedPaths(dataTransfer: DataTransfer | null): string[]
   }
 }
 
+/** Extracts absolute OS file paths dropped from the host desktop/Explorer into PrivateVault AI. */
+export function extractExternalDroppedPaths(dataTransfer: DataTransfer | null): string[] {
+  if (!dataTransfer) return [];
+  if (dataTransfer.types.includes('application/x-fm-paths')) {
+    return [];
+  }
+  const files = Array.from(dataTransfer.files ?? []);
+  if (files.length === 0) return [];
+  const bridged =
+    typeof window !== 'undefined' && typeof window.electronAPI?.fs?.getPathsForDroppedFiles === 'function'
+      ? window.electronAPI.fs.getPathsForDroppedFiles(files)
+      : [];
+  const fallback =
+    bridged.length > 0
+      ? bridged
+      : files.map((file) => (file as File & { path?: string }).path ?? '');
+  return Array.from(
+    new Set(fallback.filter((p): p is string => typeof p === 'string' && p.trim().length > 0))
+  );
+}
+
 /** Resolves a non-colliding copy name (`name (copy).ext`, `name (copy 2).ext`) against existing siblings. */
 export function resolveCopyCollisionName(
   originalName: string,

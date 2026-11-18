@@ -17,6 +17,7 @@ import {
   TransformersDevice,
   TransformersDtype,
 } from './transformersLoader';
+import { resolveDefaultModelCacheDir } from '../../shared/config/appPaths';
 
 // Type for the feature extraction pipeline
 type FeatureExtractionPipeline = (
@@ -30,6 +31,7 @@ export interface EmbeddingModelOptions {
   device?: TransformersDevice;
   dimensions?: number;
   allowRemoteModels?: boolean;
+  cacheDir?: string;
 }
 
 export class EmbeddingModel implements IEmbeddingModel {
@@ -39,6 +41,7 @@ export class EmbeddingModel implements IEmbeddingModel {
   private readonly dtype: TransformersDtype;
   private readonly device: TransformersDevice;
   private readonly allowRemoteModels: boolean | undefined;
+  private readonly cacheDir: string;
 
   /** Testing hook: allows injecting a mock pipeline for tests */
   private static mockPipeline: FeatureExtractionPipeline | null = null;
@@ -49,6 +52,7 @@ export class EmbeddingModel implements IEmbeddingModel {
     this.device = options.device ?? 'cpu';
     this.dimensions = options.dimensions ?? 384;
     this.allowRemoteModels = options.allowRemoteModels;
+    this.cacheDir = options.cacheDir || resolveDefaultModelCacheDir();
   }
 
   /**
@@ -88,6 +92,7 @@ export class EmbeddingModel implements IEmbeddingModel {
         dtype: this.dtype,
         device: this.device,
         allowRemoteModels: this.allowRemoteModels,
+        cacheDir: this.cacheDir,
       })) as unknown as FeatureExtractionPipeline;
     } catch (error) {
       throw new Error(

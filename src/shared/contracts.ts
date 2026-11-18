@@ -156,6 +156,8 @@ export interface UIPreferencesSnapshot {
   explorerLens: ExplorerLens;
   viewMode: 'grid' | 'list';
   splitPaneOpen: boolean;
+  onboardingCompleted?: boolean;
+  developerBadges?: boolean;
 }
 
 export interface GraphImpactReference {
@@ -208,11 +210,17 @@ export interface LLMModelsSnapshot {
   temperature: number;
   maxTokens: number;
   provider?: 'ollama' | 'openai_compatible';
+  ollamaUrl?: string;
   openAiBaseUrl?: string;
   embeddingDevice?: 'auto' | 'cpu' | 'dml' | 'webgpu';
   activeExecutionProvider?: string;
-  /** Experimental / inactive flag (vision captioning pipeline is not enabled in current runtime). */
-  enableVisionCaptioning?: boolean;
+  supportedEmbeddingDevices?: string[];
+  allowRemoteModels?: boolean;
+  modelCacheDir?: string;
+  embeddingCached?: boolean;
+  embeddingCacheBytes?: number;
+  rerankerCached?: boolean;
+  rerankerCacheBytes?: number;
 }
 
 export interface LexicalSearchMatch {
@@ -277,6 +285,17 @@ export interface OperationJournalState {
   lastRedoDescription?: string;
   vaultItemCount: number;
   vaultTotalBytes: number;
+}
+
+export interface TrashVaultEntry {
+  id: string;
+  name: string;
+  originalPath: string;
+  deletedAt: number;
+  size: number;
+  isDirectory: boolean;
+  isSymlink: boolean;
+  description: string;
 }
 
 export interface UndoRedoResult {
@@ -1304,6 +1323,7 @@ export interface WorkspaceCollectionGroup {
   id: string;
   label: string;
   reason: string;
+  clusteringMode?: 'vector_embeddings' | 'structural_heuristic';
   files: Array<{
     path: string;
     name: string;

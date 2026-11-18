@@ -11,9 +11,8 @@ import * as crypto from 'crypto';
 import { IpcMainInvokeEvent } from 'electron';
 import fsSync from 'fs';
 import fs from 'fs/promises';
-import os from 'os';
 import path from 'path';
-import { AppConfig, ConfigManager } from '@shared/config';
+import { AppConfig, ConfigManager, resolveCanonicalVectorDbDir, resolveDefaultModelCacheDir } from '@shared/config';
 import {
   AgentRunResult,
   AgentTraceStep,
@@ -48,10 +47,18 @@ import { ContextManager, formatUntrustedWorkspaceData } from '../../llm/services
 import { IndexingService } from '../../llm/services/IndexingService';
 import { LLMInterface } from '../../llm/services/LLMInterface';
 import { LLMMetrics, MetricOperation } from '../../llm/services/LLMMetrics';
-import { LocalLLMProvider } from '../../llm/services/LocalModelTransport';
+import { LocalLLMProvider, assertLoopbackLocalUrl } from '../../llm/services/LocalModelTransport';
 import { OfflineSynthesisService } from '../../llm/services/OfflineSynthesisService';
 import { RetrievalService } from '../../llm/services/RetrievalService';
-import { VectorStore } from '../../llm/services/VectorStore';
+import { clusterDocumentsByVector } from '../../llm/services/SemanticClustering';
+import { DocumentVectorCentroid, VectorStore } from '../../llm/services/VectorStore';
+import {
+  DEFAULT_RERANKER_MODEL,
+  detectSupportedTransformersDevices,
+  inspectLocalModelCache,
+  loadCrossEncoderReranker,
+  loadFeatureExtractionPipeline,
+} from '../../llm/models/transformersLoader';
 import { EmbeddingWorkerPool } from '../../llm/workers/EmbeddingWorkerPool';
 import { resolveAllowedRoots, validateCanonicalPathOrThrow } from '../handlers/securityMiddleware';
 import { searchWorkspacePaths } from '../handlers/searchHandlers';
@@ -139,12 +146,7 @@ function resolveActiveTransportSettings(): {
 }
 
 export function resolveVectorDbPath(): string {
-  const allowTestOverrides =
-    process.env.NODE_ENV === 'test' || process.env.E2E_TEST === 'true';
-  const overrideDbPath = allowTestOverrides ? process.env.FILE_MANAGER_VECTOR_DB_PATH : undefined;
-  return overrideDbPath && overrideDbPath.trim().length > 0
-    ? path.resolve(overrideDbPath.trim())
-    : path.join(os.homedir(), '.file-manager', 'vectordb');
+  return resolveCanonicalVectorDbDir();
 }
 
 function closeSessionKnowledgeGraph(): void {
@@ -332,10 +334,83 @@ export function getWorkspaceGraphMapData(input?: {
   );
 }
 
-export function getWorkspaceCollectionsData(input?: {
+async function withVectorStoreCentroids(
+  filePaths?: string[]
+): Promise<Map<string, DocumentVectorCentroid>> {
+  if (vectorStore) {
+    try {
+      return await vectorStore.getDocumentCentroids(filePaths);
+    } catch {
+      return new Map();
+    }
+  }
+
+  const dbDir = resolveVectorDbPath();
+  if (!fsSync.existsSync(path.join(dbDir, 'file_chunks.lance'))) {
+    return new Map();
+  }
+
+  const ephemeralStore = new VectorStore({ enableKnowledgeGraph: false });
+  try {
+    await ephemeralStore.initialize(dbDir);
+    return await ephemeralStore.getDocumentCentroids(filePaths);
+  } catch {
+    return new Map();
+  } finally {
+    await ephemeralStore.close().catch(() => undefined);
+  }
+}
+
+export async function getWorkspaceCollectionsData(input?: {
   rootPrefix?: string;
-}): WorkspaceCollectionGroup[] {
-  return withKnowledgeGraph((kg) => kg.getSemanticCollections(input?.rootPrefix));
+}): Promise<WorkspaceCollectionGroup[]> {
+  const { map, fallbackGroups } = withKnowledgeGraph((kg) => ({
+    map: kg.getWorkspaceGraphMap(input?.rootPrefix, 500),
+    fallbackGroups: kg.getSemanticCollections(input?.rootPrefix),
+  }));
+
+  if (map.nodes.length >= 2) {
+    const centroids = await withVectorStoreCentroids(map.nodes.map((n) => n.path));
+    if (centroids.size >= 2) {
+      const centroidByNorm = new Map<string, DocumentVectorCentroid>();
+      for (const [k, c] of centroids.entries()) {
+        centroidByNorm.set(normalizePathForRootMatch(k), c);
+      }
+      const docs = map.nodes
+        .map((node) => {
+          const centroid = centroidByNorm.get(normalizePathForRootMatch(node.path));
+          if (!centroid || centroid.vector.length === 0) {
+            return null;
+          }
+          return {
+            filePath: node.path,
+            name: node.name,
+            fileType: node.fileType,
+            chunkCount: node.chunkCount,
+            vector: centroid.vector,
+            topSymbols: node.topSymbols,
+            textSample: centroid.sampleText,
+          };
+        })
+        .filter((d): d is NonNullable<typeof d> => d !== null);
+
+      if (docs.length >= 2) {
+        const { groups } = clusterDocumentsByVector(docs);
+        if (groups.length > 0) {
+          return groups.map(({ clusteringMode, id, label, reason, files, dominantSymbols }) => ({
+            id,
+            label,
+            clusteringMode,
+            reason,
+            files,
+            dominantSymbols,
+          }));
+        }
+      }
+    }
+  }
+
+  return fallbackGroups;
 }
 
 export function getWorkspaceFileConnectionsData(filePath: string): FileConnectionsSummary {
@@ -368,6 +443,8 @@ export function createOrganizerService(): AIOrganizerService {
   const fsService = kernel.getFileSystemService();
   const validator = new PathValidator(fsService.getAllowedRoots());
   const transportCfg = resolveActiveTransportSettings();
+  const llmCfg = readLlmConfig();
+  const configuredEmbModel = llmCfg?.embeddingModel ?? 'Xenova/bge-small-en-v1.5';
 
   return new AIOrganizerService({
     validator,
@@ -376,6 +453,40 @@ export function createOrganizerService(): AIOrganizerService {
     ollamaUrl: transportCfg.baseUrl,
     model: transportCfg.model,
     findImpactForPaths: (targetPaths) => withKnowledgeGraph((kg) => kg.findImpactForPaths(targetPaths)),
+    getDocumentVectors: async (filePaths): Promise<Map<string, number[]>> => {
+      const centroids = await withVectorStoreCentroids(filePaths);
+      const map = new Map<string, number[]>();
+      for (const [k, c] of centroids.entries()) {
+        map.set(k, c.vector);
+      }
+      return map;
+    },
+    embedTexts: async (texts): Promise<number[][]> => {
+      if (texts.length === 0) return [];
+      const cacheInspection = inspectLocalModelCache([configuredEmbModel], resolveDefaultModelCacheDir());
+      const modelCachedOnDisk = cacheInspection.models[0]?.cached === true;
+      if (!embeddingModel && !modelCachedOnDisk) {
+        return [];
+      }
+      const pool =
+        embeddingModel ??
+        new EmbeddingWorkerPool({
+          modelName: configuredEmbModel,
+          device: llmCfg?.embeddingDevice ?? 'auto',
+          allowRemoteModels: false,
+        });
+      const ownsPool = !embeddingModel;
+      try {
+        await pool.initialize();
+        return await pool.embedBatch(texts);
+      } catch {
+        return [];
+      } finally {
+        if (ownsPool) {
+          await pool.terminate().catch(() => undefined);
+        }
+      }
+    },
   });
 }
 
@@ -1510,6 +1621,8 @@ export async function checkOllamaStatus(
 async function buildModelsSnapshot(): Promise<LLMModelsSnapshot> {
   const llmCfg = readLlmConfig();
   const transportCfg = resolveActiveTransportSettings();
+  const embModel = llmCfg?.embeddingModel ?? 'Xenova/bge-small-en-v1.5';
+  const rerankModel = llmCfg?.rerankerModel ?? DEFAULT_RERANKER_MODEL;
 
   let available = false;
   let models: string[] = [];
@@ -1527,18 +1640,33 @@ async function buildModelsSnapshot(): Promise<LLMModelsSnapshot> {
     models = [];
   }
 
+  const cacheInfo = inspectLocalModelCache([embModel, rerankModel]);
+  const embCache = cacheInfo.models[0];
+  const rerankCache = cacheInfo.models[1];
+  const supportedEmbeddingDevices =
+    embeddingModel?.getSupportedDevices() ??
+    (await detectSupportedTransformersDevices().catch(() => ['cpu']));
+
   return {
     available,
     models,
     activeModel: llmCfg?.model ?? llmInterface?.getModel() ?? 'llama3.2',
-    embeddingModel: llmCfg?.embeddingModel ?? 'Xenova/bge-small-en-v1.5',
-    rerankerModel: llmCfg?.rerankerModel ?? 'Xenova/ms-marco-MiniLM-L-6-v2',
+    embeddingModel: embModel,
+    rerankerModel: rerankModel,
     temperature: llmCfg?.temperature ?? 0.7,
     maxTokens: llmCfg?.maxTokens ?? 2048,
     provider: transportCfg.provider,
+    ollamaUrl: resolveOllamaUrl() || 'http://localhost:11434',
     openAiBaseUrl: llmCfg?.openAiBaseUrl ?? 'http://127.0.0.1:1234',
     embeddingDevice: llmCfg?.embeddingDevice ?? 'auto',
-    enableVisionCaptioning: llmCfg?.enableVisionCaptioning ?? false,
+    activeExecutionProvider: embeddingModel?.getExecutionProvider() ?? 'cpu',
+    supportedEmbeddingDevices,
+    allowRemoteModels: llmCfg?.allowRemoteModels ?? true,
+    modelCacheDir: cacheInfo.cacheDir,
+    embeddingCached: embCache?.cached ?? false,
+    embeddingCacheBytes: embCache?.bytes ?? 0,
+    rerankerCached: rerankCache?.cached ?? false,
+    rerankerCacheBytes: rerankCache?.bytes ?? 0,
   };
 }
 
@@ -1553,6 +1681,7 @@ export async function setLlmModelConfig(
   _event: IpcMainInvokeEvent,
   input: {
     provider?: LocalLLMProvider;
+    ollamaUrl?: string;
     openAiBaseUrl?: string;
     model?: string;
     temperature?: number;
@@ -1560,21 +1689,24 @@ export async function setLlmModelConfig(
     embeddingModel?: string;
     rerankerModel?: string;
     embeddingDevice?: 'auto' | 'cpu' | 'dml' | 'webgpu';
-    enableVisionCaptioning?: boolean;
+    allowRemoteModels?: boolean;
   }
 ): Promise<{ success: boolean; config: LLMModelsSnapshot }> {
   const updates: Array<[string, unknown]> = [];
   if (input.provider !== undefined) updates.push(['llm.provider', input.provider]);
-  if (input.openAiBaseUrl !== undefined) updates.push(['llm.openAiBaseUrl', input.openAiBaseUrl.trim()]);
+  if (input.ollamaUrl !== undefined) {
+    updates.push(['llm.ollamaUrl', assertLoopbackLocalUrl(input.ollamaUrl)]);
+  }
+  if (input.openAiBaseUrl !== undefined) {
+    updates.push(['llm.openAiBaseUrl', assertLoopbackLocalUrl(input.openAiBaseUrl)]);
+  }
   if (input.model !== undefined) updates.push(['llm.model', input.model.trim()]);
   if (input.temperature !== undefined) updates.push(['llm.temperature', input.temperature]);
   if (input.maxTokens !== undefined) updates.push(['llm.maxTokens', input.maxTokens]);
   if (input.embeddingModel !== undefined) updates.push(['llm.embeddingModel', input.embeddingModel.trim()]);
   if (input.rerankerModel !== undefined) updates.push(['llm.rerankerModel', input.rerankerModel.trim()]);
   if (input.embeddingDevice !== undefined) updates.push(['llm.embeddingDevice', input.embeddingDevice]);
-  if (input.enableVisionCaptioning !== undefined) {
-    updates.push(['llm.enableVisionCaptioning', input.enableVisionCaptioning]);
-  }
+  if (input.allowRemoteModels !== undefined) updates.push(['llm.allowRemoteModels', input.allowRemoteModels]);
 
   if (updates.length > 0) {
     const cm = ConfigManager.getInstance();
@@ -1593,6 +1725,25 @@ export async function setLlmModelConfig(
     });
   }
 
+  const embeddingPipelineDirty =
+    input.embeddingModel !== undefined ||
+    input.rerankerModel !== undefined ||
+    input.embeddingDevice !== undefined ||
+    input.allowRemoteModels !== undefined;
+
+  if (embeddingPipelineDirty && (embeddingModel || vectorStore)) {
+    if (embeddingModel) {
+      await embeddingModel.terminate().catch(() => undefined);
+      embeddingModel = null;
+    }
+    if (vectorStore) {
+      await vectorStore.close().catch(() => undefined);
+      vectorStore = null;
+    }
+    indexingService = null;
+    retrievalService = null;
+  }
+
   LLMLogger.info('Updated LLM configuration', {
     provider: input.provider,
     model: input.model,
@@ -1604,6 +1755,62 @@ export async function setLlmModelConfig(
     success: true,
     config: await buildModelsSnapshot(),
   };
+}
+
+export async function downloadLlmModels(
+  _event: IpcMainInvokeEvent,
+  _input: Record<string, never>
+): Promise<{ success: boolean; snapshot: LLMModelsSnapshot; error?: string }> {
+  const llmCfg = readLlmConfig();
+  const embModel = llmCfg?.embeddingModel ?? 'Xenova/bge-small-en-v1.5';
+  const rerankModel = llmCfg?.rerankerModel ?? DEFAULT_RERANKER_MODEL;
+  const device = llmCfg?.embeddingDevice ?? 'auto';
+  const cacheDir = resolveDefaultModelCacheDir();
+
+  try {
+    if (llmCfg?.allowRemoteModels === false) {
+      ConfigManager.getInstance().set('llm.allowRemoteModels', true, true);
+    }
+
+    let resolvedEp = 'cpu';
+    await loadFeatureExtractionPipeline({
+      modelName: embModel,
+      dtype: 'q8',
+      device,
+      allowRemoteModels: true,
+      cacheDir,
+      onResolved: (info) => {
+        resolvedEp = info.device;
+      },
+    });
+    await loadCrossEncoderReranker({
+      modelName: rerankModel,
+      dtype: 'q8',
+      device,
+      allowRemoteModels: true,
+      cacheDir,
+    });
+
+    const supportedDevices = await detectSupportedTransformersDevices().catch(() => ['cpu']);
+    RuntimeDiagnostics.getInstance().setVectorStoreStats({
+      activeExecutionProvider: resolvedEp,
+      supportedDevices,
+    });
+
+    return {
+      success: true,
+      snapshot: await buildModelsSnapshot(),
+    };
+  } catch (error: unknown) {
+    const rawMsg = error instanceof Error ? error.message : String(error);
+    const sanitized = ErrorSerializer.sanitizeText(rawMsg);
+    LLMLogger.warn('Failed downloading ONNX models into cacheDir', { cacheDir, error: rawMsg });
+    return {
+      success: false,
+      snapshot: await buildModelsSnapshot(),
+      error: sanitized,
+    };
+  }
 }
 
 export async function clearVectorIndex(

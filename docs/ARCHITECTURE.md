@@ -1,5 +1,7 @@
 # System Architecture Document
 
+> **[Current Architecture Summary — PrivateVault AI]**: The Dec 4, 2025 design draft below is superseded where details evolved during implementation. Current runtime architecture uses **Electron 45 + Node 24 LTS**, declarative Zod IPC contracts (`shared/ipc/contracts.ts` + `IPCEnvelope`), reactive `EventQueue` + 5 CS DSAs, **SQLite WAL/FTS5 (`node:sqlite`) + LanceDB + 384-D spherical k-means `SemanticClustering`**, loopback-only Ollama / OpenAI-compatible runtimes + `OfflineSynthesisService`, writable `<userData>/models/` ONNX cache, standalone unpacked `dist/main/mcpServer.js` & `dist/main/embeddingWorker.js`, and canonical `~/.privatevault/` storage (with legacy migration from `~/.file-manager/` / `~/.project2-file-manager/`).
+
 ## Project-2: OS File Manager with Custom LLM
 
 

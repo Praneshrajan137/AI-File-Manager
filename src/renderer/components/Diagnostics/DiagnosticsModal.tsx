@@ -11,14 +11,15 @@ interface DiagnosticsModalProps {
   initialSnapshot?: RuntimeDiagnosticsSnapshot;
 }
 
-export function buildMcpSnippetJson(allowedRoots: string[]): string {
+export function buildMcpSnippetJson(allowedRoots: string[], mcpEntryPath?: string): string {
   const roots = allowedRoots.length > 0 ? allowedRoots : ['<workspace-root-path>'];
+  const entry = mcpEntryPath && mcpEntryPath.trim().length > 0 ? mcpEntryPath.trim() : 'dist/main/mcpServer.js';
   return JSON.stringify(
     {
       mcpServers: {
         'privatevault-workspace': {
           command: 'node',
-          args: ['dist/main/mcpServer.js', ...roots.flatMap((root) => ['--root', root])],
+          args: [entry, ...roots.flatMap((root) => ['--root', root])],
         },
       },
     },
@@ -102,7 +103,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
 
   const handleCopyMcp = useCallback((): void => {
     if (!snapshot) return;
-    const snippet = buildMcpSnippetJson(snapshot.allowedRoots);
+    const snippet = buildMcpSnippetJson(snapshot.allowedRoots, snapshot.mcpEntryPath);
     if (window.electronAPI?.clipboard?.writeText) {
       void window.electronAPI.clipboard.writeText(snippet);
     } else if (typeof navigator !== 'undefined' && navigator.clipboard) {
@@ -185,7 +186,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
             traces={traces}
             copiedMcp={copiedMcp}
             clearingTraces={clearingTraces}
-            mcpSnippet={buildMcpSnippetJson(snapshot.allowedRoots)}
+            mcpSnippet={buildMcpSnippetJson(snapshot.allowedRoots, snapshot.mcpEntryPath)}
             onCopyMcp={handleCopyMcp}
             onClearTraces={(): void => {
               void handleClearTraces();

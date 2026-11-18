@@ -1,5 +1,7 @@
 # Micro-Task Backlog
 
+> **[Historical Planning Checklist — December 6, 2025]**: Preserved as the original pre-build Phase-1 task breakdown. All core architecture, security, DSA, RAG, MCP, Settings, Onboarding, Trash Vault recovery, and CI milestones have since shipped; see [README.md](../README.md) and [PROJECT-MEMORY.md](./PROJECT-MEMORY.md) for current implemented state.
+
 **Project**: OS File Manager with Custom LLM  
 **Created**: December 6, 2025  
 **Total Tasks**: 247  

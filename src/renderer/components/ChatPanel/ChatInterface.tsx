@@ -4,7 +4,7 @@ import { ChatInput } from './ChatInput';
 import { IndexingPanel } from './IndexingPanel';
 import { useLLM, UseLLMReturn } from '@renderer/hooks/useLLM';
 import { getScrollBehavior } from '@renderer/utils/motion';
-import { Bot, FolderKanban, Sparkles } from 'lucide-react';
+import { Bot, FolderKanban, Settings, Sparkles } from 'lucide-react';
 import { ChatEmptySuggestions } from './ChatEmptySuggestions';
 import type { CopilotQueryMode, OrganizePlanResult } from '@shared/contracts';
 
@@ -15,6 +15,7 @@ interface ChatInterfaceProps {
   onOpenCitation?: (filePath: string, startLine?: number, endLine?: number) => void;
   onOpenOrganize?: (targetDir: string) => void;
   onPreviewOrganizePlan?: (plan: OrganizePlanResult) => void;
+  onOpenSettings?: () => void;
 }
 
 const ChatInterfaceBody: React.FC<{
@@ -24,6 +25,7 @@ const ChatInterfaceBody: React.FC<{
   onOpenCitation?: (filePath: string, startLine?: number, endLine?: number) => void;
   onOpenOrganize?: (targetDir: string) => void;
   onPreviewOrganizePlan?: (plan: OrganizePlanResult) => void;
+  onOpenSettings?: () => void;
 }> = ({
   currentPath,
   selectedPaths,
@@ -31,6 +33,7 @@ const ChatInterfaceBody: React.FC<{
   onOpenCitation,
   onOpenOrganize,
   onPreviewOrganizePlan,
+  onOpenSettings,
 }) => {
   const {
     messages,
@@ -115,30 +118,50 @@ const ChatInterfaceBody: React.FC<{
             </div>
           </div>
 
-          {modelsSnapshot && (
+          {(modelsSnapshot || onOpenSettings) && (
             <div className="flex items-center gap-1.5 flex-shrink-0">
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  modelsSnapshot.available ? 'bg-emerald-300' : 'bg-amber-300'
-                }`}
-                title={modelsSnapshot.available ? 'Ollama Online' : 'Ollama Offline'}
-                data-testid="ollama-status-dot"
-              />
-              <select
-                value={modelsSnapshot.activeModel}
-                onChange={(e) => {
-                  void setActiveModel(e.target.value);
-                }}
-                aria-label="Active LLM model"
-                data-testid="ollama-model-select"
-                className="bg-slate-900/40 text-white text-xs rounded-md px-2 py-1 border border-white/30 focus:outline-none focus:ring-2 focus:ring-white/60 max-w-[130px] truncate"
-              >
-                {modelChoices.map((modelName) => (
-                  <option key={modelName} value={modelName} className="text-slate-900 bg-white">
-                    {modelName}
-                  </option>
-                ))}
-              </select>
+              {modelsSnapshot && (
+                <>
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      modelsSnapshot.available ? 'bg-emerald-300' : 'bg-amber-300'
+                    }`}
+                    title={
+                      `${modelsSnapshot.provider === 'openai_compatible' ? 'AI Endpoint' : 'Ollama'} ${
+                        modelsSnapshot.available ? 'Online' : 'Offline'
+                      }`
+                    }
+                    data-testid="ollama-status-dot"
+                  />
+                  <select
+                    value={modelsSnapshot.activeModel}
+                    onChange={(e) => {
+                      void setActiveModel(e.target.value);
+                    }}
+                    aria-label="Active LLM model"
+                    data-testid="ollama-model-select"
+                    className="bg-slate-900/40 text-white text-xs rounded-md px-2 py-1 border border-white/30 focus:outline-none focus:ring-2 focus:ring-white/60 max-w-[130px] truncate"
+                  >
+                    {modelChoices.map((modelName) => (
+                      <option key={modelName} value={modelName} className="text-slate-900 bg-white">
+                        {modelName}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
+              {onOpenSettings && (
+                <button
+                  type="button"
+                  onClick={onOpenSettings}
+                  title="Configure AI Provider & Settings"
+                  aria-label="AI Provider Settings"
+                  data-testid="chat-settings-button"
+                  className="p-1 rounded-md text-white/90 hover:bg-white/20 focus:outline-none focus:ring-2 focus:ring-white/60"
+                >
+                  <Settings className="w-3.5 h-3.5" aria-hidden="true" />
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -233,12 +256,14 @@ const ChatInterfaceStandalone: React.FC<{
   onOpenCitation?: (filePath: string, startLine?: number, endLine?: number) => void;
   onOpenOrganize?: (targetDir: string) => void;
   onPreviewOrganizePlan?: (plan: OrganizePlanResult) => void;
+  onOpenSettings?: () => void;
 }> = ({
   currentPath,
   selectedPaths,
   onOpenCitation,
   onOpenOrganize,
   onPreviewOrganizePlan,
+  onOpenSettings,
 }) => {
   const internalLlm = useLLM();
   return (
@@ -249,6 +274,7 @@ const ChatInterfaceStandalone: React.FC<{
       onOpenCitation={onOpenCitation}
       onOpenOrganize={onOpenOrganize}
       onPreviewOrganizePlan={onPreviewOrganizePlan}
+      onOpenSettings={onOpenSettings}
     />
   );
 };
@@ -260,6 +286,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   onOpenCitation,
   onOpenOrganize,
   onPreviewOrganizePlan,
+  onOpenSettings,
 }) => {
   if (llm) {
     return (
@@ -270,6 +297,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         onOpenCitation={onOpenCitation}
         onOpenOrganize={onOpenOrganize}
         onPreviewOrganizePlan={onPreviewOrganizePlan}
+        onOpenSettings={onOpenSettings}
       />
     );
   }
@@ -280,6 +308,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       onOpenCitation={onOpenCitation}
       onOpenOrganize={onOpenOrganize}
       onPreviewOrganizePlan={onPreviewOrganizePlan}
+      onOpenSettings={onOpenSettings}
     />
   );
 };

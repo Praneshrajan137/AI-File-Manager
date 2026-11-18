@@ -9,7 +9,9 @@ import {
   FileText,
   Image as ImageIcon,
   Network,
+  Pencil,
   RefreshCw,
+  Save,
   X,
 } from 'lucide-react';
 import type {
@@ -31,10 +33,17 @@ interface PreviewHeaderProps {
   fileConnections: FileConnectionsSummary | null;
   loading: boolean;
   activeTab: 'content' | 'connections';
+  developerBadges?: boolean;
   hasPrev?: boolean;
   hasNext?: boolean;
   hasCopyableText: boolean;
   copiedContent: boolean;
+  isEditing?: boolean;
+  editDirty?: boolean;
+  editSaving?: boolean;
+  onStartEdit?: () => void;
+  onCancelEdit?: () => void;
+  onSaveEdit?: () => void;
   onSelectTab: (tab: 'content' | 'connections') => void;
   onPrevFile?: () => void;
   onNextFile?: () => void;
@@ -46,7 +55,7 @@ interface PreviewHeaderProps {
   onClearRangeFocus?: () => void;
 }
 
-/** Header bar, sibling navigation, action controls, and Content/Connections tabs for Quick Preview. */
+/** Header bar, sibling navigation, action controls, inline quick edit, and Content/Connections tabs. */
 export const PreviewHeader: React.FC<PreviewHeaderProps> = ({
   file,
   preview,
@@ -57,10 +66,17 @@ export const PreviewHeader: React.FC<PreviewHeaderProps> = ({
   fileConnections,
   loading,
   activeTab,
+  developerBadges = false,
   hasPrev = false,
   hasNext = false,
   hasCopyableText,
   copiedContent,
+  isEditing = false,
+  editDirty = false,
+  editSaving = false,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
   onSelectTab,
   onPrevFile,
   onNextFile,
@@ -72,6 +88,7 @@ export const PreviewHeader: React.FC<PreviewHeaderProps> = ({
   onClearRangeFocus,
 }) => {
   const focusEndLine = highlightRange ? highlightRange.endLine ?? highlightRange.startLine : undefined;
+  const canEdit = Boolean(onStartEdit && !lineRange && !assetUrl && preview && !preview.binary);
 
   return (
     <>
@@ -111,13 +128,28 @@ export const PreviewHeader: React.FC<PreviewHeaderProps> = ({
             {!lineRange && !assetUrl && preview && (
               <span
                 data-testid="preview-cache-badge"
+                title={preview.fromCache ? 'Served from LRUCache' : 'Buffered via RingBuffer(100)'}
                 className={`px-1.5 py-0.5 rounded font-mono ${
                   preview.fromCache
                     ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200'
                     : 'bg-indigo-100 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-200'
                 }`}
               >
-                {preview.fromCache ? 'LRUCache HIT' : 'RingBuffer(100)'}
+                {developerBadges
+                  ? preview.fromCache
+                    ? 'LRUCache HIT'
+                    : 'RingBuffer(100)'
+                  : preview.fromCache
+                    ? 'Cached'
+                    : 'Quick Preview'}
+              </span>
+            )}
+            {isEditing && (
+              <span
+                data-testid="preview-editing-badge"
+                className="px-1.5 py-0.5 rounded font-medium bg-amber-100 dark:bg-amber-950 text-amber-900 dark:text-amber-200"
+              >
+                {editDirty ? 'Unsaved' : 'Editing'}
               </span>
             )}
             {preview?.truncated && !lineRange && (
@@ -161,6 +193,47 @@ export const PreviewHeader: React.FC<PreviewHeaderProps> = ({
                 className="p-1.5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
               >
                 <ChevronRight className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </>
+          )}
+          {canEdit && !isEditing && (
+            <button
+              type="button"
+              onClick={onStartEdit}
+              disabled={loading}
+              title="Edit full file"
+              aria-label="Edit file"
+              data-testid="preview-edit-button"
+              className="inline-flex items-center gap-1 px-2 py-1 mr-1 rounded text-xs font-medium bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+            >
+              <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Edit</span>
+            </button>
+          )}
+          {canEdit && isEditing && (
+            <>
+              <button
+                type="button"
+                onClick={onSaveEdit}
+                disabled={!editDirty || editSaving}
+                title="Save changes (Ctrl+S)"
+                aria-label="Save file changes"
+                data-testid="preview-save-button"
+                className="inline-flex items-center gap-1 px-2 py-1 mr-1 rounded text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+              >
+                <Save className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>{editSaving ? 'Saving...' : 'Save'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={onCancelEdit}
+                disabled={editSaving}
+                title="Cancel editing (Esc)"
+                aria-label="Cancel file edit"
+                data-testid="preview-cancel-edit-button"
+                className="px-2 py-1 mr-1 rounded text-xs font-medium bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-200 hover:bg-slate-300 dark:hover:bg-slate-700 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+              >
+                Cancel
               </button>
             </>
           )}

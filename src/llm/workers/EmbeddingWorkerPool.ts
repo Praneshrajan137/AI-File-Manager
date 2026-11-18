@@ -19,6 +19,7 @@
  * @implements IEmbeddingModel
  */
 
+import fs from 'fs';
 import { Worker } from 'worker_threads';
 import * as path from 'path';
 import {
@@ -26,7 +27,7 @@ import {
     IEmbeddingModel,
     Embedding,
 } from '../../shared/contracts';
-import { ConfigManager } from '../../shared/config';
+import { ConfigManager, resolveDefaultModelCacheDir } from '../../shared/config';
 import { LLMLogger } from '../../shared/logging';
 import { RuntimeDiagnostics } from '../../main/services/RuntimeDiagnostics';
 import {
@@ -44,6 +45,7 @@ export interface EmbeddingWorkerPoolOptions {
     rerankerModel?: string;
     microBatchSize?: number;
     allowRemoteModels?: boolean;
+    cacheDir?: string;
     abortGraceMs?: number;
 }
 
@@ -67,6 +69,7 @@ interface WorkerRequest {
     dtype?: TransformersDtype;
     device?: TransformersDevice;
     allowRemoteModels?: boolean;
+    cacheDir?: string;
 }
 
 interface WorkerResponse {
@@ -129,6 +132,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
     private readonly rerankerModel: string;
     private readonly microBatchSize: number;
     private readonly allowRemoteModels: boolean;
+    private readonly cacheDir: string;
     private readonly abortGraceMs: number;
     private activeExecutionProvider: string = 'cpu';
     private supportedDevices: string[] = ['cpu'];
@@ -159,6 +163,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
         this.rerankerModel = options.rerankerModel || DEFAULT_RERANKER_MODEL;
         this.microBatchSize = Math.max(1, options.microBatchSize ?? 8);
         this.allowRemoteModels = options.allowRemoteModels ?? configuredAllowRemoteModels;
+        this.cacheDir = options.cacheDir || resolveDefaultModelCacheDir();
         this.abortGraceMs = Math.max(10, options.abortGraceMs ?? 5000);
     }
 
@@ -309,6 +314,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                     device: this.device,
                     rerankerModel: this.rerankerModel,
                     allowRemoteModels: this.allowRemoteModels,
+                    cacheDir: this.cacheDir,
                 } as WorkerRequest);
 
             } catch (error) {
@@ -319,20 +325,18 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
 
     /**
      * Get the path to the worker script.
+     * In packaged Electron builds, resolve `app.asar.unpacked` so Node worker_threads
+     * always execute from the physical unpacked directory.
      */
     private getWorkerPath(): string {
-        // Check if we're in development or production
-        // __dirname in webpack bundle points to dist/main/
-        const isDev = process.env.NODE_ENV === 'development';
-
-        if (isDev) {
-            // Development: use ts-node or compiled version
-            // Webpack will compile to dist/main/embeddingWorker.js
-            return path.join(__dirname, 'embeddingWorker.js');
-        } else {
-            // Production: bundled worker
-            return path.join(__dirname, 'embeddingWorker.js');
+        const directPath = path.join(__dirname, 'embeddingWorker.js');
+        if (directPath.includes('app.asar')) {
+            const unpackedPath = directPath.replace(/app\.asar(?![.])/g, 'app.asar.unpacked');
+            if (fs.existsSync(unpackedPath)) {
+                return unpackedPath;
+            }
         }
+        return directPath;
     }
 
     /**
@@ -582,6 +586,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                     dtype: this.dtype,
                     device: this.device,
                     allowRemoteModels: this.allowRemoteModels,
+                    cacheDir: this.cacheDir,
                 } as WorkerRequest);
             } else {
                 this.worker.postMessage({
@@ -593,6 +598,7 @@ export class EmbeddingWorkerPool implements IEmbeddingModel {
                     dtype: this.dtype,
                     device: this.device,
                     allowRemoteModels: this.allowRemoteModels,
+                    cacheDir: this.cacheDir,
                 } as WorkerRequest);
             }
             return;

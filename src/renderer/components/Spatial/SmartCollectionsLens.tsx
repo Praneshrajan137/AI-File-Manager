@@ -15,6 +15,10 @@ export const SmartCollectionsLens: React.FC<SmartCollectionsLensProps> = ({
   onSelectFile,
   onOpenSemanticOrganize,
 }) => {
+  const usesVectorClustering = collections.some(
+    (group) => group.clusteringMode === 'vector_embeddings'
+  );
+
   return (
     <div
       data-testid="smart-collections-lens"
@@ -22,12 +26,30 @@ export const SmartCollectionsLens: React.FC<SmartCollectionsLensProps> = ({
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
-            <Boxes className="w-4 h-4 text-accent-600 dark:text-indigo-400" aria-hidden="true" />
-            <span>Semantic Workspace Collections</span>
-          </h3>
-          <p className="text-xs text-slate-600 dark:text-slate-300">
-            Virtual clusters grouped by code domain, documentation links, and extracted symbols.
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+              <Boxes className="w-4 h-4 text-accent-600 dark:text-indigo-400" aria-hidden="true" />
+              <span>Workspace Collections</span>
+            </h3>
+            {collections.length > 0 && (
+              <span
+                data-testid="collections-mode-badge"
+                className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                  usesVectorClustering
+                    ? 'bg-emerald-100 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-200'
+                    : 'bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-200'
+                }`}
+              >
+                {usesVectorClustering
+                  ? 'Vector Embedding Clusters'
+                  : 'Structural Grouping (Index with ONNX for Vector Clusters)'}
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
+            {usesVectorClustering
+              ? 'Virtual clusters grouped via indexed 384-D dense embeddings and extracted symbols.'
+              : 'Grouped structurally by folder & file type. Download ONNX models and index a folder for vector clustering.'}
           </p>
         </div>
 

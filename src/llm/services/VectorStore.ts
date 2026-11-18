@@ -26,6 +26,7 @@ import {
     WorkspaceKnowledgeGraph,
 } from '../../main/services/WorkspaceKnowledgeGraph';
 import { ExtractedLink, ExtractedSymbol } from './StructuralChunker';
+import { l2NormalizeVector } from './SemanticClustering';
 import { RuntimeDiagnostics } from '../../main/services/RuntimeDiagnostics';
 import { LLMLogger } from '../../shared/logging';
 import { atomicWriteFile } from '../../shared/utils/atomicFs';
@@ -74,6 +75,13 @@ export interface ChunkIndexMetadata {
     fileType?: string;
     symbols?: ExtractedSymbol[];
     links?: ExtractedLink[];
+}
+
+export interface DocumentVectorCentroid {
+    filePath: string;
+    vector: number[];
+    chunkCount: number;
+    sampleText: string;
 }
 
 // Record type for LanceDB storage (using Record for compatibility)
@@ -757,6 +765,106 @@ export class VectorStore implements IVectorStore {
             end_line: row.endLine,
             heading: row.heading,
         }));
+    }
+
+    /**
+     * Aggregate L2-normalized mean document vector centroids across stored LanceDB chunks
+     * (and pending buffer rows) for genuine embedding-based clustering and organization.
+     */
+    async getDocumentCentroids(
+        filePaths?: string[],
+        maxRows: number = 4000
+    ): Promise<Map<string, DocumentVectorCentroid>> {
+        return this.withLock(async () => {
+            const centroids = new Map<string, DocumentVectorCentroid>();
+            if (!this.db || !this.table) {
+                return centroids;
+            }
+
+            const allowedKeys =
+                Array.isArray(filePaths) && filePaths.length > 0
+                    ? new Set(filePaths.map((p) => normalizeVectorPathKey(p)))
+                    : null;
+
+            const accumulators = new Map<
+                string,
+                { filePath: string; sum: number[]; count: number; samples: string[] }
+            >();
+
+            const ingestRow = (row: LanceRecord): void => {
+                const key = normalizeVectorPathKey(row.file_path);
+                if (allowedKeys && !allowedKeys.has(key)) {
+                    return;
+                }
+                const vec = this.toPlainVector(row.vector);
+                if (vec.length === 0) {
+                    return;
+                }
+                let entry = accumulators.get(key);
+                if (!entry) {
+                    entry = {
+                        filePath: row.file_path,
+                        sum: new Array<number>(vec.length).fill(0),
+                        count: 0,
+                        samples: [],
+                    };
+                    accumulators.set(key, entry);
+                }
+                for (let i = 0; i < Math.min(vec.length, entry.sum.length); i += 1) {
+                    entry.sum[i] += vec[i];
+                }
+                entry.count += 1;
+                if (entry.samples.length < 3 && row.chunk_text) {
+                    entry.samples.push(String(row.chunk_text).slice(0, 400));
+                }
+            };
+
+            try {
+                const count = await this.table.countRows();
+                if (count > 0) {
+                    const effectiveLimit = Math.min(count, Math.max(1, maxRows));
+                    const tableAny = this.table as unknown as {
+                        query?: () => { limit: (n: number) => { toArray: () => Promise<LanceRecord[]> } };
+                        vectorSearch: (vec: number[]) => {
+                            limit: (n: number) => { toArray: () => Promise<LanceRecord[]> };
+                        };
+                    };
+                    let rows: LanceRecord[] = [];
+                    if (typeof tableAny.query === 'function') {
+                        rows = await tableAny.query().limit(effectiveLimit).toArray();
+                    } else if (typeof tableAny.vectorSearch === 'function') {
+                        const seed = new Array<number>(this.EMBEDDING_DIM).fill(0);
+                        seed[0] = 1;
+                        rows = await tableAny.vectorSearch(seed).limit(effectiveLimit).toArray();
+                    }
+                    for (const row of rows) {
+                        ingestRow(row);
+                    }
+                }
+            } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : String(err);
+                if (!msg.includes('empty') && !msg.includes('not found')) {
+                    LLMLogger.warn('Failed reading centroids from LanceDB', { error: msg });
+                }
+            }
+
+            for (const pending of this.pendingRecords) {
+                ingestRow(pending);
+            }
+
+            for (const entry of accumulators.values()) {
+                if (entry.count === 0) continue;
+                const mean = entry.sum.map((v) => v / entry.count);
+                centroids.set(entry.filePath, {
+                    filePath: entry.filePath,
+                    vector: l2NormalizeVector(mean),
+                    chunkCount: entry.count,
+                    sampleText: entry.samples.join('\n'),
+                });
+            }
+
+            return centroids;
+        });
     }
 
     async deleteFile(filePath: string): Promise<number> {

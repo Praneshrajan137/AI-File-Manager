@@ -655,13 +655,13 @@ describe('Stage 3 Frontier Local AI Runtime & Spatial Associative Retrieval', ()
           provider: 'openai_compatible',
           openAiBaseUrl: 'http://127.0.0.1:1234',
           embeddingDevice: 'auto',
-          enableVisionCaptioning: true,
+          allowRemoteModels: false,
         })
       ).toMatchObject({
         provider: 'openai_compatible',
         openAiBaseUrl: 'http://127.0.0.1:1234',
         embeddingDevice: 'auto',
-        enableVisionCaptioning: true,
+        allowRemoteModels: false,
       });
     });
   });

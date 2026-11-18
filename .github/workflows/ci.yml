@@ -94,7 +94,12 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --dir --publish never
 
-      - name: Verify unpacked Electron bundle contents
+      - name: Verify unpacked Electron bundle & packaged boot (Linux Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x960x24" node scripts/verify-unpacked-build.mjs
+
+      - name: Verify unpacked Electron bundle & packaged boot (Windows)
+        if: runner.os == 'Windows'
         run: node scripts/verify-unpacked-build.mjs
 
       - name: Upload Playwright report & failure screenshots

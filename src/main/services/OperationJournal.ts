@@ -1,13 +1,14 @@
 import fs from 'fs/promises';
 import path from 'path';
-import os from 'os';
 import { randomUUID } from 'crypto';
 import {
   FileDeleteMode,
   OperationJournalState,
   OperationRecord,
+  TrashVaultEntry,
   UndoRedoResult,
 } from '@shared/contracts';
+import { resolveDefaultTrashVaultDir as resolveSharedTrashVaultDir } from '@shared/config';
 import { PathValidator } from './PathValidator';
 import { FileSystemService } from './FileSystemService';
 import { getReactiveWorkspaceKernel, hasActiveReactiveWorkspaceKernel } from './ReactiveWorkspaceKernel';
@@ -76,24 +77,7 @@ interface WalPendingState {
 }
 
 export function resolveDefaultTrashVaultDir(): string {
-  const configured = process.env.APPDATA || process.env.XDG_CONFIG_HOME;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const electronModule = require('electron') as {
-      app?: { getPath?: (name: string) => string };
-    };
-    if (electronModule?.app?.getPath) {
-      return path.join(electronModule.app.getPath('userData'), 'trash-vault');
-    }
-  } catch {
-    // Running inside Node/Jest without full Electron app object
-  }
-
-  if (configured && configured.trim().length > 0) {
-    return path.join(configured, 'ai-file-manager', 'trash-vault');
-  }
-
-  return path.join(os.homedir(), '.file-manager', 'trash-vault');
+  return resolveSharedTrashVaultDir();
 }
 
 function getFsErrorCode(error: unknown): string | undefined {
@@ -1037,9 +1021,9 @@ export class OperationJournal {
       const canonicalTarget = await this.validateCanonicalOrThrow(record.sourcePath);
       if (await this.pathExists(canonicalTarget)) {
         throw ErrorFactory.createFileSystemError(
-          'UNKNOWN',
+          'ALREADY_EXISTS',
           canonicalTarget,
-          undefined,
+          'restore',
           { details: `Cannot restore "${path.basename(canonicalTarget)}": destination already exists` }
         );
       }
@@ -1349,6 +1333,98 @@ export class OperationJournal {
   async getState(): Promise<OperationJournalState> {
     return this.serialize(async () => {
       await this.ensureInitialized();
+      return this.buildStateSnapshot();
+    });
+  }
+
+  private removeUndoVaultEntryById(entryId: string): OperationRecord | null {
+    for (let i = 0; i < this.undoStack.length; i += 1) {
+      const op = this.undoStack[i];
+      if (op.id === entryId && op.type === 'delete') {
+        this.undoStack.splice(i, 1);
+        return op;
+      }
+      if (op.children && op.children.length > 0) {
+        const childIdx = op.children.findIndex((c) => c.id === entryId && c.type === 'delete');
+        if (childIdx >= 0) {
+          const [removed] = op.children.splice(childIdx, 1);
+          if (op.children.length === 0) {
+            this.undoStack.splice(i, 1);
+          }
+          return removed;
+        }
+      }
+    }
+    return null;
+  }
+
+  private findUndoVaultEntryById(entryId: string): OperationRecord | null {
+    for (const op of this.undoStack) {
+      if (op.id === entryId && op.type === 'delete') {
+        return op;
+      }
+      if (op.children) {
+        const child = op.children.find((c) => c.id === entryId && c.type === 'delete');
+        if (child) {
+          return child;
+        }
+      }
+    }
+    return null;
+  }
+
+  async listVaultItems(): Promise<TrashVaultEntry[]> {
+    return this.serialize(async () => {
+      await this.ensureInitialized();
+      const rawItems = this.collectDeleteVaultItems(this.undoStack);
+      const entries: TrashVaultEntry[] = [];
+      for (const item of rawItems) {
+        if (item.vaultPayloadPath && !(await this.pathExists(item.vaultPayloadPath))) {
+          continue;
+        }
+        entries.push({
+          id: item.id,
+          name: path.basename(item.sourcePath),
+          originalPath: item.sourcePath,
+          deletedAt: item.timestamp,
+          size: item.size,
+          isDirectory: item.isDirectory,
+          isSymlink: Boolean(item.isSymlink),
+          description: item.description,
+        });
+      }
+      return entries.sort((a, b) => b.deletedAt - a.deletedAt);
+    });
+  }
+
+  async restoreVaultItem(entryId: string): Promise<UndoRedoResult> {
+    return this.serialize(async () => {
+      await this.ensureInitialized();
+      const target = this.findUndoVaultEntryById(entryId);
+      if (!target) {
+        return { success: false, state: this.buildStateSnapshot() };
+      }
+      this.suppressWatchPathsForStep([target.sourcePath]);
+      const { updatedRecord, restoredPath } = await this.undoSingleRecordUnlocked(target);
+      this.removeUndoVaultEntryById(entryId);
+      await this.persist();
+      return {
+        success: true,
+        operation: updatedRecord,
+        restoredPath,
+        state: this.buildStateSnapshot(),
+      };
+    });
+  }
+
+  async purgeVaultItem(entryId: string): Promise<OperationJournalState> {
+    return this.serialize(async () => {
+      await this.ensureInitialized();
+      const removed = this.removeUndoVaultEntryById(entryId);
+      if (removed) {
+        await this.removeRecordPayloads(removed);
+        await this.persist();
+      }
       return this.buildStateSnapshot();
     });
   }

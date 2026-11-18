@@ -1,6 +1,6 @@
-# Project Brief — OS File Manager with Local RAG (`project-2-file-manager`)
+# Project Brief — PrivateVault AI (`project-2-file-manager`)
 
-**Last Verified:** 2026-11-13 (Windows 11 host; Node `v24.11.0`, npm `11.6.1`, `@lancedb/lancedb@0.4.20`)
+**Original Baseline Date:** 2026-11-13 | **Current Platform:** Electron 45 + React 18 + TypeScript 5.3 + Node 24 LTS (`@lancedb/lancedb ^0.41.0`, `@huggingface/transformers ^4.3.2` `Xenova/bge-small-en-v1.5`, SQLite WAL/FTS5 via `node:sqlite`, standalone `dist/main/mcpServer.js`, canonical `~/.privatevault/`). Note: Section 2 preserves the exact initial pre-transformation 2026-11-13 measurements as historical evidence; for current test gates see [TEST_REPORT.md](../TEST_REPORT.md).
 
 ---
 

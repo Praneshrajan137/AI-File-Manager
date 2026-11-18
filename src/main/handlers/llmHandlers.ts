@@ -17,6 +17,7 @@ import {
   cleanupLLMServices as cleanupRuntimeServices,
   clearAgentTracesHistory,
   clearVectorIndex,
+  downloadLlmModels,
   executeCopilotQuery,
   getIndexingStatus,
   getRecentAgentTraces,
@@ -59,6 +60,7 @@ const LLM_CHANNELS: IPCChannel[] = [
   'LLM:CLEAR_TRACES',
   'LLM:LIST_MODELS',
   'LLM:SET_MODEL_CONFIG',
+  'LLM:DOWNLOAD_MODELS',
   'AI:ORGANIZE_PLAN',
   'AI:ORGANIZE_APPLY',
 ];
@@ -78,6 +80,7 @@ export function registerLLMHandlers(): IPCChannel[] {
   ipcMain.handle('LLM:CLEAR_TRACES', withContract('LLM:CLEAR_TRACES', clearAgentTracesHistory));
   ipcMain.handle('LLM:LIST_MODELS', withContract('LLM:LIST_MODELS', listLlmModels));
   ipcMain.handle('LLM:SET_MODEL_CONFIG', withContract('LLM:SET_MODEL_CONFIG', setLlmModelConfig));
+  ipcMain.handle('LLM:DOWNLOAD_MODELS', withContract('LLM:DOWNLOAD_MODELS', downloadLlmModels));
   ipcMain.handle('AI:ORGANIZE_PLAN', withContract('AI:ORGANIZE_PLAN', planWorkspaceOrganize));
   ipcMain.handle('AI:ORGANIZE_APPLY', withContract('AI:ORGANIZE_APPLY', applyWorkspaceOrganize));
 

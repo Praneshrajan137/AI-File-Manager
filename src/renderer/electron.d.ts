@@ -30,6 +30,7 @@ import type {
   PersistedAgentTraceRecord,
   RetrievalSource,
   SystemPaths,
+  TrashVaultEntry,
   UIPreferencesSnapshot,
   UndoRedoResult,
   VaultConfigSnapshot,
@@ -72,7 +73,11 @@ interface ElectronAPI {
     undo: () => Promise<UndoRedoResult>;
     redo: () => Promise<UndoRedoResult>;
     getJournalState: () => Promise<OperationJournalState>;
+    listTrashVault?: () => Promise<TrashVaultEntry[]>;
+    restoreTrashItem?: (id: string) => Promise<UndoRedoResult>;
+    purgeTrashItem?: (id: string) => Promise<OperationJournalState>;
     emptyTrashVault: () => Promise<OperationJournalState>;
+    getPathsForDroppedFiles?: (files: File[]) => string[];
     watchSplitDir?: (path: string | null) => Promise<{ watching: boolean; path: string | null }>;
     batchTransfer?: (steps: BatchTransferStep[], description?: string) => Promise<BatchTransferResult>;
   };
@@ -87,6 +92,7 @@ interface ElectronAPI {
     setIndexed: (path: string, enabled: boolean) => Promise<VaultConfigSnapshot>;
     toggleFavorite: (path: string) => Promise<VaultConfigSnapshot>;
     setUiPrefs?: (prefs: Partial<UIPreferencesSnapshot>) => Promise<UIPreferencesSnapshot>;
+    setDefaultDeleteMode?: (mode: 'vault' | 'trash') => Promise<VaultConfigSnapshot>;
   };
 
   navigation: {
@@ -159,6 +165,7 @@ interface ElectronAPI {
     listModels: () => Promise<LLMModelsSnapshot>;
     setModelConfig: (config: {
       provider?: 'ollama' | 'openai_compatible';
+      ollamaUrl?: string;
       openAiBaseUrl?: string;
       model?: string;
       temperature?: number;
@@ -166,8 +173,13 @@ interface ElectronAPI {
       embeddingModel?: string;
       rerankerModel?: string;
       embeddingDevice?: 'auto' | 'cpu' | 'dml' | 'webgpu';
-      enableVisionCaptioning?: boolean;
+      allowRemoteModels?: boolean;
     }) => Promise<{ success: boolean; config: LLMModelsSnapshot }>;
+    downloadModels?: () => Promise<{
+      success: boolean;
+      snapshot: LLMModelsSnapshot;
+      error?: string;
+    }>;
   };
 
   ai?: {

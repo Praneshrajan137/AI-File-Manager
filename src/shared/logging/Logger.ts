@@ -22,8 +22,7 @@
 
 import winston from 'winston';
 import DailyRotateFile from 'winston-daily-rotate-file';
-import path from 'path';
-import os from 'os';
+import { APP_SERVICE_SLUG, resolveDefaultLogDir } from '../config/appPaths';
 
 /**
  * Log levels (in order of severity).
@@ -43,7 +42,7 @@ export interface LoggerOptions {
   /** Enable file transport (default: false in dev, true in prod) */
   file?: boolean;
 
-  /** Log file directory (default: ~/.project2-file-manager/logs/) */
+  /** Log file directory (default: ~/.privatevault/logs/) */
   logDir?: string;
 
   /** Maximum file size before rotation (default: '10m') */
@@ -87,7 +86,7 @@ export class Logger {
       logDir: options.logDir ?? this.getDefaultLogDir(),
       maxSize: options.maxSize ?? '10m',
       maxFiles: options.maxFiles ?? 30,
-      service: options.service ?? 'project2-file-manager',
+      service: options.service ?? APP_SERVICE_SLUG,
     };
 
     this.service = opts.service;
@@ -332,8 +331,7 @@ export class Logger {
    * @returns Log directory path
    */
   private getDefaultLogDir(): string {
-    const homeDir = os.homedir();
-    return path.join(homeDir, '.project2-file-manager', 'logs');
+    return resolveDefaultLogDir();
   }
 
   /**

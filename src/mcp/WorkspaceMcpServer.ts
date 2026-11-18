@@ -20,7 +20,7 @@ import { AIOrganizerService } from '../main/services/AIOrganizerService';
 import { WorkspaceKnowledgeGraph } from '../main/services/WorkspaceKnowledgeGraph';
 import { isSensitiveSecretFile, redactFileRangeLines, redactSensitiveText } from '../shared/security/SecretGuard';
 import { OrganizeStrategy } from '../shared/contracts';
-import { ConfigManager, DEFAULT_EXCLUDED_DIRS } from '../shared/config';
+import { ConfigManager, DEFAULT_EXCLUDED_DIRS, resolveCanonicalGraphDbPath } from '../shared/config';
 import { Logger } from '../shared/logging';
 
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
@@ -856,26 +856,7 @@ export class WorkspaceMcpServer {
 }
 
 export function resolveDefaultGraphDbPath(): string {
-  const envDbOverride = process.env.FILE_MANAGER_VECTOR_DB_PATH?.trim();
-  const primaryCandidate = envDbOverride
-    ? path.join(path.resolve(envDbOverride), 'knowledge-graph.sqlite')
-    : path.join(os.homedir(), '.file-manager', 'vectordb', 'knowledge-graph.sqlite');
-
-  const baseDir =
-    process.env.APPDATA ||
-    process.env.XDG_CONFIG_HOME ||
-    path.join(os.homedir(), process.platform === 'darwin' ? 'Library/Application Support' : '.config');
-  const candidates = [
-    primaryCandidate,
-    path.join(baseDir, 'project-2-file-manager', 'workspace-graph.sqlite'),
-    path.join(baseDir, 'ai-file-manager', 'workspace-graph.sqlite'),
-  ];
-  for (const candidate of candidates) {
-    if (fsSync.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-  return primaryCandidate;
+  return resolveCanonicalGraphDbPath();
 }
 
 export function parseCliArgs(argv: string[]): { roots: string[]; dbPath?: string } {

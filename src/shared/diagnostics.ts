@@ -97,6 +97,8 @@ export interface RuntimeDiagnosticsSnapshot {
   capturedAt: number;
   uptimeMs: number;
   allowedRoots: string[];
+  mcpEntryPath?: string;
+  modelCacheDir?: string;
   watcher: WatcherDiagnostics;
   eventQueue: EventQueueDiagnostics;
   pathTrie: PathTrieDiagnostics;

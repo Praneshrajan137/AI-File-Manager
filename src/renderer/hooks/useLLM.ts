@@ -66,6 +66,7 @@ export interface UseLLMReturn {
   clearIndex: () => Promise<void>;
   refreshModels: () => Promise<void>;
   setActiveModel: (modelName: string) => Promise<void>;
+  applyModelsSnapshot: (snapshot: LLMModelsSnapshot) => void;
 }
 
 export function useLLM(hookOptions?: UseLLMOptions): UseLLMReturn {
@@ -246,6 +247,10 @@ export function useLLM(hookOptions?: UseLLMOptions): UseLLMReturn {
     }
   }, []);
 
+  const applyModelsSnapshot = useCallback((snapshot: LLMModelsSnapshot): void => {
+    setModelsSnapshot(snapshot);
+  }, []);
+
   return {
     messages,
     loading,
@@ -258,5 +263,6 @@ export function useLLM(hookOptions?: UseLLMOptions): UseLLMReturn {
     clearIndex,
     refreshModels,
     setActiveModel,
+    applyModelsSnapshot,
   };
 }

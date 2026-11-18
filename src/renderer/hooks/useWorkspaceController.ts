@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSystemPaths } from '@renderer/contexts/SystemPathsContext';
 import { useFileSystem } from '@renderer/hooks/useFileSystem';
 import { useNavigation } from '@renderer/hooks/useNavigation';
@@ -40,7 +40,11 @@ export function useWorkspaceController() {
   const [sidebarWidth, setSidebarWidth] = useState<number>(UI_CONSTANTS.SIDEBAR_DEFAULT_WIDTH);
   const [chatOpen, setChatOpen] = useState<boolean>(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState<boolean>(false);
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
+  const [trashVaultOpen, setTrashVaultOpen] = useState<boolean>(false);
+  const [onboardingOpen, setOnboardingOpen] = useState<boolean>(false);
   const [omnibarOpen, setOmnibarOpen] = useState<boolean>(false);
+  const onboardingAutoCheckedRef = useRef<boolean>(false);
   const [organizeTargetDir, setOrganizeTargetDir] = useState<string | null>(null);
   const [organizeInitialStrategy, setOrganizeInitialStrategy] = useState<OrganizeStrategy>('auto');
   const [organizeInitialPlan, setOrganizeInitialPlan] = useState<OrganizePlanResult | null>(null);
@@ -96,6 +100,22 @@ export function useWorkspaceController() {
     preview,
     showToast,
   });
+
+  useEffect(() => {
+    if (onboardingAutoCheckedRef.current || !vault.vaultConfig) {
+      return;
+    }
+    onboardingAutoCheckedRef.current = true;
+    const ui = vault.vaultConfig.ui;
+    if (ui && ui.onboardingCompleted === false && vault.vaultConfig.indexedRoots.length === 0) {
+      setOnboardingOpen(true);
+    }
+  }, [vault.vaultConfig]);
+
+  const handleFileSaved = useCallback(async (): Promise<void> => {
+    await explorer.refreshActiveDirectories();
+    await spatial.refreshSpatialData();
+  }, [explorer, spatial]);
 
   const handleToggleSplitPane = useCallback((): void => {
     const next = !vault.splitPaneOpen;
@@ -204,6 +224,9 @@ export function useWorkspaceController() {
       omnibarOpen ||
       organizeTargetDir !== null ||
       diagnosticsOpen ||
+      settingsOpen ||
+      trashVaultOpen ||
+      onboardingOpen ||
       renameFile !== null ||
       createEntryMode !== null ||
       pendingDeletePaths !== null,
@@ -271,6 +294,7 @@ export function useWorkspaceController() {
     handleOpenCitation,
     handleToggleSplitPane,
     handleOpenOrganizeModal,
+    handleFileSaved,
     canPreviewSelected,
     favoriteSet,
     sidebarWidth,
@@ -279,6 +303,12 @@ export function useWorkspaceController() {
     setChatOpen,
     diagnosticsOpen,
     setDiagnosticsOpen,
+    settingsOpen,
+    setSettingsOpen,
+    trashVaultOpen,
+    setTrashVaultOpen,
+    onboardingOpen,
+    setOnboardingOpen,
     omnibarOpen,
     setOmnibarOpen,
     organizeTargetDir,

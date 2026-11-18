@@ -9,6 +9,7 @@
 import { ipcMain, IpcMainInvokeEvent } from 'electron';
 import {
   withContract,
+  getPathValidator,
   resolveAllowedRoots,
   validateCanonicalPathOrThrow,
 } from './securityMiddleware';
@@ -31,10 +32,12 @@ import {
   OperationJournalState,
   OperationRecord,
   SystemPaths,
+  TrashVaultEntry,
   UndoRedoResult,
 } from '@shared/contracts';
 import { FileSystemLogger, IPCLogger } from '@shared/logging';
 import { IPCChannel } from '@shared/ipc/contracts';
+import fsSync from 'fs';
 import os from 'os';
 import path from 'path';
 
@@ -54,13 +57,41 @@ export function resetFileSystemService(): void {
   resetReactiveWorkspaceKernelSync();
 }
 
+function resolveKnownUserFolder(
+  electronKey: 'documents' | 'downloads' | 'pictures',
+  fallbackName: string,
+  homeDir: string
+): string {
+  const defaultPath = path.join(homeDir, fallbackName);
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const electronMod = require('electron') as {
+      app?: { getPath?: (name: string) => string };
+    };
+    const resolved = electronMod?.app?.getPath?.(electronKey);
+    const tmpDir = os.tmpdir();
+    if (
+      typeof resolved === 'string' &&
+      resolved.trim().length > 0 &&
+      path.resolve(resolved) !== path.resolve(tmpDir) &&
+      fsSync.existsSync(resolved) &&
+      getPathValidator().validate(resolved).valid
+    ) {
+      return path.resolve(resolved);
+    }
+  } catch {
+    // Fall back safely when running outside full Electron App runtime
+  }
+  return defaultPath;
+}
+
 function getSystemPaths(): SystemPaths {
   const homeDir = os.homedir();
   return {
     home: homeDir,
-    documents: path.join(homeDir, 'Documents'),
-    downloads: path.join(homeDir, 'Downloads'),
-    pictures: path.join(homeDir, 'Pictures'),
+    documents: resolveKnownUserFolder('documents', 'Documents', homeDir),
+    downloads: resolveKnownUserFolder('downloads', 'Downloads', homeDir),
+    pictures: resolveKnownUserFolder('pictures', 'Pictures', homeDir),
   };
 }
 
@@ -389,6 +420,28 @@ async function handleGetJournalState(_event: IpcMainInvokeEvent): Promise<Operat
   return getOperationJournal().getState();
 }
 
+async function handleListTrashVault(_event: IpcMainInvokeEvent): Promise<TrashVaultEntry[]> {
+  return getOperationJournal().listVaultItems();
+}
+
+async function handleRestoreTrashItem(
+  _event: IpcMainInvokeEvent,
+  input: { id: string }
+): Promise<UndoRedoResult> {
+  const result = await getOperationJournal().restoreVaultItem(input.id);
+  if (result.success && result.restoredPath) {
+    getReactiveWorkspaceKernel().notifyMutation('create', result.restoredPath);
+  }
+  return result;
+}
+
+async function handlePurgeTrashItem(
+  _event: IpcMainInvokeEvent,
+  input: { id: string }
+): Promise<OperationJournalState> {
+  return getOperationJournal().purgeVaultItem(input.id);
+}
+
 async function handleEmptyTrashVault(_event: IpcMainInvokeEvent): Promise<OperationJournalState> {
   return getOperationJournal().emptyVault();
 }
@@ -468,6 +521,9 @@ const FILE_SYSTEM_CHANNELS: IPCChannel[] = [
   'FS:UNDO',
   'FS:REDO',
   'FS:GET_JOURNAL_STATE',
+  'FS:LIST_TRASH_VAULT',
+  'FS:RESTORE_TRASH_ITEM',
+  'FS:PURGE_TRASH_ITEM',
   'FS:EMPTY_TRASH_VAULT',
   'FS:WATCH_SPLIT_DIR',
   'FS:BATCH_TRANSFER',
@@ -501,6 +557,9 @@ export function registerFileSystemHandlers(): IPCChannel[] {
   ipcMain.handle('FS:UNDO', withContract('FS:UNDO', handleUndo));
   ipcMain.handle('FS:REDO', withContract('FS:REDO', handleRedo));
   ipcMain.handle('FS:GET_JOURNAL_STATE', withContract('FS:GET_JOURNAL_STATE', handleGetJournalState));
+  ipcMain.handle('FS:LIST_TRASH_VAULT', withContract('FS:LIST_TRASH_VAULT', handleListTrashVault));
+  ipcMain.handle('FS:RESTORE_TRASH_ITEM', withContract('FS:RESTORE_TRASH_ITEM', handleRestoreTrashItem));
+  ipcMain.handle('FS:PURGE_TRASH_ITEM', withContract('FS:PURGE_TRASH_ITEM', handlePurgeTrashItem));
   ipcMain.handle('FS:EMPTY_TRASH_VAULT', withContract('FS:EMPTY_TRASH_VAULT', handleEmptyTrashVault));
   ipcMain.handle('FS:WATCH_SPLIT_DIR', withContract('FS:WATCH_SPLIT_DIR', handleWatchSplitDir));
   ipcMain.handle('FS:BATCH_TRANSFER', withContract('FS:BATCH_TRANSFER', handleBatchTransfer));

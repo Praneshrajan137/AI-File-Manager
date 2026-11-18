@@ -22,7 +22,7 @@ import { z } from 'zod';
  */
 export const appConfigSchema = z.object({
   app: z.object({
-    name: z.string().default('File Manager'),
+    name: z.string().default('PrivateVault AI'),
     version: z.string().default('0.1.0'),
     environment: z.enum(['development', 'production', 'test']).default('development'),
   }),
@@ -57,6 +57,7 @@ export const appConfigSchema = z.object({
       'System Volume Information',
       'AppData',
       '.Trash',
+      '.privatevault',
       '.file-manager',
       'trash-vault',
     ]),
@@ -83,8 +84,6 @@ export const appConfigSchema = z.object({
     embeddingDevice: z.enum(['auto', 'cpu', 'dml', 'webgpu']).default('auto'),
     rerankerModel: z.string().default('Xenova/ms-marco-MiniLM-L-6-v2'),
     enableWebGPU: z.boolean().default(false),
-    /** Experimental / inactive placeholder (vision captioning pipeline not active in runtime). */
-    enableVisionCaptioning: z.boolean().default(false),
     allowRemoteModels: z.boolean().default(true),
   }),
 
@@ -93,11 +92,15 @@ export const appConfigSchema = z.object({
     explorerLens: z.enum(['files', 'graph', 'collections', 'duplicates']).default('files'),
     viewMode: z.enum(['grid', 'list']).default('list'),
     splitPaneOpen: z.boolean().default(false),
+    onboardingCompleted: z.boolean().default(false),
+    developerBadges: z.boolean().default(false),
   }).default({
     theme: 'light',
     explorerLens: 'files',
     viewMode: 'list',
     splitPaneOpen: false,
+    onboardingCompleted: false,
+    developerBadges: false,
   }),
 
   logging: z.object({

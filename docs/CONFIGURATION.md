@@ -1,5 +1,7 @@
 # Configuration Management
 
+> **[Current Storage Note]**: PrivateVault AI stores configuration and workspace state under `~/.privatevault/` (`config.json`, `vectordb/`, `trash-vault/`, `logs/`), with automatic non-destructive migration from legacy `~/.file-manager/` or `~/.project2-file-manager/` (`src/shared/config/appPaths.ts`). Active Zod schema & defaults live in `src/shared/config/schema.ts` and `src/shared/config/defaults.ts` (including `fileSystem.indexedRoots`, `fileSystem.favorites`, `fileSystem.defaultDeleteMode`, `llm.provider`, `llm.ollamaUrl`/`openAiBaseUrl` loopback enforcement, `llm.allowRemoteModels`, `llm.embeddingDevice`, and `ui.{theme,explorerLens,viewMode,splitPaneOpen,onboardingCompleted,developerBadges}`).
+
 ## Overview
 
 Centralized configuration management with type-safe access, validation, and hot-reload support.
@@ -11,7 +13,7 @@ ConfigManager (Singleton)
 ├── Configuration Sources (priority order)
 │   1. Command-line arguments (highest)
 │   2. Environment variables
-│   3. User config file (~/.project2-file-manager/config.json)
+│   3. User config file (~/.privatevault/config.json)
 │   4. Default values (lowest)
 ├── Validation (Zod)
 └── Hot-reload (optional)
@@ -133,7 +135,7 @@ config.reload();
 
 ## Configuration File
 
-Default location: `~/.project2-file-manager/config.json`
+Default location: `~/.privatevault/config.json` (auto-migrated if legacy `~/.file-manager/` or `~/.project2-file-manager/` config exists)
 
 Example config file:
 
@@ -293,7 +295,7 @@ ConfigManager.initialize({
 Configuration values are merged in this order (later overrides earlier):
 
 1. **Default values** (lowest priority)
-2. **User config file** (`~/.project2-file-manager/config.json`)
+2. **User config file** (`~/.privatevault/config.json`)
 3. **Environment variables**
 4. **Command-line arguments** (highest priority)
 
@@ -402,7 +404,7 @@ try {
 
 ### Config Not Loading
 
-1. Check file exists: `~/.project2-file-manager/config.json`
+1. Check file exists: `~/.privatevault/config.json`
 2. Verify JSON syntax: `cat config.json | jq`
 3. Check file permissions
 4. Look for validation errors in logs
@@ -418,7 +420,7 @@ try {
 
 ```bash
 # Validate config file
-cat ~/.project2-file-manager/config.json | jq
+cat ~/.privatevault/config.json | jq
 ```
 
 Check validation errors in application logs.

@@ -4,6 +4,7 @@ import { FileOperationDialogs } from './FileOperationDialogs';
 import { Toast } from './common/Toast';
 import type { ToastMessage } from '@renderer/hooks/useToast';
 import type { UseExplorerActionsReturn } from '@renderer/hooks/useExplorerActions';
+import type { UseLLMReturn } from '@renderer/hooks/useLLM';
 import type { UseWorkspaceVaultReturn } from '@renderer/hooks/useWorkspaceVault';
 import { extractBasename } from '@renderer/utils/pathHelpers';
 import type {
@@ -15,6 +16,15 @@ import type {
 
 const LazyDiagnosticsModal = React.lazy(() =>
   import('./Diagnostics/DiagnosticsModal').then((m) => ({ default: m.DiagnosticsModal }))
+);
+const LazyWorkspaceSettingsModal = React.lazy(() =>
+  import('./Settings/WorkspaceSettingsModal').then((m) => ({ default: m.WorkspaceSettingsModal }))
+);
+const LazyTrashVaultModal = React.lazy(() =>
+  import('./Vault/TrashVaultModal').then((m) => ({ default: m.TrashVaultModal }))
+);
+const LazyOnboardingModal = React.lazy(() =>
+  import('./Onboarding/OnboardingModal').then((m) => ({ default: m.OnboardingModal }))
 );
 const LazyCommandOmnibar = React.lazy(() =>
   import('./SearchBar/CommandOmnibar').then((m) => ({ default: m.CommandOmnibar }))
@@ -33,6 +43,7 @@ interface WorkspaceDialogsProps {
   currentPath: string;
   vault: UseWorkspaceVaultReturn;
   explorer: UseExplorerActionsReturn;
+  llmState: UseLLMReturn;
   favoritesSet: Set<string>;
   normalizePathKey: (p: string) => string;
   contextMenu: ContextMenuState | null;
@@ -45,6 +56,14 @@ interface WorkspaceDialogsProps {
   onClosePendingDelete: () => void;
   diagnosticsOpen: boolean;
   onCloseDiagnostics: () => void;
+  settingsOpen: boolean;
+  onCloseSettings: () => void;
+  onOpenSettings: () => void;
+  trashVaultOpen: boolean;
+  onCloseTrashVault: () => void;
+  onboardingOpen: boolean;
+  onOpenOnboarding: () => void;
+  onCompleteOnboarding: () => void;
   omnibarOpen: boolean;
   onCloseOmnibar: () => void;
   organizeTargetDir: string | null;
@@ -71,6 +90,7 @@ export const WorkspaceDialogs: React.FC<WorkspaceDialogsProps> = ({
   currentPath,
   vault,
   explorer,
+  llmState,
   favoritesSet,
   normalizePathKey,
   contextMenu,
@@ -83,6 +103,14 @@ export const WorkspaceDialogs: React.FC<WorkspaceDialogsProps> = ({
   onClosePendingDelete,
   diagnosticsOpen,
   onCloseDiagnostics,
+  settingsOpen,
+  onCloseSettings,
+  onOpenSettings,
+  trashVaultOpen,
+  onCloseTrashVault,
+  onboardingOpen,
+  onOpenOnboarding,
+  onCompleteOnboarding,
   omnibarOpen,
   onCloseOmnibar,
   organizeTargetDir,
@@ -194,6 +222,52 @@ export const WorkspaceDialogs: React.FC<WorkspaceDialogsProps> = ({
       {diagnosticsOpen && (
         <Suspense fallback={null}>
           <LazyDiagnosticsModal isOpen={diagnosticsOpen} onClose={onCloseDiagnostics} />
+        </Suspense>
+      )}
+
+      {settingsOpen && (
+        <Suspense fallback={null}>
+          <LazyWorkspaceSettingsModal
+            isOpen={settingsOpen}
+            onClose={onCloseSettings}
+            vaultConfig={vault.vaultConfig}
+            initialModelsSnapshot={llmState.modelsSnapshot}
+            onModelsUpdated={llmState.applyModelsSnapshot}
+            onVaultConfigUpdated={vault.refreshWorkspaceMetadata}
+            onOpenOnboarding={onOpenOnboarding}
+            onToggleDeveloperBadges={vault.setDeveloperBadges}
+            onChangeDeleteMode={vault.handleSetDefaultDeleteMode}
+            showToast={showToast}
+          />
+        </Suspense>
+      )}
+
+      {trashVaultOpen && (
+        <Suspense fallback={null}>
+          <LazyTrashVaultModal
+            isOpen={trashVaultOpen}
+            onClose={onCloseTrashVault}
+            onRestoredOrPurged={handleRefreshAll}
+            onEmptyAll={vault.handleEmptyTrashVault}
+            showToast={showToast}
+          />
+        </Suspense>
+      )}
+
+      {onboardingOpen && (
+        <Suspense fallback={null}>
+          <LazyOnboardingModal
+            isOpen={onboardingOpen}
+            onComplete={onCompleteOnboarding}
+            vaultConfig={vault.vaultConfig}
+            modelsSnapshot={llmState.modelsSnapshot}
+            onAddVaultRoot={vault.handleAddVaultRoot}
+            onIndexRoot={llmState.startIndexing}
+            onOpenSettings={(): void => {
+              onCompleteOnboarding();
+              onOpenSettings();
+            }}
+          />
         </Suspense>
       )}
 

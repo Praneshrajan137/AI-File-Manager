@@ -1,7 +1,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { extractBasename, extractParentDirectory, isPathInsideDirectory, normalizeComparablePath } from '@renderer/utils/pathHelpers';
-import { resolveCopyCollisionName } from '@renderer/utils/explorerHelpers';
+import { resolveCopyCollisionName, extractExternalDroppedPaths } from '@renderer/utils/explorerHelpers';
 import { Breadcrumb } from '@renderer/components/Toolbar/Breadcrumb';
 import { wrapBridgeNamespace } from '@renderer/utils/installElectronAPI';
 import { wrapIPCError, wrapIPCSuccess } from '@shared/ipc/envelope';
@@ -24,6 +24,9 @@ import { SplitPaneExplorer } from '@renderer/components/FileExplorer/SplitPaneEx
 import { ChatInput } from '@renderer/components/ChatPanel/ChatInput';
 import { MessageBubble } from '@renderer/components/ChatPanel/MessageBubble';
 import { DryRunPlanModal } from '@renderer/components/Organizer/DryRunPlanModal';
+import { WorkspaceSettingsModal } from '@renderer/components/Settings/WorkspaceSettingsModal';
+import { TrashVaultModal } from '@renderer/components/Vault/TrashVaultModal';
+import { OnboardingModal } from '@renderer/components/Onboarding/OnboardingModal';
 import { resolveQuickLookAction, PREVIEW_LINE_LIMIT } from '@renderer/hooks/usePreviewDrawer';
 import { IPC_SCHEMAS } from '@shared/ipc/contracts';
 import type { FileNode, FilePreviewResult, OrganizePlanResult } from '@shared/contracts';
@@ -142,8 +145,8 @@ describe('Renderer UI & M5 Control Upgrades', () => {
     });
   });
 
-  describe('FilePreviewDrawer (RingBuffer + LRUCache)', () => {
-    it('renders buffered lines, line numbers, cache HIT and Truncated badges', () => {
+  describe('FilePreviewDrawer (RingBuffer + LRUCache + Quick Edit)', () => {
+    it('renders user-friendly badges by default, raw DSA badges when developerBadges=true, and inline edit mode', () => {
       const preview: FilePreviewResult = {
         path: SAMPLE_FILES[0].path,
         name: 'alpha.txt',
@@ -157,13 +160,14 @@ describe('Renderer UI & M5 Control Upgrades', () => {
         fromCache: true,
       };
 
-      const html = renderToStaticMarkup(
+      const defaultHtml = renderToStaticMarkup(
         React.createElement(FilePreviewDrawer, {
           isOpen: true,
           file: SAMPLE_FILES[0],
           preview,
           loading: false,
           error: null,
+          onStartEdit: () => undefined,
           onClose: () => undefined,
           onRefresh: () => undefined,
           onOpenExternal: () => undefined,
@@ -171,10 +175,53 @@ describe('Renderer UI & M5 Control Upgrades', () => {
         })
       );
 
-      expect(html).toContain('data-testid="file-preview-drawer"');
-      expect(html).toContain('LRUCache HIT');
-      expect(html).toContain('Capped');
-      expect(html).toContain('Second line TOKEN_99');
+      expect(defaultHtml).toContain('data-testid="file-preview-drawer"');
+      expect(defaultHtml).toContain('>Cached<');
+      expect(defaultHtml).toContain('title="Served from LRUCache"');
+      expect(defaultHtml).toContain('data-testid="preview-edit-button"');
+      expect(defaultHtml).toContain('Capped');
+      expect(defaultHtml).toContain('Second line TOKEN_99');
+
+      const devHtml = renderToStaticMarkup(
+        React.createElement(FilePreviewDrawer, {
+          isOpen: true,
+          file: SAMPLE_FILES[0],
+          preview,
+          loading: false,
+          error: null,
+          developerBadges: true,
+          onClose: () => undefined,
+          onRefresh: () => undefined,
+          onOpenExternal: () => undefined,
+          onCopyPath: () => undefined,
+        })
+      );
+      expect(devHtml).toContain('LRUCache HIT');
+      expect(devHtml).toContain('RingBuffer max 100');
+
+      const editingHtml = renderToStaticMarkup(
+        React.createElement(FilePreviewDrawer, {
+          isOpen: true,
+          file: SAMPLE_FILES[0],
+          preview,
+          loading: false,
+          error: null,
+          isEditing: true,
+          editContent: 'edited full content',
+          editDirty: true,
+          onStartEdit: () => undefined,
+          onCancelEdit: () => undefined,
+          onChangeEditContent: () => undefined,
+          onSaveEdit: () => undefined,
+          onClose: () => undefined,
+          onRefresh: () => undefined,
+          onOpenExternal: () => undefined,
+          onCopyPath: () => undefined,
+        })
+      );
+      expect(editingHtml).toContain('data-testid="preview-editor-textarea"');
+      expect(editingHtml).toContain('data-testid="preview-save-button"');
+      expect(editingHtml).toContain('edited full content');
     });
 
     it('renders binary notice for binary previews', () => {
@@ -783,6 +830,101 @@ describe('Renderer UI & M5 Control Upgrades', () => {
       });
       expect(reconciledPatch?.content).toBe('Verified [auth.ts#L1-L5] and (unverified: fake.ts#L99)');
       expect(reconciledPatch?.sources).toEqual(['C:\\vault\\auth.ts']);
+    });
+
+    it('renders Stage 3 WorkspaceSettingsModal, TrashVaultModal, OnboardingModal, and extractExternalDroppedPaths', () => {
+      const settingsHtml = renderToStaticMarkup(
+        React.createElement(WorkspaceSettingsModal, {
+          isOpen: true,
+          onClose: () => undefined,
+          vaultConfig: {
+            allowedRoots: ['C:\\Users\\alice\\docs'],
+            indexedRoots: ['C:\\Users\\alice\\docs'],
+            excludedDirs: ['.git'],
+            favorites: [],
+            defaultDeleteMode: 'vault',
+            ui: {
+              theme: 'light',
+              explorerLens: 'files',
+              viewMode: 'list',
+              splitPaneOpen: false,
+              onboardingCompleted: true,
+              developerBadges: false,
+            },
+          },
+          initialModelsSnapshot: {
+            available: true,
+            provider: 'ollama',
+            ollamaUrl: 'http://localhost:11434',
+            models: ['llama3.2'],
+            activeModel: 'llama3.2',
+            embeddingModel: 'Xenova/bge-small-en-v1.5',
+            rerankerModel: 'Xenova/ms-marco-MiniLM-L-6-v2',
+            modelCacheDir: 'C:\\Users\\alice\\.privatevault\\models',
+            embeddingCached: false,
+            embeddingCacheBytes: 0,
+            rerankerCached: false,
+            rerankerCacheBytes: 0,
+            supportedEmbeddingDevices: ['cpu'],
+            temperature: 0.7,
+            maxTokens: 2048,
+            embeddingDevice: 'auto',
+            allowRemoteModels: true,
+          },
+        })
+      );
+      expect(settingsHtml).toContain('data-testid="workspace-settings-modal"');
+      expect(settingsHtml).toContain('data-testid="settings-download-onnx-button"');
+      expect(settingsHtml).toContain('data-testid="settings-dev-badges-checkbox"');
+
+      const trashHtml = renderToStaticMarkup(
+        React.createElement(TrashVaultModal, {
+          isOpen: true,
+          onClose: () => undefined,
+          onRestoredOrPurged: async () => undefined,
+          onEmptyAll: async () => undefined,
+          showToast: () => undefined,
+        })
+      );
+      expect(trashHtml).toContain('data-testid="trash-vault-modal"');
+      expect(trashHtml).toContain('Trash Vault Recovery');
+
+      const onboardingHtml = renderToStaticMarkup(
+        React.createElement(OnboardingModal, {
+          isOpen: true,
+          onComplete: () => undefined,
+          vaultConfig: {
+            allowedRoots: ['C:\\Users\\alice\\docs'],
+            indexedRoots: [],
+            excludedDirs: ['.git'],
+            favorites: [],
+            defaultDeleteMode: 'vault',
+          },
+          modelsSnapshot: null,
+          onAddVaultRoot: async () => undefined,
+          onIndexRoot: async () => undefined,
+          onOpenSettings: () => undefined,
+        })
+      );
+      expect(onboardingHtml).toContain('data-testid="onboarding-modal"');
+      expect(onboardingHtml).toContain('Welcome to PrivateVault AI');
+
+      // Internal drags must never be treated as external OS drops
+      expect(
+        extractExternalDroppedPaths({
+          types: ['application/x-fm-paths', 'Files'],
+          files: [{ path: 'C:\\outside.txt' }],
+          getData: () => '["C:\\\\alpha.txt"]',
+        } as unknown as DataTransfer)
+      ).toEqual([]);
+
+      expect(
+        extractExternalDroppedPaths({
+          types: ['Files'],
+          files: [{ path: 'C:\\desktop\\import.md' }, { path: 'C:\\desktop\\import.md' }],
+          getData: () => '',
+        } as unknown as DataTransfer)
+      ).toEqual(['C:\\desktop\\import.md']);
     });
   });
 });

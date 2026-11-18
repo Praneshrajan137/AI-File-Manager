@@ -10,7 +10,31 @@ const path = require('path');
 module.exports = (env, argv) => {
     const isProduction = argv?.mode === 'production' || process.env.NODE_ENV === 'production';
 
-    return {
+    const sharedResolve = {
+        extensions: ['.ts', '.js', '.json'],
+        alias: {
+            '@shared': path.resolve(__dirname, 'src/shared'),
+            '@main': path.resolve(__dirname, 'src/main'),
+            '@llm': path.resolve(__dirname, 'src/llm'),
+        },
+    };
+
+    const sharedModule = {
+        rules: [
+            {
+                test: /\.ts$/,
+                exclude: /node_modules/,
+                use: {
+                    loader: 'ts-loader',
+                    options: {
+                        configFile: 'tsconfig.json',
+                    },
+                },
+            },
+        ],
+    };
+
+    const mainAndWorkerConfig = {
         // Target: Electron main process (Node.js environment)
         target: 'electron-main',
 
@@ -19,40 +43,19 @@ module.exports = (env, argv) => {
             main: './src/main/main.ts',
             preload: './src/main/preload.ts',
             embeddingWorker: './src/llm/workers/embeddingWorker.ts',
-            mcpServer: './src/mcp/WorkspaceMcpServer.ts',
         },
 
         // Output configuration
         output: {
             path: path.resolve(__dirname, 'dist/main'),
-            filename: '[name].js',  // Creates main.js and preload.js
+            filename: '[name].js',  // Creates main.js, preload.js, and embeddingWorker.js
         },
 
         // Module resolution
-        resolve: {
-            extensions: ['.ts', '.js', '.json'],
-            alias: {
-                '@shared': path.resolve(__dirname, 'src/shared'),
-                '@main': path.resolve(__dirname, 'src/main'),
-                '@llm': path.resolve(__dirname, 'src/llm'),
-            },
-        },
+        resolve: sharedResolve,
 
         // Module rules
-        module: {
-            rules: [
-                {
-                    test: /\.ts$/,
-                    exclude: /node_modules/,
-                    use: {
-                        loader: 'ts-loader',
-                        options: {
-                            configFile: 'tsconfig.json',
-                        },
-                    },
-                },
-            ],
-        },
+        module: sharedModule,
 
         // Node configuration (important for Electron)
         node: {
@@ -88,4 +91,35 @@ module.exports = (env, argv) => {
             hints: false,
         },
     };
+
+    // Standalone single-file Node.js MCP CLI bundle so external MCP clients
+    // can run `node <unpacked>/dist/main/mcpServer.js` without reading inside app.asar.
+    const mcpServerConfig = {
+        target: 'node',
+        entry: {
+            mcpServer: './src/mcp/WorkspaceMcpServer.ts',
+        },
+        output: {
+            path: path.resolve(__dirname, 'dist/main'),
+            filename: '[name].js',
+        },
+        resolve: sharedResolve,
+        module: sharedModule,
+        node: {
+            __dirname: false,
+            __filename: false,
+        },
+        externals: {
+            electron: 'commonjs electron',
+            'node:sqlite': 'commonjs node:sqlite',
+            fsevents: 'commonjs fsevents',
+        },
+        mode: isProduction ? 'production' : 'development',
+        devtool: isProduction ? false : 'source-map',
+        performance: {
+            hints: false,
+        },
+    };
+
+    return [mainAndWorkerConfig, mcpServerConfig];
 };

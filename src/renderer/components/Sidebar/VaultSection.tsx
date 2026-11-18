@@ -11,6 +11,7 @@ interface VaultSectionProps {
   onRemoveRoot: (rootPath: string) => Promise<void>;
   onToggleIndexed: (rootPath: string, enabled: boolean) => Promise<void>;
   onEmptyTrashVault: () => Promise<void>;
+  onOpenTrashVault?: () => void;
 }
 
 function normalizePathKey(target: string): string {
@@ -25,6 +26,7 @@ export const VaultSection: React.FC<VaultSectionProps> = ({
   onRemoveRoot,
   onToggleIndexed,
   onEmptyTrashVault,
+  onOpenTrashVault,
 }) => {
   const [busy, setBusy] = useState(false);
 
@@ -133,22 +135,36 @@ export const VaultSection: React.FC<VaultSectionProps> = ({
 
       {journalState && journalState.vaultItemCount > 0 && (
         <div
-          className="mt-2 px-2 py-1.5 bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 rounded-lg flex items-center justify-between text-[11px] text-amber-900 dark:text-amber-200"
+          className="mt-2 px-2 py-1.5 bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 rounded-lg flex items-center justify-between gap-1.5 text-[11px] text-amber-900 dark:text-amber-200"
           data-testid="trash-vault-summary"
         >
-          <span className="truncate">
+          <span className="truncate flex-1">
             Vault: {journalState.vaultItemCount} ({formatFileSize(journalState.vaultTotalBytes)})
           </span>
-          <button
-            type="button"
-            onClick={() => void runAction(onEmptyTrashVault)}
-            disabled={busy}
-            data-testid="empty-trash-vault-button"
-            className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 dark:bg-amber-900/70 hover:bg-amber-200 dark:hover:bg-amber-800 text-amber-900 dark:text-amber-100 rounded font-medium flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
-          >
-            <Trash2 className="w-3 h-3" aria-hidden="true" />
-            <span>Empty</span>
-          </button>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {onOpenTrashVault && (
+              <button
+                type="button"
+                onClick={onOpenTrashVault}
+                disabled={busy}
+                title="Inspect or restore soft-deleted items"
+                data-testid="inspect-trash-vault-button"
+                className="px-2 py-0.5 bg-white/80 dark:bg-slate-900/70 hover:bg-white dark:hover:bg-slate-900 text-amber-900 dark:text-amber-100 border border-amber-300 dark:border-amber-700 rounded font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+              >
+                Restore
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void runAction(onEmptyTrashVault)}
+              disabled={busy}
+              data-testid="empty-trash-vault-button"
+              className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 dark:bg-amber-900/70 hover:bg-amber-200 dark:hover:bg-amber-800 text-amber-900 dark:text-amber-100 rounded font-medium flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500"
+            >
+              <Trash2 className="w-3 h-3" aria-hidden="true" />
+              <span>Empty</span>
+            </button>
+          </div>
         </div>
       )}
     </div>

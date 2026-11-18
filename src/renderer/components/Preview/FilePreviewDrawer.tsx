@@ -25,6 +25,16 @@ interface FilePreviewDrawerProps {
   connectionsLoading?: boolean;
   loading: boolean;
   error: string | null;
+  developerBadges?: boolean;
+  isEditing?: boolean;
+  editContent?: string;
+  editDirty?: boolean;
+  editSaving?: boolean;
+  editError?: string | null;
+  onStartEdit?: () => void;
+  onCancelEdit?: () => void;
+  onChangeEditContent?: (value: string) => void;
+  onSaveEdit?: () => void;
   hasPrev?: boolean;
   hasNext?: boolean;
   onPrevFile?: () => void;
@@ -48,6 +58,16 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
   connectionsLoading = false,
   loading,
   error,
+  developerBadges = false,
+  isEditing = false,
+  editContent = '',
+  editDirty = false,
+  editSaving = false,
+  editError = null,
+  onStartEdit,
+  onCancelEdit,
+  onChangeEditContent,
+  onSaveEdit,
   hasPrev = false,
   hasNext = false,
   onPrevFile,
@@ -122,10 +142,17 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
         fileConnections={fileConnections}
         loading={loading}
         activeTab={activeTab}
+        developerBadges={developerBadges}
         hasPrev={hasPrev}
         hasNext={hasNext}
         hasCopyableText={copyableText.length > 0}
         copiedContent={copiedContent}
+        isEditing={isEditing}
+        editDirty={editDirty}
+        editSaving={editSaving}
+        onStartEdit={onStartEdit}
+        onCancelEdit={onCancelEdit}
+        onSaveEdit={onSaveEdit}
         onSelectTab={setActiveTab}
         onPrevFile={onPrevFile}
         onNextFile={onNextFile}
@@ -150,6 +177,13 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
         assetKind={assetKind}
         assetUrl={assetUrl}
         assetError={assetError}
+        isEditing={isEditing}
+        editContent={editContent}
+        editSaving={editSaving}
+        editError={editError}
+        onChangeEditContent={onChangeEditContent}
+        onSaveEdit={onSaveEdit}
+        onCancelEdit={onCancelEdit}
         onAssetError={setAssetError}
         onOpenCitation={onOpenCitation}
       />
@@ -161,7 +195,9 @@ export const FilePreviewDrawer: React.FC<FilePreviewDrawerProps> = ({
               ? `Lines ${lineRange.startLine}-${lineRange.endLine} of ${lineRange.totalLines}`
               : assetUrl
                 ? 'Streaming via vault-asset://'
-                : `${preview?.totalLinesBuffered ?? 0} lines buffered (RingBuffer max 100)`}
+                : developerBadges
+                  ? `${preview?.totalLinesBuffered ?? 0} lines buffered (RingBuffer max 100)`
+                  : `${preview?.totalLinesBuffered ?? 0} lines buffered`}
           </span>
           <span className="truncate max-w-[180px]" title={file.path}>
             {file.path}

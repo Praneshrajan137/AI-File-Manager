@@ -1,4 +1,6 @@
-# PROJECT-2: OS File Manager with Custom LLM
+# PROJECT-2: PrivateVault AI — Local Spatial Knowledge & File OS
+
+> **[Current Architecture Notice]**: The original Dec 2025 project bootstrap notes below are preserved for historical reference; active implementation runs **PrivateVault AI** on **Electron 45**, **Node.js 24 LTS**, **TypeScript 5.3**, **React 18 + Tailwind CSS**, **SQLite WAL/FTS5 (`node:sqlite`) + LanceDB**, **standalone pure-Node MCP (`dist/main/mcpServer.js`)**, **Jest + React Testing Library + `jest-axe` + Playwright Electron E2E**, and canonical storage in `~/.privatevault/`. See [README.md](./README.md) and [AGENTS.md](./AGENTS.md) for current workflows and hardware CI rules.
 
 
 
@@ -67,7 +69,7 @@ This is an **industrial-grade Operating System File Manager** that demonstrates:
 | File System | Node.js fs/promises | Non-blocking I/O, streams support |
 | Vector DB | LanceDB | In-process, no external server, local-first |
 | LLM Interface | Ollama | Local model execution, privacy-focused |
-| Testing | Vitest + React Testing Library | Fast, TypeScript-native, good DX |
+| Testing | Jest + React Testing Library + Playwright | Electron-native IPC, jsdom + jest-axe, real Electron E2E |
 | Build | Webpack + electron-builder | Standard Electron toolchain |
 
 
@@ -206,7 +208,7 @@ function validatePath(requestedPath: string, allowedRoot: string): ValidationRes
 | Directory scan (1000 files) | <200ms | console.time() |
 | Memory usage (idle) | <300MB | Task Manager |
 | Memory usage (10k files) | <500MB | Task Manager |
-| Test coverage | >90% | Vitest --coverage |
+| Test coverage | Configured CI thresholds (see `jest.config.js`) | `npx jest --coverage` |
 | Build time | <60s | Webpack stats |
 
 
