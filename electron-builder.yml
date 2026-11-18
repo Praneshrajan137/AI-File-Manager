@@ -51,6 +51,7 @@ win:
 
 # Linux Configuration
 linux:
+  executableName: privatevault-ai
   target:
     - AppImage
     - deb

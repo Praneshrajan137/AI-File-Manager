@@ -20,9 +20,15 @@ function findPackagedExecutable(unpackedDir) {
     'chrome-sandbox',
     'chrome_crashpad_handler',
     'xdg-open',
+    'xdg-mime',
   ]);
   const binaries = entries.filter((e) => {
-    if (!e.isFile() || excludedLinux.has(e.name) || e.name.endsWith('.so')) {
+    if (
+      !e.isFile() ||
+      excludedLinux.has(e.name) ||
+      /\.so(?:\.|$)/i.test(e.name) ||
+      /\.(?:pak|bin|dat|json|txt|html)$/i.test(e.name)
+    ) {
       return false;
     }
     const mode = fs.statSync(path.join(unpackedDir, e.name)).mode;
