@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - 'frontier/**'
+      - 'arch/**'
   pull_request:
     branches:
       - main

@@ -32,23 +32,26 @@ This layer is the **heart of the application**. It's the ONLY layer permitted to
 
 ```
 src/main/
-├── main.ts                 # Electron main entry point
-├── services/
-│   ├── FileSystemService.ts    # Implements IFileSystemService
-│   ├── DirectoryScanner.ts     # Recursive directory traversal
-│   ├── FileWatcher.ts          # Chokidar event handling
-│   └── PathValidator.ts        # Security validation
-├── handlers/
-│   ├── ipcHandlers.ts          # IPC channel definitions
-│   └── securityMiddleware.ts   # Request validation
-├── dsa/
-│   ├── PathTrie.ts             # File path search (O(L))
-│   ├── LRUCache.ts             # Thumbnail/metadata cache
-│   ├── EventQueue.ts           # Priority queue for file events
-│   ├── HistoryStack.ts         # Navigation history
-│   └── RingBuffer.ts           # Log file preview
-└── CLAUDE.md               # This file
+├── main.ts                         # Electron Main entrypoint
+├── preload.ts                      # Preload bridge generated via @shared/ipc/apiManifest
+├── entry/
+│   └── WorkspaceRuntime.ts         # Composition Root (wires Main, Platform, Kernel & Intelligence)
+├── handlers/                       # Zod + senderFrame + RateLimiter IPC adapters
+├── kernel/
+│   └── FsCommandCoordinator.ts     # Atomic suppressPaths + FS/Journal mutation + event sync
+├── platform/
+│   ├── VaultRootAuthority.ts       # Sole allowedRoots & PathValidator owner
+│   ├── pathNormalize.ts            # Cross-platform canonical path helpers
+│   ├── storage/                    # VaultSqliteDb (WAL) + FTS5/Link/Duplicate/Trace stores
+│   ├── journal/                    # WalJournalLog + TrashVaultStore + OS trash adapter
+│   └── organizer/                  # OrganizerPlanner (pure read-only dry-run planner for MCP & AI)
+├── services/                       # FileSystemService, ReactiveWorkspaceKernel facade, OperationJournal,
+│                                   # AIOrganizerService, WorkspaceKnowledgeGraph facade, WorkspaceSearchService
+├── dsa/                            # PathTrie, LRUCache, EventQueue, HistoryStack, RingBuffer
+└── CLAUDE.md
 ```
+
+> **Enforced Boundary Rules (`.eslintrc.js` + `ArchitectureBoundaries.test.ts`):** `main/services`, `main/platform`, and `main/kernel` MUST NOT import from `main/handlers` or `llm`; only `VaultRootAuthority` constructs `new PathValidator`; `fileSystemHandlers.ts` MUST NOT import `llmHandlers` / LanceDB / ONNX or call `notifyMutation` directly (use `FsCommandCoordinator`).
 
 
 
@@ -585,7 +588,7 @@ describe('FileSystemService', () => {
 
 
 
-- `src/shared/contracts.ts` - IFileSystemService interface
+- `src/shared/contracts/fs.ts` - IFileSystemService interface
 
 - `docs/ARCHITECTURE.md` - IPC channel specifications
 

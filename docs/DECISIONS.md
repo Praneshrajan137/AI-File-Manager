@@ -1011,6 +1011,72 @@ Package `WorkspaceMcpServer` (`dist/main/mcpServer.js`) as a pure-Node JSON-RPC 
 
 ---
 
+### **DECISION-022: Domain-Partitioned Acyclic Single Repository vs Nx Multi-Package / UtilityProcess Split**
+
+**Date:** November 18, 2026  
+**Status:** Accepted  
+**Category:** Structural Architecture  
+**Decision:** Partition `src/` cleanly by directory boundaries (`main/entry`, `main/handlers`, `main/kernel`, `main/services`, `main/platform`, `llm/{ports,runtime,services,agent}`, `mcp`, `shared/{pure,contracts,ipc}`, `renderer`) under ESLint `no-restricted-imports` + TypeScript AST tests rather than converting to an Nx monorepo or spawning an extra Electron `UtilityProcess` for SQLite/FS.  
+**Alternatives Rejected:** Nx/Turborepo workspace split + immediate `UtilityProcess` daemon (rejected due to webpack/electron-builder `asarUnpack` churn and baseline memory overhead on 12 GB laptops); discipline-only `CLAUDE.md` rules (empirically falsified by 33 cross-layer violations).  
+**Revisit Condition:** Revisit `UtilityProcess` isolation if multi-window vault isolation is introduced or main-thread SQLite stalls exceed 50 ms p95 under >100k-file vaults.
+
+---
+
+### **DECISION-023: Single Root Security Authority (`VaultRootAuthority`) & Atomic Mutation Coordinator (`FsCommandCoordinator`)**
+
+**Date:** November 18, 2026  
+**Status:** Accepted  
+**Category:** Security & Concurrency Integrity  
+**Decision:** Consolidate all `allowedRoots` resolution, legacy `[Documents, Downloads, Desktop]` normalization, config-drift detection, and `PathValidator` creation (`new PathValidator` x1) into `VaultRootAuthority`, and route every IPC/AI mutation through `FsCommandCoordinator` so `suppressPaths`, disk mutation, and `emitRecordMutations` execute atomically.  
+**Alternatives Rejected:** Per-service `new PathValidator` construction and manual `notifyMutation` calls in IPC handlers (previously caused 25 manual handler sync calls and MCP/AssetProtocol drift).  
+**Revisit Condition:** Revisit only if per-window independent root ACLs replace global vault roots.
+
+---
+
+### **DECISION-024: Repository-Split `VaultSqliteDb` (`node:sqlite`), `WalJournalLog` / `TrashVaultStore`, and Read-Only `OrganizerPlanner`**
+
+**Date:** November 18, 2026  
+**Status:** Accepted  
+**Category:** Storage & Process Safety  
+**Decision:** Replace the 1,968L `WorkspaceKnowledgeGraph` with `VaultSqliteDb` (uniform `WAL`, `busy_timeout=5000`, `synchronous=NORMAL`, foreign keys `ON` on Node 24's built-in `node:sqlite`) and 4 focused stores (`DocumentFtsOutboxStore`, `LinkSymbolGraphStore`, `DuplicateClusterStore`, `AgentTraceStore`), extract `WalJournalLog`/`TrashVaultStore`/`osTrashAdapter` from `OperationJournal`, and extract read-only `OrganizerPlanner` so `WorkspaceMcpServer` imports zero write/journal/`llm`/`electron` code and `fs:move` impact checks execute pure SQLite lookups (`checkGraphImpactSqlite`).  
+**Alternatives Rejected:** Retaining `better-sqlite3` C++ native builds (Electron ABI fragility) or instantiating a dummy `os.tmpdir()` `OperationJournal` inside read-only MCP.  
+**Revisit Condition:** Revisit if MCP adds explicit user-confirmed write tools requiring transaction journaling.
+
+---
+
+### **DECISION-025: Hexagonal Ports (`IntelligencePorts`), `WorkspaceRuntime` Composition Root & Tier A/B Fault Isolation**
+
+**Date:** November 18, 2026  
+**Status:** Accepted  
+**Category:** AI Runtime Resilience  
+**Decision:** Invert all `llm -> main` and `llm -> electron` dependencies via `src/llm/ports/IntelligencePorts.ts`, replace the 1,992L `LlmWorkspaceService.ts` monolith with `WorkspaceRuntime` (`src/main/entry/WorkspaceRuntime.ts`) composing `ModelLifecycleManager`, `IntelligenceRuntime`, `IndexingCoordinator` (sole pre-init mutation queue owner), and `CopilotCoordinator`, and isolate Tier A (`FTS5/KG/OfflineSynthesis`) from lazy-imported Tier B (`LanceDB/ONNX`) failures.  
+**Alternatives Rejected:** Reflective DI containers (`tsyringe`/`inversify`) and keeping singleton globals in `src/main/services/LlmWorkspaceService.ts`.  
+**Revisit Condition:** Revisit if multiple concurrent vault workspaces need independent multi-instance runtimes in-process.
+
+---
+
+### **DECISION-026: Domain-Split Shared Contracts & Single-Source `apiManifest.ts` IPC Bridge**
+
+**Date:** November 18, 2026  
+**Status:** Accepted  
+**Category:** Interface Stability  
+**Decision:** Split `shared/contracts.ts` into domain modules (`core`, `fs`, `vault`, `graph`, `search`, `ai`, `diagnostics`), separate pure helpers (`shared/pure/*`) from Node helpers (`shared/utils/*`, `shared/config/*`), and derive `preload.ts` runtime wrappers + `renderer/electron.d.ts` signatures from `src/shared/ipc/apiManifest.ts` with compile-time `IPCChannel` exhaustiveness verification.  
+**Alternatives Rejected:** Hand-maintaining four separate files (`contracts`, `ipc/contracts`, `preload.ts`, `electron.d.ts`).  
+**Revisit Condition:** Revisit if non-Electron frontends consume the IPC manifest via HTTP/WebSocket transport.
+
+---
+
+### **DECISION-027: Automated Layer Boundary & Tarjan SCC Acyclicity Gates**
+
+**Date:** November 18, 2026  
+**Status:** Accepted  
+**Category:** Architecture Governance  
+**Decision:** Enforce cross-layer import restrictions in `.eslintrc.js` `overrides` (`no-restricted-imports`) and run full TypeScript AST Tarjan SCC cycle detection (`0` cycles), IPC manifest parity checks, and monolith LOC ceilings in `tests/unit/ArchitectureBoundaries.test.ts` on every PR in CI.  
+**Alternatives Rejected:** Advisory code review conventions or online-only plugin dependencies.  
+**Revisit Condition:** Do not weaken; extend rules only as new domain boundaries are introduced.
+
+---
+
 **DOCUMENT MAINTENANCE**:
 - Add new decisions as they arise
 - Never delete, only deprecate with reason

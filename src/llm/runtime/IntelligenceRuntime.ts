@@ -29,13 +29,13 @@ import {
   TierHealthStatus,
 } from '../ports/IntelligencePorts';
 import { ContextManager } from '../services/ContextManager';
-import { IndexingService } from '../services/IndexingService';
-import { LLMInterface } from '../services/LLMInterface';
+import type { IndexingService } from '../services/IndexingService';
+import type { LLMInterface } from '../services/LLMInterface';
 import { OfflineSynthesisService } from '../services/OfflineSynthesisService';
-import { RetrievalService } from '../services/RetrievalService';
+import type { RetrievalService } from '../services/RetrievalService';
 import { clusterDocumentsByVector } from '../services/SemanticClustering';
-import { DocumentVectorCentroid, VectorStore } from '../services/VectorStore';
-import { EmbeddingWorkerPool } from '../workers/EmbeddingWorkerPool';
+import type { DocumentVectorCentroid, VectorStore } from '../services/VectorStore';
+import type { EmbeddingWorkerPool } from '../workers/EmbeddingWorkerPool';
 import { ModelLifecycleManager } from './ModelLifecycleManager';
 
 export interface IntelligenceRuntimeDeps {
@@ -186,9 +186,21 @@ export class IntelligenceRuntime {
       try {
         this.closeSessionKnowledgeGraph();
 
+        const [
+          { VectorStore: VectorStoreCtor },
+          { EmbeddingWorkerPool: EmbeddingWorkerPoolCtor },
+          { IndexingService: IndexingServiceCtor },
+          { RetrievalService: RetrievalServiceCtor },
+        ] = await Promise.all([
+          import('../services/VectorStore'),
+          import('../workers/EmbeddingWorkerPool'),
+          import('../services/IndexingService'),
+          import('../services/RetrievalService'),
+        ]);
+
         const llmConfig = this.deps.configPort.readLlmConfig();
         const configuredEmbeddingModel = llmConfig?.embeddingModel?.trim() || undefined;
-        localVectorStore = new VectorStore({
+        localVectorStore = new VectorStoreCtor({
           modelId: configuredEmbeddingModel,
           knowledgeGraphFactory: this.deps.createKnowledgeGraph,
           diagnosticsSink: this.deps.diagnostics,
@@ -203,7 +215,7 @@ export class IntelligenceRuntime {
               allowRemoteModels: llmConfig?.allowRemoteModels,
               diagnosticsSink: this.deps.diagnostics,
             })
-          : new EmbeddingWorkerPool({
+          : new EmbeddingWorkerPoolCtor({
               modelName: configuredEmbeddingModel,
               allowRemoteModels: llmConfig?.allowRemoteModels,
               diagnosticsSink: this.deps.diagnostics,
@@ -238,8 +250,8 @@ export class IntelligenceRuntime {
         this.vectorStore = localVectorStore;
         this.embeddingModel = localEmbeddingModel;
         this.llmInterface = localLlm;
-        this.indexingService = new IndexingService(localEmbeddingModel, localVectorStore);
-        this.retrievalService = new RetrievalService(
+        this.indexingService = new IndexingServiceCtor(localEmbeddingModel, localVectorStore);
+        this.retrievalService = new RetrievalServiceCtor(
           localVectorStore,
           localEmbeddingModel,
           contextManager
@@ -474,7 +486,8 @@ export class IntelligenceRuntime {
       return new Map();
     }
 
-    const ephemeralStore = new VectorStore({ enableKnowledgeGraph: false });
+    const { VectorStore: VectorStoreCtor } = await import('../services/VectorStore');
+    const ephemeralStore = new VectorStoreCtor({ enableKnowledgeGraph: false });
     try {
       await ephemeralStore.initialize(dbDir);
       return await ephemeralStore.getDocumentCentroids(filePaths);
@@ -546,7 +559,7 @@ export class IntelligenceRuntime {
     const configuredEmbModel = llmCfg?.embeddingModel?.trim() || undefined;
     const pool =
       this.embeddingModel ??
-      new EmbeddingWorkerPool({
+      new (await import('../workers/EmbeddingWorkerPool')).EmbeddingWorkerPool({
         modelName: configuredEmbModel,
         device: llmCfg?.embeddingDevice ?? 'auto',
         allowRemoteModels: false,

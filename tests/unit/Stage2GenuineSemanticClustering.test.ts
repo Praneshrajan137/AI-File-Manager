@@ -10,7 +10,7 @@ import { PathValidator } from '../../src/main/services/PathValidator';
 import { FileSystemService } from '../../src/main/services/FileSystemService';
 import { OperationJournal } from '../../src/main/services/OperationJournal';
 import { AIOrganizerService } from '../../src/main/services/AIOrganizerService';
-import { setLlmModelConfig } from '../../src/main/services/LlmWorkspaceService';
+import { getWorkspaceRuntime } from '../../src/main/entry/WorkspaceRuntime';
 import { SmartCollectionsLens } from '../../src/renderer/components/Spatial/SmartCollectionsLens';
 import type { IpcMainInvokeEvent } from 'electron';
 
@@ -206,10 +206,10 @@ describe('Stage 2: Genuine Vector Semantic Clustering, Centroids & Loopback Enfo
   it('rejects non-loopback URLs in setLlmModelConfig and renders truthful SmartCollectionsLens mode badges', async () => {
     const fakeEvent = {} as IpcMainInvokeEvent;
     await expect(
-      setLlmModelConfig(fakeEvent, { openAiBaseUrl: 'https://api.openai.com/v1' })
+      getWorkspaceRuntime().setLlmModelConfig(fakeEvent, { openAiBaseUrl: 'https://api.openai.com/v1' })
     ).rejects.toThrow(/Non-local LLM URL rejected/);
     await expect(
-      setLlmModelConfig(fakeEvent, { ollamaUrl: 'http://192.168.1.50:11434' })
+      getWorkspaceRuntime().setLlmModelConfig(fakeEvent, { ollamaUrl: 'http://192.168.1.50:11434' })
     ).rejects.toThrow(/Non-local LLM URL rejected/);
 
     const vecHtml = renderToStaticMarkup(

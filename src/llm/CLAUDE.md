@@ -15,17 +15,23 @@ This layer provides **"Chat with your File System"** functionality using a local
 ### Directory Structure
 ```
 src/llm/
-├── services/
-│   ├── IndexingService.ts      # File content chunking & embedding
-│   ├── VectorStore.ts          # LanceDB wrapper
-│   ├── RetrievalService.ts     # RAG pipeline
-│   ├── LLMInterface.ts         # Ollama client
-│   └── ContextManager.ts       # Context window optimization
-├── models/
-│   ├── EmbeddingModel.ts       # Embedding generation
-│   └── PromptTemplates.ts      # System prompts for LLM
-└── CLAUDE.md                   # This file
+├── ports/
+│   └── IntelligencePorts.ts        # Pure hexagonal ports (`IGraphIndexPort`, `IDiagnosticsSink`, etc.)
+├── runtime/
+│   ├── IntelligenceRuntime.ts      # Tier A (SQLite FTS5/KG/Offline) vs Tier B (lazy LanceDB/ONNX) isolation
+│   ├── IndexingCoordinator.ts      # Sole pre-init mutation queue + background indexing & outbox replay
+│   ├── CopilotCoordinator.ts       # Streamed RAG, ReAct agent loop & grounded offline fallback
+│   └── ModelLifecycleManager.ts    # Loopback Ollama / OpenAI-compatible & model cache lifecycle
+├── services/                       # IndexingService, VectorStore, RetrievalService, LLMInterface, ContextManager,
+│                                   # OfflineSynthesisService, SemanticClustering, StructuralChunker, LocalModelTransport
+├── agent/                          # WorkspaceReActAgent
+├── orchestration/                  # GroundingVerifier, TraceLedger
+├── models/                         # EmbeddingModel, transformersLoader
+├── workers/                        # embeddingWorker, EmbeddingWorkerPool
+└── CLAUDE.md
 ```
+
+> **Enforced Boundary Rules (`.eslintrc.js` + `ArchitectureBoundaries.test.ts`):** `src/llm/**` MUST NOT import `electron`, `src/main/**`, `src/mcp/**`, or `src/renderer/**`. Host capabilities (Knowledge Graph SQLite handles, `RuntimeDiagnostics`, canonical path validation, and Electron `net.fetch`) are injected solely at `src/main/entry/WorkspaceRuntime.ts` through `src/llm/ports/IntelligencePorts.ts`.
 
 ## 🔐 PRIVACY-FIRST DESIGN
 

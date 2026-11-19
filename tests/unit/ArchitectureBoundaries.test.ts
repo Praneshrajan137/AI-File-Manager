@@ -251,7 +251,7 @@ describe('Architecture Boundaries & Acyclicity Gates', () => {
     expect(violations).toEqual([]);
   });
 
-  it('ratchets legacy cross-layer seam violations without allowing new regressions', () => {
+  it('enforces zero illegal cross-layer seam violations and zero cycles', () => {
     const valueSeam = (fromLayer: string, toLayer: string): EdgeSpec[] =>
       allInternalEdges.filter(
         (e) =>
@@ -260,13 +260,14 @@ describe('Architecture Boundaries & Acyclicity Gates', () => {
           layerOf(e.to) === toLayer
       );
 
-    // Step 1 stripped AssetProtocol/Kernel -> securityMiddleware; Step 2 stripped KG -> llm; Step 3 stripped mcp -> OperationJournal/AIOrganizerService; Step 5 stripped llm <-> main/services (except 1 temporary Step-5 shim edge deleted in Step 6)
+    // Zero-seam invariant achieved cleanly in Step 6 (`LlmWorkspaceService.ts` deleted):
     expect(valueSeam('main/services', 'main/handlers')).toEqual([]);
+    expect(valueSeam('main/services', 'main/entry')).toEqual([]);
     expect(valueSeam('llm', 'main/services')).toEqual([]);
     expect(valueSeam('llm', 'main/platform')).toEqual([]);
     expect(valueSeam('llm', 'main/entry')).toEqual([]);
+    expect(valueSeam('main/services', 'llm')).toEqual([]);
     expect(valueSeam('mcp', 'main/services').length).toBeLessThanOrEqual(3);
-    expect(valueSeam('main/services', 'llm').length).toBeLessThanOrEqual(1);
 
     const llmElectronViolations = relFiles.filter(
       (relPath) =>
@@ -274,6 +275,10 @@ describe('Architecture Boundaries & Acyclicity Gates', () => {
         (externalsByFile.get(relPath) ?? []).includes('electron')
     );
     expect(llmElectronViolations).toEqual([]);
+    expect(fs.existsSync(path.join(REPO_ROOT, 'src/main/services/LlmWorkspaceService.ts'))).toBe(
+      false
+    );
+    expect(fs.existsSync(path.join(REPO_ROOT, 'src/shared/contracts.ts'))).toBe(false);
   });
 
   it('keeps fileSystemHandlers free of llmHandlers / LanceDB / ONNX imports', () => {
@@ -384,7 +389,23 @@ describe('Architecture Boundaries & Acyclicity Gates', () => {
     expect(preloadSrc).toContain('buildPreloadInvokeTree');
     expect(preloadSrc).toContain('IPC_INVOKE_MANIFEST');
 
+    const llmHandlersSrc = fs.readFileSync(
+      path.join(REPO_ROOT, 'src/main/handlers/llmHandlers.ts'),
+      'utf-8'
+    );
+    expect(llmHandlersSrc).not.toContain('preInitKernelMutations');
+
     const dtsSrc = fs.readFileSync(path.join(REPO_ROOT, 'src/renderer/electron.d.ts'), 'utf-8');
     expect(dtsSrc).toContain('RendererInvokeTree<typeof IPC_INVOKE_MANIFEST>');
+  });
+
+  it('prevents return of 1,200+ line backend monolith files across src/', () => {
+    const oversized = relFiles
+      .map((rel) => ({
+        rel,
+        lines: fs.readFileSync(path.join(REPO_ROOT, rel), 'utf-8').split(/\r?\n/).length,
+      }))
+      .filter((entry) => entry.lines > 1200);
+    expect(oversized).toEqual([]);
   });
 });

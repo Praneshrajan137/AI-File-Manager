@@ -18,7 +18,7 @@ import { ContextManager } from '../../src/llm/services/ContextManager';
 import { RetrievalService } from '../../src/llm/services/RetrievalService';
 import { LLMInterface } from '../../src/llm/services/LLMInterface';
 import { VectorStore } from '../../src/llm/services/VectorStore';
-import { replayPendingVectorOutbox } from '../../src/main/services/LlmWorkspaceService';
+import { replayPendingVectorOutbox } from '../../src/llm/runtime/IndexingCoordinator';
 import { IEmbeddingModel, VectorRecord } from '../../src/shared/contracts';
 
 const mockWorkers: FakeWorker[] = [];

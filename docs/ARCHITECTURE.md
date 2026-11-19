@@ -1,6 +1,8 @@
 # System Architecture Document
 
-> **[Current Architecture Summary — PrivateVault AI]**: The Dec 4, 2025 design draft below is superseded where details evolved during implementation. Current runtime architecture uses **Electron 45 + Node 24 LTS**, declarative Zod IPC contracts (`shared/ipc/contracts.ts` + `IPCEnvelope`), reactive `EventQueue` + 5 CS DSAs, **SQLite WAL/FTS5 (`node:sqlite`) + LanceDB + 384-D spherical k-means `SemanticClustering`**, loopback-only Ollama / OpenAI-compatible runtimes + `OfflineSynthesisService`, writable `<userData>/models/` ONNX cache, standalone unpacked `dist/main/mcpServer.js` & `dist/main/embeddingWorker.js`, and canonical `~/.privatevault/` storage (with legacy migration from `~/.file-manager/` / `~/.project2-file-manager/`).
+> **[Current Architecture Summary — PrivateVault AI]**: The Dec 4, 2025 design draft below is superseded where details evolved during implementation. Current runtime architecture uses **Electron 45 + Node 24 LTS**, declarative Zod + single-source manifest IPC contracts (`src/shared/ipc/contracts.ts` + `apiManifest.ts` + `IPCEnvelope`), domain-split `src/shared/contracts/*` & `src/shared/pure/*`, `WorkspaceRuntime` Composition Root + Tier A (`FTS5/KG/OfflineSynthesis`) vs Tier B (`LanceDB/ONNX`) fault-isolated `IntelligenceRuntime`, `VaultRootAuthority`, `FsCommandCoordinator`, shared `VaultSqliteDb` (`node:sqlite` WAL/`busy_timeout=5000`), `WalJournalLog`/`TrashVaultStore`/`OrganizerPlanner`, standalone pure-Node `dist/main/mcpServer.js`, and canonical `~/.privatevault/` storage.
+>
+> **See Section 11** for the current enforced acyclic dependency pyramid and automated boundary checks (`.eslintrc.js` + `tests/unit/ArchitectureBoundaries.test.ts`).
 
 ## Project-2: OS File Manager with Custom LLM
 
@@ -818,5 +820,29 @@ The system evolved beyond single-pane file browsing + naive vector search into a
    - Multi-turn ReAct agent proposes `DryRunPlanModal` plans; `AIOrganizerService` executes `auto`, `type`, `date`, `deduplicate`, and `semantic_cluster` operations paired with `repairMarkdownLinks` and full transactional batch undo via `OperationJournal`.
 4. **Opt-In Read-Only MCP Server (`src/mcp/WorkspaceMcpServer.ts` -> `dist/main/mcpServer.js`)**:
    - Pure-Node JSON-RPC 2.0 `stdio` entrypoint (zero Electron runtime dependencies; logs routed strictly to `stderr`) exposing `list_directory`, `search_files`, `search_content`, `read_file_range`, `graph_lookup`, and `organize_dry_run` protected by `PathValidator` and `SecretGuard`. Runtime Diagnostics surfaces an opt-in copyable `mcp.json` snippet for external desktop clients.
+
+---
+
+## 11. ACYCLIC DOMAIN-PARTITIONED ARCHITECTURE & ENFORCED INVARIANTS (2026 REDESIGN)
+
+The backend and shared IPC surface were refactored into a strict Directed Acyclic Graph (DAG) with single-owner state authorities:
+
+1. **Strict Acyclic Layering (`0` Tarjan SCC Cycles across `src/`):**
+   - `main/entry` (`main.ts`, `WorkspaceRuntime.ts`) -> Composition Root assembling Main, Platform, Kernel, and Intelligence adapters.
+   - `main/handlers` -> Zod schema + `validateSenderFrame` + `RateLimiter` adapters (`fileSystemHandlers`, `vaultHandlers`, `searchHandlers`, `graphHandlers`, `navigationHandlers`, `llmHandlers`, `shellHandlers`, `diagnosticsHandlers`).
+   - `main/kernel` (`FsCommandCoordinator`, `ReactiveWorkspaceKernel`) -> Sole authority bracketing every FS/Journal/Organizer disk mutation with `suppressPaths` + `emitRecordMutations`.
+   - `main/services` (`FileSystemService`, `OperationJournal`, `AIOrganizerService`, `PathValidator`, `WorkspaceKnowledgeGraph` facade, `WorkspaceSearchService`, `AssetProtocol`, `RuntimeDiagnostics`).
+   - `main/platform` (`VaultRootAuthority`, `pathNormalize`, `storage/{VaultSqliteDb,DocumentFtsOutboxStore,LinkSymbolGraphStore,DuplicateClusterStore,AgentTraceStore,linkResolution}`, `journal/{WalJournalLog,TrashVaultStore,osTrashAdapter}`, `organizer/OrganizerPlanner`).
+   - `llm/` (`ports/IntelligencePorts`, `runtime/{IntelligenceRuntime,IndexingCoordinator,CopilotCoordinator,ModelLifecycleManager}`, `services/`, `agent/`, `orchestration/`, `workers/`, `models/`) -> Zero `src/main/*` or `electron` imports; `WorkspaceRuntime` injects `IGraphIndexPort`, `IDiagnosticsSink`, `IPathValidationPort`, and `net.fetch`.
+   - `mcp/` (`WorkspaceMcpServer`) -> Read-only platform/service consumers (`PathValidator`, `FileSystemService`, `WorkspaceKnowledgeGraph`, `OrganizerPlanner`, `VaultRootAuthority`) with zero `OperationJournal`, `AIOrganizerService`, `llm`, or `electron` imports.
+   - `shared/pure/`, `shared/contracts/*`, `shared/ipc/*` -> Zero Node built-in (`fs`, `path`, `crypto`, etc.) or `electron` imports; `shared/contracts/*` split cleanly across `core`, `fs`, `vault`, `graph`, `search`, `ai`, `diagnostics`.
+2. **Tier A vs Tier B Fault Containment:**
+   - `IntelligenceRuntime` separates **Tier A** (`VaultSqliteDb` / FTS5 lexical search, Knowledge Graph, `OfflineSynthesisService`, Agent Traces) from **Tier B** (lazy-imported `LanceDB` + ONNX `EmbeddingWorkerPool`). If ONNX/worker initialization fails, `tierBStatus` becomes `'unavailable'` (`tierBError` surfaced in `RuntimeDiagnostics`) while Tier A search, Knowledge Graph queries, and offline Copilot keep functioning cleanly.
+3. **Single-Source Typed IPC Bridge (`src/shared/ipc/apiManifest.ts`):**
+   - `IPC_INVOKE_MANIFEST` derives both runtime preload bindings (`buildPreloadInvokeTree` in `src/main/preload.ts`) and unwrapped renderer TypeScript types (`RendererInvokeTree` in `src/renderer/electron.d.ts`) from one compile-time-verified source.
+4. **Automated Structural Gates (Always Enforced in Lint & CI):**
+   - `.eslintrc.js` `overrides` (`no-restricted-imports`) forbid illegal cross-layer or Node-into-Renderer/Pure/LLM imports on every `npm run lint`.
+   - `tests/unit/ArchitectureBoundaries.test.ts` runs full TypeScript AST edge extraction + Tarjan SCC cycle detection (`0` cycles), 1:1 `IPC_CONTRACTS` <-> `apiManifest` <-> `preload` <-> `ElectronAPI` parity, `new PathValidator` single-owner check (`<= 1`), and `1,200`-LOC monolith ceiling checks.
+
 
 

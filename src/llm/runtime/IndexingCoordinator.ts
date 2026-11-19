@@ -11,8 +11,8 @@ import { IndexingStatus, MAX_INDEXABLE_FILE_SIZE } from '../../shared/contracts'
 import { LLMLogger } from '../../shared/logging';
 import { isSensitiveSecretFile } from '../../shared/security/SecretGuard';
 import { awaitBounded, IntelligenceRuntime } from './IntelligenceRuntime';
-import { IndexingService } from '../services/IndexingService';
-import { VectorStore } from '../services/VectorStore';
+import type { IndexingService } from '../services/IndexingService';
+import type { VectorStore } from '../services/VectorStore';
 
 const INDEXABLE_WATCH_EXTENSIONS = new Set([
   '.txt', '.md', '.markdown', '.mdx', '.rst',

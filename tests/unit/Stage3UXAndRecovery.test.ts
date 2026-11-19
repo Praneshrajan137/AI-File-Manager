@@ -39,7 +39,7 @@ import {
   resetFileSystemService,
 } from '@main/handlers/fileSystemHandlers';
 import { registerVaultHandlers } from '@main/handlers/vaultHandlers';
-import { setLlmModelConfig } from '@main/services/LlmWorkspaceService';
+import { getWorkspaceRuntime } from '@main/entry/WorkspaceRuntime';
 
 interface Envelope<T = unknown> {
   ok: boolean;
@@ -165,7 +165,9 @@ describe('Stage 3 UX, Trash Vault Recovery, & Security Policy Verification', () 
 
     // Non-loopback URL must be rejected before persisting config
     await expect(
-      setLlmModelConfig(fakeEvent, { ollamaUrl: 'https://remote-llm.example.com:11434' })
+      getWorkspaceRuntime().setLlmModelConfig(fakeEvent, {
+        ollamaUrl: 'https://remote-llm.example.com:11434',
+      })
     ).rejects.toThrow(/Non-local LLM URL rejected for privacy/i);
 
     // Default delete mode IPC persists and reads back in snapshot

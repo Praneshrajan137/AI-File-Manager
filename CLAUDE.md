@@ -1,6 +1,6 @@
 # PROJECT-2: PrivateVault AI — Local Spatial Knowledge & File OS
 
-> **[Current Architecture Notice]**: The original Dec 2025 project bootstrap notes below are preserved for historical reference; active implementation runs **PrivateVault AI** on **Electron 45**, **Node.js 24 LTS**, **TypeScript 5.3**, **React 18 + Tailwind CSS**, **SQLite WAL/FTS5 (`node:sqlite`) + LanceDB**, **standalone pure-Node MCP (`dist/main/mcpServer.js`)**, **Jest + React Testing Library + `jest-axe` + Playwright Electron E2E**, and canonical storage in `~/.privatevault/`. See [README.md](./README.md) and [AGENTS.md](./AGENTS.md) for current workflows and hardware CI rules.
+> **[Current Architecture Notice]**: Active implementation runs **PrivateVault AI** on **Electron 45**, **Node.js 24 LTS**, **TypeScript 5.3**, **React 18 + Tailwind CSS**, **SQLite WAL/FTS5 (`node:sqlite` via `VaultSqliteDb`) + lazy LanceDB/ONNX Tier B (`IntelligenceRuntime`)**, **`WorkspaceRuntime` Composition Root**, **`VaultRootAuthority` & `FsCommandCoordinator`**, **domain-split `@shared/contracts/*` + single-source `@shared/ipc/apiManifest.ts`**, **standalone pure-Node MCP (`dist/main/mcpServer.js`)**, and canonical storage in `~/.privatevault/`. All layer directions & `0`-cycle invariants are mechanically enforced by `.eslintrc.js` and `tests/unit/ArchitectureBoundaries.test.ts`. See [README.md](./README.md), [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md), and [AGENTS.md](./AGENTS.md).
 
 
 
@@ -325,7 +325,9 @@ git tag v0.1.0-trie-complete
 
 - `docs/backlog.md` - Atomic micro-tasks for implementation
 
-- `src/shared/contracts.ts` - TypeScript interface contracts
+- `src/shared/contracts/` - Domain-split TypeScript interface contracts (`core`, `fs`, `vault`, `graph`, `search`, `ai`, `diagnostics`)
+- `src/shared/ipc/apiManifest.ts` - Single-source typed IPC invoke bridge manifest (`preload.ts` & `electron.d.ts`)
+- `tests/unit/ArchitectureBoundaries.test.ts` - AST cycle (Tarjan SCC) & cross-layer enforcement gate
 
 
 

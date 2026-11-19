@@ -127,7 +127,10 @@ jest.mock('electron', () => ({
   },
 }));
 
-jest.mock('@main/services/LlmWorkspaceService', () => mockLlmService);
+jest.mock('@main/entry/WorkspaceRuntime', () => ({
+  getWorkspaceRuntime: (): typeof mockLlmService => mockLlmService,
+  cleanupWorkspaceRuntime: (): Promise<void> => mockLlmService.cleanupLLMServices(),
+}));
 
 import { ConfigManager } from '@shared/config/ConfigManager';
 import {
