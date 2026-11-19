@@ -49,7 +49,6 @@ import {
 import {
   LocalLLMProvider,
   LocalModelTransport,
-  registerDefaultLocalFetchTransport,
 } from '../../llm/services/LocalModelTransport';
 import { clusterDocumentsByVector } from '../../llm/services/SemanticClustering';
 import { CopilotCoordinator, CopilotQueryInput } from '../../llm/runtime/CopilotCoordinator';
@@ -101,13 +100,14 @@ export class WorkspaceRuntime {
   readonly indexing: IndexingCoordinator;
   readonly copilot: CopilotCoordinator;
   private readonly resolveDbDir: () => string;
+  private readonly hostFetch?: typeof fetch;
 
   constructor(overrides: WorkspaceRuntimeOverrides = {}) {
-    if (typeof net?.fetch === 'function') {
-      registerDefaultLocalFetchTransport((urlOrReq, init) =>
-        net.fetch(urlOrReq instanceof URL ? urlOrReq.toString() : urlOrReq, init)
-      );
-    }
+    this.hostFetch =
+      typeof net?.fetch === 'function'
+        ? (urlOrReq, init): Promise<Response> =>
+            net.fetch(urlOrReq instanceof URL ? urlOrReq.toString() : urlOrReq, init)
+        : undefined;
 
     const diagnostics = RuntimeDiagnostics.getInstance();
     const authority = VaultRootAuthority.getInstance();
@@ -192,7 +192,12 @@ export class WorkspaceRuntime {
       },
     };
 
-    this.modelManager = new ModelLifecycleManager(configPort, diagnostics, sanitizeError);
+    this.modelManager = new ModelLifecycleManager(
+      configPort,
+      diagnostics,
+      sanitizeError,
+      this.hostFetch
+    );
 
     let indexingRef: IndexingCoordinator | null = null;
     this.intelligence = new IntelligenceRuntime({
@@ -254,6 +259,7 @@ export class WorkspaceRuntime {
       provider: transportCfg.provider,
       baseUrl: transportCfg.baseUrl,
       model: transportCfg.model,
+      fetchImpl: this.hostFetch,
     });
 
     return new AIOrganizerService({

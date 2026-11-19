@@ -22,9 +22,21 @@ function resolveOsAppDataBaseDir(): string {
 
 /**
  * Resolve Electron's writable `userData` directory when running in Electron Main.
- * Returns null cleanly inside standalone Node, Worker threads, or mocked Jest tests.
+ * Returns null cleanly inside standalone Node, Worker threads, or unmocked Jest tests
+ * without triggering `node_modules/electron/index.js`'s synchronous binary downloader.
  */
 export function resolveElectronUserDataDir(): string | null {
+  const isRealElectron = typeof process.versions?.electron === 'string';
+  const isJestWorker = typeof process.env.JEST_WORKER_ID === 'string';
+  if (!isRealElectron && !isJestWorker) {
+    return null;
+  }
+
+  const prevOverride = process.env.ELECTRON_OVERRIDE_DIST_PATH;
+  const appliedGuard = !isRealElectron && isJestWorker && prevOverride === undefined;
+  if (appliedGuard) {
+    process.env.ELECTRON_OVERRIDE_DIST_PATH = '__jest_no_electron_download__';
+  }
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const electronMod = require('electron') as {
@@ -36,6 +48,10 @@ export function resolveElectronUserDataDir(): string | null {
     }
   } catch {
     // Running outside Electron Main process
+  } finally {
+    if (appliedGuard) {
+      delete process.env.ELECTRON_OVERRIDE_DIST_PATH;
+    }
   }
   return null;
 }
@@ -177,15 +193,18 @@ export function resolveDefaultModelCacheDir(): string {
     process.env.FILE_MANAGER_MODEL_CACHE_DIR?.trim() ||
     process.env.TRANSFORMERS_CACHE?.trim();
   const hfHome = process.env.HF_HOME?.trim();
-  const userDataDir = resolveElectronUserDataDir();
 
-  const resolved = explicitOverride
-    ? path.resolve(explicitOverride)
-    : hfHome
-      ? path.join(path.resolve(hfHome), 'hub')
-      : userDataDir
-        ? path.join(userDataDir, 'models')
-        : path.join(os.homedir(), CANONICAL_DOT_DIR, 'models');
+  let resolved: string;
+  if (explicitOverride) {
+    resolved = path.resolve(explicitOverride);
+  } else if (hfHome) {
+    resolved = path.join(path.resolve(hfHome), 'hub');
+  } else {
+    const userDataDir = resolveElectronUserDataDir();
+    resolved = userDataDir
+      ? path.join(userDataDir, 'models')
+      : path.join(os.homedir(), CANONICAL_DOT_DIR, 'models');
+  }
 
   try {
     fs.mkdirSync(resolved, { recursive: true });

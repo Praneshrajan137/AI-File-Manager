@@ -43,8 +43,13 @@ export class ModelLifecycleManager {
   constructor(
     private readonly configPort: ILlmConfigPort,
     private readonly diagnostics: IDiagnosticsSink,
-    private readonly sanitizeError: (raw: string) => string
+    private readonly sanitizeError: (raw: string) => string,
+    private readonly fetchImpl?: typeof fetch
   ) {}
+
+  getFetchImpl(): typeof fetch | undefined {
+    return this.fetchImpl;
+  }
 
   resolveOllamaUrl(): string | undefined {
     if (process.env.OLLAMA_URL && process.env.OLLAMA_URL.trim().length > 0) {
@@ -68,6 +73,7 @@ export class ModelLifecycleManager {
     return new LLMInterface(transport.baseUrl, {
       provider: transport.provider,
       model: transport.model,
+      fetchImpl: this.fetchImpl,
     });
   }
 

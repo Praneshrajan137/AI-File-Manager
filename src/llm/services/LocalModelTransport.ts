@@ -48,15 +48,7 @@ export interface ChatCompletionOptions {
   tools?: unknown[];
 }
 
-let registeredDefaultFetch: typeof fetch | null = null;
-
-/**
- * Registers the host-provided HTTP fetch implementation (e.g., Electron `net.fetch`
- * injected by `main/entry` at startup) without coupling `llm/` to `electron`.
- */
-export function registerDefaultLocalFetchTransport(fetchFn: typeof fetch | null): void {
-  registeredDefaultFetch = fetchFn;
-}
+// HTTP transport defaults to `globalThis.fetch` unless explicitly injected via `fetchImpl` (e.g. Electron `net.fetch` at composition root).
 
 export function assertLoopbackLocalUrl(rawUrl: string): string {
   const trimmed = rawUrl.trim().replace(/\/+$/, '');
@@ -129,9 +121,6 @@ export class LocalModelTransport {
     };
     if (this.customFetch) {
       return this.customFetch(url, safeInit);
-    }
-    if (registeredDefaultFetch) {
-      return registeredDefaultFetch(url, safeInit);
     }
     if (typeof globalThis.fetch === 'function') {
       return globalThis.fetch(url, safeInit);

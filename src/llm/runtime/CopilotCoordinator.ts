@@ -395,6 +395,7 @@ export class CopilotCoordinator {
             model: activeModel,
             temperature: llmConfig?.temperature,
             maxTokens: llmConfig?.maxTokens,
+            fetchFn: modelManager.getFetchImpl(),
             searchFiles: (q, root) => this.deps.searchPort.searchPaths(q, root),
             searchContent: (q, topK, root) =>
               this.deps.runtime.searchWorkspaceContent(q, topK ?? 8, root),
